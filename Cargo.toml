@@ -1,0 +1,6 @@
+[package]
+name = "hashlife3d"
+version = "0.1.0"
+authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
+
+[dependencies]
