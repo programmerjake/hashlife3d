@@ -1,5 +1,4 @@
 mod hashtable;
-mod world2d;
 mod world3d;
 use std::env;
 use world3d::{Block, State, World};
