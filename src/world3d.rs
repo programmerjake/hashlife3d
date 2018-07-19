@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::mem;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -39,157 +38,18 @@ pub fn step(blocks: &[[[Block; 3]; 3]; 3]) -> Block {
     retval
 }
 
-mod slow_state {
-    use super::dump_helper;
-    use super::step;
-    use super::Block;
-    use super::Dump;
-    use std::iter;
-    pub struct SlowState {
-        size: u32,
-        elements: Vec<Block>,
-    }
-
-    impl SlowState {
-        fn get_index(&self, x: u32, y: u32, z: u32) -> usize {
-            assert!(x < self.size && y < self.size && z < self.size);
-            x as usize + self.size as usize * (y as usize + self.size as usize * z as usize)
-        }
-        pub fn size(&self) -> u32 {
-            self.size
-        }
-        pub fn get(&self, x: u32, y: u32, z: u32) -> Block {
-            self.elements[self.get_index(x, y, z)]
-        }
-        pub fn set(&mut self, x: u32, y: u32, z: u32, block: Block) {
-            let index = self.get_index(x, y, z);
-            self.elements[index] = block;
-        }
-        fn step_helper(&self) -> Self {
-            assert!(self.size >= 2);
-            let mut retval = Self::new(self.size - 2);
-            for z in 0..retval.size {
-                for y in 0..retval.size {
-                    for x in 0..retval.size {
-                        let mut step_input: [[[Block; 3]; 3]; 3] = Default::default();
-                        for ix in 0..3 {
-                            for iy in 0..3 {
-                                for iz in 0..3 {
-                                    step_input[ix as usize][iy as usize][iz as usize] =
-                                        self.get(ix + x, iy + y, iz + z);
-                                }
-                            }
-                        }
-                        retval.set(x, y, z, step(&step_input));
-                    }
-                }
-            }
-            retval
-        }
-        pub fn step(&mut self) {
-            *self = self.step_helper();
-        }
-        pub fn new(size: u32) -> Self {
-            SlowState {
-                size: size,
-                elements: iter::repeat(Default::default())
-                    .take(size as usize * size as usize * size as usize)
-                    .collect(),
-            }
-        }
-    }
-    impl Dump for SlowState {
-        fn dump(&self) {
-            dump_helper(|x, y, z| self.get(x, y, z), self.size());
-        }
-    }
-}
-
-trait Dump {
-    fn dump(&self);
-}
-
-fn dump_helper<F: FnMut(u32, u32, u32) -> Block>(mut f: F, size: u32) {
-    let get = |top: bool, bottom: bool| match (top, bottom) {
-        (false, false) => '\u{1F063}',
-        (true, false) => '\u{1F086}',
-        (false, true) => '\u{1F068}',
-        (true, true) => '\u{1F08B}',
-    };
-    for z in 0..size {
-        println!("z={}", z);
-        print!("\u{250C}");
-        for _ in 0..size {
-            print!("\u{2500}");
-        }
-        println!("\u{2510}");
-        for y in (0..size).step_by(2) {
-            print!("\u{2502}");
-            if y + 1 >= size {
-                for x in 0..size {
-                    print!("{}", get(f(x, y, z) != 0, false));
-                }
-            } else {
-                for x in 0..size {
-                    print!("{}", get(f(x, y, z) != 0, f(x, y + 1, z) != 0));
-                }
-            }
-            println!("\u{2502}");
-        }
-        print!("\u{2514}");
-        for _ in 0..size {
-            print!("\u{2500}");
-        }
-        println!("\u{2518}");
-    }
-}
-
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
 struct NodeKeyNonleaf {
     children: [[[NonNull<Node>; 2]; 2]; 2],
     children_level: u8,
 }
 
-impl Dump for NodeKeyNonleaf {
-    fn dump(&self) {
-        NodeKey::Nonleaf(*self).dump()
-    }
-}
-
 type NodeKeyLeaf = [[[Block; 2]; 2]; 2];
-
-impl Dump for NodeKeyLeaf {
-    fn dump(&self) {
-        NodeKey::Leaf(*self).dump()
-    }
-}
 
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
 enum NodeKey {
     Leaf(NodeKeyLeaf),
     Nonleaf(NodeKeyNonleaf),
-}
-
-impl Dump for NodeKey {
-    fn dump(&self) {
-        let level = self.level();
-        let size = Node::get_size_from_level(level);
-        println!("level = {}, size = {}", level, size);
-        dump_helper(
-            |x, y, z| {
-                Node::get_block(
-                    (&Node {
-                        key: *self,
-                        ..Default::default()
-                    }).into(),
-                    x,
-                    y,
-                    z,
-                )
-            },
-            size,
-        );
-    }
 }
 
 impl NodeKey {
@@ -247,18 +107,6 @@ struct Node {
     gc_state: GcState,
 }
 
-impl Dump for Node {
-    fn dump(&self) {
-        self.key.dump()
-    }
-}
-
-impl Dump for NonNull<Node> {
-    fn dump(&self) {
-        unsafe { self.as_ref() }.dump()
-    }
-}
-
 impl Node {
     fn get_filled_node(block: Block, level: u8, world: &mut World) -> NonNull<Node> {
         if level == 0 {
@@ -298,21 +146,13 @@ impl Node {
         let is_double_step = root.is_double_step(log2_generation_count);
         let next_index = is_double_step as usize;
         if let Some(retval) = &mut root.next[next_index] {
-            if false {
-                println!("compute_next({})", log2_generation_count);
-                root.key.dump();
-                println!("-> (cached)");
-                unsafe { retval.as_ref() }.dump();
-            }
             return *retval;
         }
-        let step_count;
         let retval = match root.key.as_nonleaf() {
             NodeKeyNonleaf {
                 children,
                 children_level: 0,
             } => {
-                step_count = 1;
                 let mut input: [[[Block; 4]; 4]; 4] = Default::default();
                 for outer_x in 0..2 {
                     for outer_y in 0..2 {
@@ -355,7 +195,6 @@ impl Node {
                 children_level,
             } => {
                 if is_double_step {
-                    step_count = 1 << *children_level;
                     let mut intermediate_state = [[[None; 3]; 3]; 3];
                     for x in 0..3 {
                         for y in 0..3 {
@@ -432,7 +271,6 @@ impl Node {
                     root.next[next_index] = Some(retval);
                     retval
                 } else {
-                    step_count = 1 << log2_generation_count;
                     let mut final_state = [[[None; 3]; 3]; 3];
                     for x in 0..3 {
                         for y in 0..3 {
@@ -472,27 +310,6 @@ impl Node {
                                 ));
                             }
                         }
-                    }
-                    if false {
-                        println!("final_state:");
-                        let size = Node::get_size_from_level(
-                            unsafe { final_state[0][0][0].unwrap().as_ref() }
-                                .key
-                                .level(),
-                        );
-                        dump_helper(
-                            |x, y, z| {
-                                Node::get_block(
-                                    final_state[(x / size) as usize][(y / size) as usize]
-                                        [(z / size) as usize]
-                                        .unwrap(),
-                                    x % size,
-                                    y % size,
-                                    z % size,
-                                )
-                            },
-                            size * 3,
-                        );
                     }
                     let mut final_key = NodeKeyNonleaf {
                         children: [[[NonNull::dangling(); 2]; 2]; 2],
@@ -553,50 +370,6 @@ impl Node {
                 }
             }
         };
-        if false {
-            println!(
-                "compute_next(log2_generation_count = {}, step_count = {})",
-                log2_generation_count, step_count
-            );
-            root.dump();
-            println!("->");
-            let retval = unsafe { retval.as_ref() };
-            retval.dump();
-            let root_size = Node::get_size_from_level(root.key.level());
-            let mut state = slow_state::SlowState::new(root_size);
-            for z in 0..root_size {
-                for y in 0..root_size {
-                    for x in 0..root_size {
-                        state.set(x, y, z, Node::get_block(root.into(), x, y, z));
-                    }
-                }
-            }
-            for _ in 0..step_count {
-                state.step();
-            }
-            if !is_double_step {
-                let old_state = mem::replace(&mut state, slow_state::SlowState::new(root_size / 2));
-                let offset = root_size / 4 - step_count;
-                for z in 0..state.size() {
-                    for y in 0..state.size() {
-                        for x in 0..state.size() {
-                            state.set(x, y, z, old_state.get(x + offset, y + offset, z + offset));
-                        }
-                    }
-                }
-            }
-            for z in 0..state.size() {
-                for y in 0..state.size() {
-                    for x in 0..state.size() {
-                        if Node::get_block(retval.into(), x, y, z) != state.get(x, y, z) {
-                            println!("doesn't match!");
-                            state.dump();
-                            panic!();
-                        }
-                    }
-                }
-            }
-        }
         retval
     }
     fn expand_root(root: NonNull<Node>, world: &mut World) -> NonNull<Node> {
