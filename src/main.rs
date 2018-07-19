@@ -1,15 +1,19 @@
 mod hashtable;
-mod world;
+mod world2d;
+mod world3d;
 use std::env;
-use world::*;
+use world3d::{Block, State, World};
 
 fn write_state(state: &State) {
     let range = 1 << 4;
-    for y in -range..range {
-        for x in -range..range {
-            print!("{}", [' ', '#'][state.get(x, y) as usize]);
+    for z in -range..range {
+        println!("z={}", z);
+        for y in -range..range {
+            for x in -range..range {
+                print!("{}", [' ', '#'][state.get(x, y, z) as usize]);
+            }
+            println!();
         }
-        println!();
     }
 }
 
@@ -42,7 +46,7 @@ fn main() {
         (5, 3),
     ];
     for &(x, y) in &_lwss {
-        state.set(x - 5, y, 1 as Block);
+        state.set(x - 5, y, 0, 1 as Block);
     }
     //println!("{:#?}", state);
     write_state(&state);
