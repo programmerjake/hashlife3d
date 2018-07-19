@@ -28,6 +28,17 @@
                 "kind": "build",
                 "isDefault": true
             }
+        },
+        {
+            "type": "cargo",
+            "label": "cargo run",
+            "command": "cargo",
+            "args": [
+                "run"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ]
         }
     ]
 }
