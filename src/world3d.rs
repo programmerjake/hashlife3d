@@ -1,4 +1,5 @@
 use hashtable::*;
+use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::BuildHasher;
@@ -555,26 +556,28 @@ impl<Block: BlockType> Hash for Node<Block> {
 }
 
 #[derive(Debug, Clone)]
-pub struct State<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
+pub struct State<Block: BlockType, H: BuildHasher> {
     root: Arc<NonNull<Node<Block>>>,
-    world: *const World<Block, Step, H>,
+    world_nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
 }
 
-impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> State<Block, Step, H> {
+impl<Block: BlockType, H: BuildHasher> State<Block, H> {
     const MAX_LEVEL: u32 = 20;
-    fn new(world: &mut World<Block, Step, H>, root: NonNull<Node<Block>>) -> Self {
-        let world_ptr: *const _ = world;
-        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, Step, H>::MAX_LEVEL);
+    fn new<Step: StepFn<Block>>(
+        world: &mut World<Block, Step, H>,
+        root: NonNull<Node<Block>>,
+    ) -> Self {
+        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, H>::MAX_LEVEL);
         let value = world
             .snapshots
             .entry(root)
             .or_insert_with(|| Arc::new(root));
         Self {
             root: value.clone(),
-            world: world_ptr,
+            world_nodes: world.nodes.clone(),
         }
     }
-    pub fn create_empty(world: &mut World<Block, Step, H>) -> Self {
+    pub fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
         let node = world.get(Default::default()).into();
         State::new(world, node)
     }
@@ -591,7 +594,7 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> State<Block, Step, H
             Node::get_block(*self.root, x, y, z)
         }
     }
-    fn set_helper(
+    fn set_helper<Step: StepFn<Block>>(
         &self,
         world: &mut World<Block, Step, H>,
         x: i32,
@@ -615,11 +618,22 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> State<Block, Step, H
         }
         State::new(world, root)
     }
-    pub fn set(&mut self, world: &mut World<Block, Step, H>, x: i32, y: i32, z: i32, block: Block) {
-        assert!(ptr::eq(self.world, world));
+    pub fn set<Step: StepFn<Block>>(
+        &mut self,
+        world: &mut World<Block, Step, H>,
+        x: i32,
+        y: i32,
+        z: i32,
+        block: Block,
+    ) {
+        assert!(ptr::eq(self.world_nodes.as_ref(), world.nodes.as_ref()));
         *self = self.set_helper(world, x, y, z, block);
     }
-    fn step_helper(&self, world: &mut World<Block, Step, H>, log2_generation_count: u32) -> Self {
+    fn step_helper<Step: StepFn<Block>>(
+        &self,
+        world: &mut World<Block, Step, H>,
+        log2_generation_count: u32,
+    ) -> Self {
         let mut root = *self.root;
         loop {
             let log2_of_max_generation_step: Option<u32> =
@@ -634,20 +648,24 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> State<Block, Step, H
         }
         root = Node::expand_root(root, world);
         root = Node::compute_next(root, log2_generation_count, world);
-        if unsafe { root.as_ref() }.key.level() > State::<Block, Step, H>::MAX_LEVEL {
-            root = Node::truncate_root_to(State::<Block, Step, H>::MAX_LEVEL, root, world);
+        if unsafe { root.as_ref() }.key.level() > State::<Block, H>::MAX_LEVEL {
+            root = Node::truncate_root_to(State::<Block, H>::MAX_LEVEL, root, world);
         }
         State::new(world, root)
     }
-    pub fn step(&mut self, world: &mut World<Block, Step, H>, log2_generation_count: u32) {
-        assert!(ptr::eq(self.world, world));
+    pub fn step<Step: StepFn<Block>>(
+        &mut self,
+        world: &mut World<Block, Step, H>,
+        log2_generation_count: u32,
+    ) {
+        assert!(ptr::eq(self.world_nodes.as_ref(), world.nodes.as_ref()));
         *self = self.step_helper(world, log2_generation_count);
     }
 }
 
 #[derive(Debug)]
 pub struct World<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
-    nodes: HashTable<Node<Block>, H>,
+    nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
     snapshots: HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>,
     step: Step,
 }
@@ -676,7 +694,8 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
         } else {
             true
         });
-        let (_, retval) = self.nodes.insert(Node {
+        let nodes = unsafe { &mut *self.nodes.get() };
+        let (_, retval) = nodes.insert(Node {
             key: key,
             ..Default::default()
         });
@@ -684,7 +703,7 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
     }
     pub fn new(step: Step, build_hasher: H) -> World<Block, Step, H> {
         World {
-            nodes: HashTable::with_hasher(build_hasher),
+            nodes: Arc::new(UnsafeCell::new(HashTable::with_hasher(build_hasher))),
             snapshots: Default::default(),
             step: step,
         }
@@ -697,7 +716,8 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
         }
     }
     pub fn gc(&mut self) {
-        for node in &mut self.nodes {
+        let nodes = unsafe { &mut *self.nodes.get() };
+        for node in nodes.iter_mut() {
             node.gc_state = GcState::Unreachable;
         }
         let mut work_queue = Default::default();
@@ -728,7 +748,7 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
                 }
             }
         }
-        self.nodes.retain(|node| match node.gc_state {
+        nodes.retain(|node| match node.gc_state {
             GcState::Reachable => true,
             GcState::Unreachable => false,
         });

@@ -5,9 +5,7 @@ use world3d::{State, World};
 
 type Block = u32;
 
-fn write_state<Step: world3d::StepFn<Block>>(
-    state: &State<Block, Step, hashtable::DefaultBuildHasher>,
-) {
+fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
     let range = 1 << 4;
     for z in -range..range {
         println!("z={}", z);
