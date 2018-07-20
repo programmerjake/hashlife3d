@@ -1,9 +1,13 @@
 mod hashtable;
 mod world3d;
 use std::env;
-use world3d::{Block, State, World};
+use world3d::{State, World};
 
-fn write_state(state: &State) {
+type Block = u32;
+
+fn write_state<Step: world3d::StepFn<Block>>(
+    state: &State<Block, Step, hashtable::DefaultBuildHasher>,
+) {
     let range = 1 << 4;
     for z in -range..range {
         println!("z={}", z);
@@ -20,9 +24,12 @@ fn main() {
     if cfg!(debug_assertions) {
         env::set_var("RUST_BACKTRACE", "1");
     }
-    let world = World::new();
-    let mut state = State::create_empty(&world);
-    world.borrow_mut().gc();
+    let mut world = World::new(
+        |blocks: &[[[Block; 3]; 3]; 3]| blocks[1][1][1],
+        Default::default(),
+    );
+    let mut state = State::create_empty(&mut world);
+    world.gc();
     let _glider = [(-1, 0), (0, 0), (1, 0), (1, 1), (0, 2)];
     let _lwss = [
         (1, 0),
@@ -45,15 +52,15 @@ fn main() {
         (5, 3),
     ];
     for &(x, y) in &_lwss {
-        state.set(x - 5, y, 0, 1 as Block);
+        state.set(&mut world, x - 5, y, 0, 1 as Block);
     }
     //println!("{:#?}", state);
     write_state(&state);
-    state.step(0);
+    state.step(&mut world, 0);
     write_state(&state);
     for log2_step_size in 0..4 {
         for _ in 1..3 {
-            state.step(log2_step_size);
+            state.step(&mut world, log2_step_size);
             write_state(&state);
         }
     }

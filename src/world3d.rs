@@ -1,58 +1,34 @@
-use hashtable::HashTable;
-use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+use hashtable::*;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::hash::BuildHasher;
 use std::hash::{Hash, Hasher};
-use std::ptr::NonNull;
-use std::rc::Rc;
+use std::ptr::{self, NonNull};
+use std::sync::Arc;
 
-pub type Block = u32;
+pub trait BlockType: Copy + Default + Eq + PartialEq + Hash + fmt::Debug {}
 
-pub fn step(blocks: &[[[Block; 3]; 3]; 3]) -> Block {
-    if false {
-        return blocks[1][1][1];
-    }
-    if true {
-        return blocks[0][1][1];
-    }
-    let sum = blocks.iter().fold(0, |acc: u32, blocks: &_| {
-        acc + blocks.iter().fold(0, |acc: u32, blocks: &_| {
-            acc + blocks
-                .iter()
-                .fold(0, |acc: u32, block: &Block| acc + *block)
-        })
-    });
-    let retval = if blocks[1][1][1] != 0 {
-        if sum >= 3 && sum <= 4 {
-            1
-        } else {
-            0
-        }
-    } else {
-        if sum == 3 {
-            1
-        } else {
-            0
-        }
-    };
-    retval
-}
+impl<T: Copy + Default + Eq + PartialEq + Hash + fmt::Debug> BlockType for T {}
+
+pub trait StepFn<Block: BlockType>: Fn(&[[[Block; 3]; 3]; 3]) -> Block {}
+
+impl<Block: BlockType, T: Fn(&[[[Block; 3]; 3]; 3]) -> Block> StepFn<Block> for T {}
 
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
-struct NodeKeyNonleaf {
-    children: [[[NonNull<Node>; 2]; 2]; 2],
+struct NodeKeyNonleaf<Block: BlockType> {
+    children: [[[NonNull<Node<Block>>; 2]; 2]; 2],
     children_level: u8,
 }
 
-type NodeKeyLeaf = [[[Block; 2]; 2]; 2];
+type NodeKeyLeaf<Block> = [[[Block; 2]; 2]; 2];
 
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
-enum NodeKey {
-    Leaf(NodeKeyLeaf),
-    Nonleaf(NodeKeyNonleaf),
+enum NodeKey<Block: BlockType> {
+    Leaf(NodeKeyLeaf<Block>),
+    Nonleaf(NodeKeyNonleaf<Block>),
 }
 
-impl NodeKey {
+impl<Block: BlockType> NodeKey<Block> {
     fn level(&self) -> u32 {
         match self {
             NodeKey::Leaf(_) => 0,
@@ -80,13 +56,13 @@ impl NodeKey {
             }
         }
     }
-    fn as_leaf(&self) -> &NodeKeyLeaf {
+    fn as_leaf(&self) -> &NodeKeyLeaf<Block> {
         match self {
             NodeKey::Leaf(retval) => retval,
             NodeKey::Nonleaf(_) => panic!("as_leaf called on Nonleaf"),
         }
     }
-    fn as_nonleaf(&self) -> &NodeKeyNonleaf {
+    fn as_nonleaf(&self) -> &NodeKeyNonleaf<Block> {
         match self {
             NodeKey::Nonleaf(retval) => retval,
             NodeKey::Leaf(_) => panic!("as_nonleaf called on Leaf"),
@@ -101,14 +77,18 @@ enum GcState {
 }
 
 #[derive(Copy, Clone, Debug)]
-struct Node {
-    key: NodeKey,
-    next: [Option<NonNull<Node>>; 2],
+struct Node<Block: BlockType> {
+    key: NodeKey<Block>,
+    next: [Option<NonNull<Node<Block>>>; 2],
     gc_state: GcState,
 }
 
-impl Node {
-    fn get_filled_node(block: Block, level: u8, world: &mut World) -> NonNull<Node> {
+impl<Block: BlockType> Node<Block> {
+    fn get_filled_node<Step: StepFn<Block>, H: BuildHasher>(
+        block: Block,
+        level: u8,
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         if level == 0 {
             world.get(NodeKey::Leaf([[[block; 2]; 2]; 2])).into()
         } else {
@@ -121,7 +101,10 @@ impl Node {
                 .into()
         }
     }
-    fn get_empty_node(level: u8, world: &mut World) -> NonNull<Node> {
+    fn get_empty_node<Step: StepFn<Block>, H: BuildHasher>(
+        level: u8,
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         Node::get_filled_node(Default::default(), level, world)
     }
     fn get_log2_of_max_generation_step_for_level(level: u32) -> Option<u32> {
@@ -137,11 +120,11 @@ impl Node {
     fn is_double_step(&self, log2_generation_count: u32) -> bool {
         self.get_log2_of_max_generation_step().unwrap() <= log2_generation_count
     }
-    fn compute_next(
-        mut node: NonNull<Node>,
+    fn compute_next<Step: StepFn<Block>, H: BuildHasher>(
+        mut node: NonNull<Node<Block>>,
         log2_generation_count: u32,
-        world: &mut World,
-    ) -> NonNull<Node> {
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         let root = unsafe { node.as_mut() };
         let is_double_step = root.is_double_step(log2_generation_count);
         let next_index = is_double_step as usize;
@@ -170,7 +153,7 @@ impl Node {
                         }
                     }
                 }
-                let mut next_key: NodeKeyLeaf = Default::default();
+                let mut next_key: NodeKeyLeaf<Block> = Default::default();
                 for dx in 0..2 {
                     for dy in 0..2 {
                         for dz in 0..2 {
@@ -182,7 +165,7 @@ impl Node {
                                     }
                                 }
                             }
-                            next_key[dx][dy][dz] = step(&step_input);
+                            next_key[dx][dy][dz] = (world.step)(&step_input);
                         }
                     }
                 }
@@ -319,7 +302,9 @@ impl Node {
                         for y in 0..2 {
                             for z in 0..2 {
                                 if *children_level == 1 {
-                                    let mut key: NodeKeyLeaf = Default::default();
+                                    let mut key: NodeKeyLeaf<
+                                        Block,
+                                    > = Default::default();
                                     for kx in 0..2 {
                                         for ky in 0..2 {
                                             for kz in 0..2 {
@@ -372,7 +357,10 @@ impl Node {
         };
         retval
     }
-    fn expand_root(root: NonNull<Node>, world: &mut World) -> NonNull<Node> {
+    fn expand_root<Step: StepFn<Block>, H: BuildHasher>(
+        root: NonNull<Node<Block>>,
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         let root_key = unsafe { root.as_ref() }.key;
         let root_key_level = root_key.level();
         assert!(root_key_level <= u8::max_value() as u32);
@@ -385,7 +373,7 @@ impl Node {
                 for x in 0..2 {
                     for y in 0..2 {
                         for z in 0..2 {
-                            let mut key: NodeKeyLeaf = Default::default();
+                            let mut key: NodeKeyLeaf<Block> = Default::default();
                             key[1 - x][1 - y][1 - z] = children[x][y][z];
                             retval_key.children[x][y][z] = world.get(NodeKey::Leaf(key)).into();
                         }
@@ -413,14 +401,17 @@ impl Node {
         }
         world.get(NodeKey::Nonleaf(retval_key)).into()
     }
-    fn truncate_root(root: NonNull<Node>, world: &mut World) -> NonNull<Node> {
+    fn truncate_root<Step: StepFn<Block>, H: BuildHasher>(
+        root: NonNull<Node<Block>>,
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         match unsafe { &root.as_ref().key } {
             NodeKey::Leaf(_) => panic!("can't truncate leaf node"),
             NodeKey::Nonleaf(NodeKeyNonleaf {
                 children,
                 children_level: 0,
             }) => {
-                let mut retval_key: NodeKeyLeaf = Default::default();
+                let mut retval_key: NodeKeyLeaf<Block> = Default::default();
                 for x in 0..2 {
                     for y in 0..2 {
                         for z in 0..2 {
@@ -454,7 +445,11 @@ impl Node {
             }
         }
     }
-    fn truncate_root_to(level: u32, mut root: NonNull<Node>, world: &mut World) -> NonNull<Node> {
+    fn truncate_root_to<Step: StepFn<Block>, H: BuildHasher>(
+        level: u32,
+        mut root: NonNull<Node<Block>>,
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         assert!(level <= unsafe { root.as_ref() }.key.level());
         for _ in level..unsafe { root.as_ref() }.key.level() {
             root = Node::truncate_root(root, world);
@@ -465,10 +460,10 @@ impl Node {
     fn get_size_from_level(level: u32) -> u32 {
         2u32 << level
     }
-    fn get_block(root: NonNull<Node>, mut x: u32, mut y: u32, mut z: u32) -> Block {
+    fn get_block(root: NonNull<Node<Block>>, mut x: u32, mut y: u32, mut z: u32) -> Block {
         let mut root = unsafe { root.as_ref() };
         loop {
-            let size = Node::get_size_from_level(root.key.level());
+            let size = Node::<Block>::get_size_from_level(root.key.level());
             assert!(x < size && y < size && z < size);
             match &root.key {
                 NodeKey::Leaf(key) => break key[x as usize][y as usize][z as usize],
@@ -484,16 +479,16 @@ impl Node {
             }
         }
     }
-    fn set_block_without_expanding(
-        root: NonNull<Node>,
+    fn set_block_without_expanding<Step: StepFn<Block>, H: BuildHasher>(
+        root: NonNull<Node<Block>>,
         x: u32,
         y: u32,
         z: u32,
         block: Block,
-        world: &mut World,
-    ) -> NonNull<Node> {
+        world: &mut World<Block, Step, H>,
+    ) -> NonNull<Node<Block>> {
         let root = unsafe { root.as_ref() };
-        let size = Node::get_size_from_level(root.key.level());
+        let size = Node::<Block>::get_size_from_level(root.key.level());
         assert!(x < size && y < size && z < size);
         match &root.key {
             NodeKey::Leaf(key) => {
@@ -523,7 +518,7 @@ impl Node {
     }
 }
 
-impl Default for NodeKey {
+impl<Block: BlockType> Default for NodeKey<Block> {
     fn default() -> Self {
         NodeKey::Leaf([[[Default::default(); 2]; 2]; 2])
     }
@@ -535,7 +530,7 @@ impl Default for GcState {
     }
 }
 
-impl Default for Node {
+impl<Block: BlockType> Default for Node<Block> {
     fn default() -> Self {
         Self {
             key: Default::default(),
@@ -545,63 +540,69 @@ impl Default for Node {
     }
 }
 
-impl Eq for Node {}
+impl<Block: BlockType> Eq for Node<Block> {}
 
-impl PartialEq for Node {
+impl<Block: BlockType> PartialEq for Node<Block> {
     fn eq(&self, rhs: &Self) -> bool {
         self.key == rhs.key
     }
 }
 
-impl Hash for Node {
+impl<Block: BlockType> Hash for Node<Block> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.key.hash(h);
     }
 }
 
-#[derive(Debug)]
-pub struct State {
-    world: Rc<RefCell<World>>,
-    root: NonNull<Node>,
+#[derive(Debug, Clone)]
+pub struct State<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
+    root: Arc<NonNull<Node<Block>>>,
+    world: *const World<Block, Step, H>,
 }
 
-impl State {
+impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> State<Block, Step, H> {
     const MAX_LEVEL: u32 = 20;
-    fn new(world: Rc<RefCell<World>>, world_ref: &World, root: NonNull<Node>) -> Self {
-        assert!(unsafe { root.as_ref() }.key.level() <= State::MAX_LEVEL);
-        let mut snapshots = world_ref.snapshots.borrow_mut();
-        let value = snapshots.entry(root).or_insert(0);
-        *value = *value + 1;
+    fn new(world: &mut World<Block, Step, H>, root: NonNull<Node<Block>>) -> Self {
+        let world_ptr: *const _ = world;
+        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, Step, H>::MAX_LEVEL);
+        let value = world
+            .snapshots
+            .entry(root)
+            .or_insert_with(|| Arc::new(root));
         Self {
-            world: world,
-            root: root,
+            root: value.clone(),
+            world: world_ptr,
         }
     }
-    pub fn create_empty(world: &Rc<RefCell<World>>) -> Self {
-        let mut world_borrow = world.borrow_mut();
-        let node = world_borrow.get(Default::default()).into();
-        State::new(world.clone(), &*world_borrow, node)
+    pub fn create_empty(world: &mut World<Block, Step, H>) -> Self {
+        let node = world.get(Default::default()).into();
+        State::new(world, node)
     }
     pub fn get(&self, x: i32, y: i32, z: i32) -> Block {
-        let key = &unsafe { self.root.as_ref() }.key;
+        let key = &unsafe { (*self.root).as_ref() }.key;
         let level = key.level();
-        let size = Node::get_size_from_level(level);
+        let size = Node::<Block>::get_size_from_level(level);
         let x = (x as u32).wrapping_add(size / 2);
         let y = (y as u32).wrapping_add(size / 2);
         let z = (z as u32).wrapping_add(size / 2);
         if x >= size || y >= size || z >= size {
             Default::default()
         } else {
-            Node::get_block(self.root, x, y, z)
+            Node::get_block(*self.root, x, y, z)
         }
     }
-    fn set_helper(&self, x: i32, y: i32, z: i32, block: Block) -> Self {
-        let mut world_borrow = self.world.borrow_mut();
-        let world = &mut *world_borrow;
-        let mut root = self.root;
+    fn set_helper(
+        &self,
+        world: &mut World<Block, Step, H>,
+        x: i32,
+        y: i32,
+        z: i32,
+        block: Block,
+    ) -> Self {
+        let mut root = *self.root;
         loop {
             let key = &unsafe { *root.as_ptr() }.key;
-            let size = Node::get_size_from_level(key.level());
+            let size = Node::<Block>::get_size_from_level(key.level());
             let xu = (x as u32).wrapping_add(size / 2);
             let yu = (y as u32).wrapping_add(size / 2);
             let zu = (z as u32).wrapping_add(size / 2);
@@ -612,15 +613,14 @@ impl State {
                 root = Node::expand_root(root, world);
             }
         }
-        State::new(self.world.clone(), world, root)
+        State::new(world, root)
     }
-    pub fn set(&mut self, x: i32, y: i32, z: i32, block: Block) {
-        *self = self.set_helper(x, y, z, block);
+    pub fn set(&mut self, world: &mut World<Block, Step, H>, x: i32, y: i32, z: i32, block: Block) {
+        assert!(ptr::eq(self.world, world));
+        *self = self.set_helper(world, x, y, z, block);
     }
-    fn step_helper(&self, log2_generation_count: u32) -> Self {
-        let mut root = self.root;
-        let mut world_borrow = self.world.borrow_mut();
-        let world = &mut *world_borrow;
+    fn step_helper(&self, world: &mut World<Block, Step, H>, log2_generation_count: u32) -> Self {
+        let mut root = *self.root;
         loop {
             let log2_of_max_generation_step: Option<u32> =
                 unsafe { root.as_ref() }.get_log2_of_max_generation_step();
@@ -634,48 +634,27 @@ impl State {
         }
         root = Node::expand_root(root, world);
         root = Node::compute_next(root, log2_generation_count, world);
-        if unsafe { root.as_ref() }.key.level() > State::MAX_LEVEL {
-            root = Node::truncate_root_to(State::MAX_LEVEL, root, world);
+        if unsafe { root.as_ref() }.key.level() > State::<Block, Step, H>::MAX_LEVEL {
+            root = Node::truncate_root_to(State::<Block, Step, H>::MAX_LEVEL, root, world);
         }
-        State::new(self.world.clone(), world, root)
+        State::new(world, root)
     }
-    pub fn step(&mut self, log2_generation_count: u32) {
-        *self = self.step_helper(log2_generation_count);
-    }
-}
-
-impl Clone for State {
-    fn clone(&self) -> Self {
-        State::new(self.world.clone(), &*self.world.borrow(), self.root)
-    }
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        let mut world = self.world.borrow_mut();
-        let snapshots = &mut *world.snapshots.borrow_mut();
-        match snapshots.entry(self.root) {
-            Entry::Occupied(mut entry) => {
-                if *entry.get() <= 1 {
-                    entry.remove();
-                } else {
-                    *entry.get_mut() = *entry.get() - 1;
-                }
-            }
-            _ => panic!(),
-        }
+    pub fn step(&mut self, world: &mut World<Block, Step, H>, log2_generation_count: u32) {
+        assert!(ptr::eq(self.world, world));
+        *self = self.step_helper(world, log2_generation_count);
     }
 }
 
 #[derive(Debug)]
-pub struct World {
-    nodes: HashTable<Node>,
-    snapshots: RefCell<HashMap<NonNull<Node>, usize>>,
+pub struct World<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
+    nodes: HashTable<Node<Block>, H>,
+    snapshots: HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>,
+    step: Step,
 }
 
-impl World {
-    fn get(&mut self, key: NodeKey) -> &mut Node {
-        if !key.is_valid() {
+impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H> {
+    fn get(&mut self, key: NodeKey<Block>) -> &mut Node<Block> {
+        debug_assert!(if !key.is_valid() {
             let mut key = key;
             loop {
                 println!("{:#?}", key);
@@ -693,21 +672,24 @@ impl World {
                     }
                 }
             }
-        }
-        assert!(key.is_valid());
+            false
+        } else {
+            true
+        });
         let (_, retval) = self.nodes.insert(Node {
             key: key,
             ..Default::default()
         });
         retval
     }
-    pub fn new() -> Rc<RefCell<World>> {
-        Rc::new(RefCell::new(World {
-            nodes: HashTable::new(),
+    pub fn new(step: Step, build_hasher: H) -> World<Block, Step, H> {
+        World {
+            nodes: HashTable::with_hasher(build_hasher),
             snapshots: Default::default(),
-        }))
+            step: step,
+        }
     }
-    fn mark_node<'a>(node: NonNull<Node>, work_queue: &mut VecDeque<&'a mut Node>) {
+    fn mark_node<'a>(node: NonNull<Node<Block>>, work_queue: &mut VecDeque<&'a mut Node<Block>>) {
         let node = unsafe { &mut *node.as_ptr() };
         if let GcState::Unreachable = node.gc_state {
             node.gc_state = GcState::Reachable;
@@ -719,9 +701,14 @@ impl World {
             node.gc_state = GcState::Unreachable;
         }
         let mut work_queue = Default::default();
-        for node in self.snapshots.borrow().keys() {
-            Self::mark_node(*node, &mut work_queue);
-        }
+        self.snapshots.retain(|k, v| {
+            if Arc::get_mut(v).is_none() {
+                Self::mark_node(*k, &mut work_queue);
+                true
+            } else {
+                false
+            }
+        });
         while let Some(node) = work_queue.pop_front() {
             for i in node.next.iter() {
                 if let Some(next) = *i {

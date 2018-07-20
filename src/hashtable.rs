@@ -55,7 +55,7 @@ impl<T: Eq + Hash> Iterator for Drain<T> {
     }
 }
 
-type DefaultBuildHasher = hash_map::RandomState;
+pub type DefaultBuildHasher = hash_map::RandomState;
 
 pub struct HashTable<T: Eq + Hash, H: BuildHasher = DefaultBuildHasher> {
     table: Vec<Option<Box<Node<T>>>>,
