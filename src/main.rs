@@ -1,7 +1,26 @@
+#![no_main]
+#![feature(termination_trait_lib)]
+extern crate libc;
 mod hashtable;
+mod sdl;
 mod world3d;
+pub use self::sdl::SDL_main;
 use std::env;
 use world3d::{State, World};
+
+#[no_mangle]
+#[cfg(
+    not(
+        any(
+            target_os = "windows",
+            target_os = "ios",
+            target_os = "android"
+        )
+    )
+)]
+pub extern "C" fn main(argc: libc::c_int, argv: *mut *mut libc::c_char) -> libc::c_int {
+    SDL_main(argc, argv)
+}
 
 type Block = u32;
 
@@ -18,7 +37,8 @@ fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
     }
 }
 
-fn main() {
+fn rust_main() {
+    let window = sdl::window::Window::new("Title", 640, 480);
     if cfg!(debug_assertions) {
         env::set_var("RUST_BACKTRACE", "1");
     }

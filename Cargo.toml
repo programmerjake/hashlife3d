@@ -3,4 +3,8 @@ name = "hashlife3d"
 version = "0.1.0"
 authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
+[build-dependencies]
+bindgen = "0.37.4"
+
 [dependencies]
+libc = "0.2"
