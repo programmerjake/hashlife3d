@@ -2,6 +2,7 @@ use super::super::api;
 
 #[repr(u32)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[allow(dead_code)]
 pub enum Scancode {
     Unknown = api::SDL_Scancode_SDL_SCANCODE_UNKNOWN,
     A = api::SDL_Scancode_SDL_SCANCODE_A,
@@ -257,6 +258,7 @@ pub fn make_keycode(v: i32) -> Keycode {
     Keycode(v)
 }
 
+#[allow(dead_code)]
 impl Keycode {
     pub const UNKNOWN: Keycode = Keycode(0);
     pub const RETURN: Keycode = Keycode('\r' as i32);
@@ -302,32 +304,32 @@ impl Keycode {
     pub const CARET: Keycode = Keycode('^' as i32);
     pub const UNDERSCORE: Keycode = Keycode('_' as i32);
     pub const BACKQUOTE: Keycode = Keycode('`' as i32);
-    pub const a: Keycode = Keycode('a' as i32);
-    pub const b: Keycode = Keycode('b' as i32);
-    pub const c: Keycode = Keycode('c' as i32);
-    pub const d: Keycode = Keycode('d' as i32);
-    pub const e: Keycode = Keycode('e' as i32);
-    pub const f: Keycode = Keycode('f' as i32);
-    pub const g: Keycode = Keycode('g' as i32);
-    pub const h: Keycode = Keycode('h' as i32);
-    pub const i: Keycode = Keycode('i' as i32);
-    pub const j: Keycode = Keycode('j' as i32);
-    pub const k: Keycode = Keycode('k' as i32);
-    pub const l: Keycode = Keycode('l' as i32);
-    pub const m: Keycode = Keycode('m' as i32);
-    pub const n: Keycode = Keycode('n' as i32);
-    pub const o: Keycode = Keycode('o' as i32);
-    pub const p: Keycode = Keycode('p' as i32);
-    pub const q: Keycode = Keycode('q' as i32);
-    pub const r: Keycode = Keycode('r' as i32);
-    pub const s: Keycode = Keycode('s' as i32);
-    pub const t: Keycode = Keycode('t' as i32);
-    pub const u: Keycode = Keycode('u' as i32);
-    pub const v: Keycode = Keycode('v' as i32);
-    pub const w: Keycode = Keycode('w' as i32);
-    pub const x: Keycode = Keycode('x' as i32);
-    pub const y: Keycode = Keycode('y' as i32);
-    pub const z: Keycode = Keycode('z' as i32);
+    pub const A: Keycode = Keycode('a' as i32);
+    pub const B: Keycode = Keycode('b' as i32);
+    pub const C: Keycode = Keycode('c' as i32);
+    pub const D: Keycode = Keycode('d' as i32);
+    pub const E: Keycode = Keycode('e' as i32);
+    pub const F: Keycode = Keycode('f' as i32);
+    pub const G: Keycode = Keycode('g' as i32);
+    pub const H: Keycode = Keycode('h' as i32);
+    pub const I: Keycode = Keycode('i' as i32);
+    pub const J: Keycode = Keycode('j' as i32);
+    pub const K: Keycode = Keycode('k' as i32);
+    pub const L: Keycode = Keycode('l' as i32);
+    pub const M: Keycode = Keycode('m' as i32);
+    pub const N: Keycode = Keycode('n' as i32);
+    pub const O: Keycode = Keycode('o' as i32);
+    pub const P: Keycode = Keycode('p' as i32);
+    pub const Q: Keycode = Keycode('q' as i32);
+    pub const R: Keycode = Keycode('r' as i32);
+    pub const S: Keycode = Keycode('s' as i32);
+    pub const T: Keycode = Keycode('t' as i32);
+    pub const U: Keycode = Keycode('u' as i32);
+    pub const V: Keycode = Keycode('v' as i32);
+    pub const W: Keycode = Keycode('w' as i32);
+    pub const X: Keycode = Keycode('x' as i32);
+    pub const Y: Keycode = Keycode('y' as i32);
+    pub const Z: Keycode = Keycode('z' as i32);
     pub const CAPSLOCK: Keycode =
         Keycode(api::SDL_Scancode_SDL_SCANCODE_CAPSLOCK as i32 | SCANCODE_MASK);
     pub const F1: Keycode = Keycode(api::SDL_Scancode_SDL_SCANCODE_F1 as i32 | SCANCODE_MASK);

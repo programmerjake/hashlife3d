@@ -1,6 +1,7 @@
 use super::api;
 use libc::*;
 use std::ffi::*;
+use std::ptr::null_mut;
 
 pub struct Window(*mut api::SDL_Window);
 
@@ -11,6 +12,9 @@ impl Window {
         let title = CString::new(title).unwrap();
         unsafe {
             let window = api::SDL_CreateWindow(title.as_ptr(), x, y, w as c_int, h as c_int, flags);
+            if window == null_mut() {
+                panic!("SDL_CreateWindow failed: {}", super::get_error_message());
+            }
             Window(window)
         }
     }
