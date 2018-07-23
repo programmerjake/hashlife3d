@@ -16,18 +16,18 @@ pub struct KeyModifiers(pub u16);
 
 #[allow(dead_code)]
 impl KeyModifiers {
-    pub const NONE: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_NONE as u16);
-    pub const LSHIFT: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_LSHIFT as u16);
-    pub const RSHIFT: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_RSHIFT as u16);
-    pub const LCTRL: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_LCTRL as u16);
-    pub const RCTRL: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_RCTRL as u16);
-    pub const LALT: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_LALT as u16);
-    pub const RALT: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_RALT as u16);
-    pub const LGUI: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_LGUI as u16);
-    pub const RGUI: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_RGUI as u16);
-    pub const NUM: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_NUM as u16);
-    pub const CAPS: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_CAPS as u16);
-    pub const MODE: KeyModifiers = KeyModifiers(api::SDL_Keymod_KMOD_MODE as u16);
+    pub const NONE: KeyModifiers = KeyModifiers(api::KMOD_NONE as u16);
+    pub const LSHIFT: KeyModifiers = KeyModifiers(api::KMOD_LSHIFT as u16);
+    pub const RSHIFT: KeyModifiers = KeyModifiers(api::KMOD_RSHIFT as u16);
+    pub const LCTRL: KeyModifiers = KeyModifiers(api::KMOD_LCTRL as u16);
+    pub const RCTRL: KeyModifiers = KeyModifiers(api::KMOD_RCTRL as u16);
+    pub const LALT: KeyModifiers = KeyModifiers(api::KMOD_LALT as u16);
+    pub const RALT: KeyModifiers = KeyModifiers(api::KMOD_RALT as u16);
+    pub const LGUI: KeyModifiers = KeyModifiers(api::KMOD_LGUI as u16);
+    pub const RGUI: KeyModifiers = KeyModifiers(api::KMOD_RGUI as u16);
+    pub const NUM: KeyModifiers = KeyModifiers(api::KMOD_NUM as u16);
+    pub const CAPS: KeyModifiers = KeyModifiers(api::KMOD_CAPS as u16);
+    pub const MODE: KeyModifiers = KeyModifiers(api::KMOD_MODE as u16);
     pub const SHIFT: KeyModifiers = KeyModifiers(KeyModifiers::LSHIFT.0 | KeyModifiers::RSHIFT.0);
     pub const CTRL: KeyModifiers = KeyModifiers(KeyModifiers::LCTRL.0 | KeyModifiers::RCTRL.0);
     pub const ALT: KeyModifiers = KeyModifiers(KeyModifiers::LALT.0 | KeyModifiers::RALT.0);
@@ -806,7 +806,7 @@ impl EventSource {
             if api::SDL_WaitEvent(&mut event) != 0 {
                 event.into()
             } else {
-                panic!("SDL_WaitEvent failed: {}", super::get_error_message())
+                panic!("SDL_WaitEvent failed: {}", super::get_error())
             }
         }
     }
@@ -830,105 +830,105 @@ impl From<api::SDL_Event> for Event {
         use self::Event::*;
         unsafe {
             match event.type_ {
-                api::SDL_EventType_SDL_QUIT => Quit {
+                api::SDL_QUIT => Quit {
                     timestamp: event.quit.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_TERMINATING => AppTerminating {
+                api::SDL_APP_TERMINATING => AppTerminating {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_LOWMEMORY => AppLowMemory {
+                api::SDL_APP_LOWMEMORY => AppLowMemory {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_WILLENTERBACKGROUND => AppWillEnterBackground {
+                api::SDL_APP_WILLENTERBACKGROUND => AppWillEnterBackground {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_DIDENTERBACKGROUND => AppDidEnterBackground {
+                api::SDL_APP_DIDENTERBACKGROUND => AppDidEnterBackground {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_WILLENTERFOREGROUND => AppWillEnterForeground {
+                api::SDL_APP_WILLENTERFOREGROUND => AppWillEnterForeground {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_APP_DIDENTERFOREGROUND => AppDidEnterForeground {
+                api::SDL_APP_DIDENTERFOREGROUND => AppDidEnterForeground {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_WINDOWEVENT => match event.window.event as u32 {
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_SHOWN => WindowShown {
+                api::SDL_WINDOWEVENT => match event.window.event as u32 {
+                    api::SDL_WINDOWEVENT_SHOWN => WindowShown {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_HIDDEN => WindowHidden {
+                    api::SDL_WINDOWEVENT_HIDDEN => WindowHidden {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_EXPOSED => WindowExposed {
+                    api::SDL_WINDOWEVENT_EXPOSED => WindowExposed {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_MOVED => WindowMoved {
+                    api::SDL_WINDOWEVENT_MOVED => WindowMoved {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                         x: event.window.data1,
                         y: event.window.data2,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_RESIZED => WindowResized {
+                    api::SDL_WINDOWEVENT_RESIZED => WindowResized {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                         w: event.window.data1 as u32,
                         h: event.window.data2 as u32,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_SIZE_CHANGED => WindowSizeChanged {
+                    api::SDL_WINDOWEVENT_SIZE_CHANGED => WindowSizeChanged {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                         w: event.window.data1 as u32,
                         h: event.window.data2 as u32,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_MINIMIZED => WindowMinimized {
+                    api::SDL_WINDOWEVENT_MINIMIZED => WindowMinimized {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_MAXIMIZED => WindowMaximized {
+                    api::SDL_WINDOWEVENT_MAXIMIZED => WindowMaximized {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_RESTORED => WindowRestored {
+                    api::SDL_WINDOWEVENT_RESTORED => WindowRestored {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_ENTER => MouseEntered {
+                    api::SDL_WINDOWEVENT_ENTER => MouseEntered {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_LEAVE => MouseLeft {
+                    api::SDL_WINDOWEVENT_LEAVE => MouseLeft {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_FOCUS_GAINED => KeyboardFocusGained {
+                    api::SDL_WINDOWEVENT_FOCUS_GAINED => KeyboardFocusGained {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_FOCUS_LOST => KeyboardFocusLost {
+                    api::SDL_WINDOWEVENT_FOCUS_LOST => KeyboardFocusLost {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_CLOSE => WindowClose {
+                    api::SDL_WINDOWEVENT_CLOSE => WindowClose {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_TAKE_FOCUS => WindowTakeFocus {
+                    api::SDL_WINDOWEVENT_TAKE_FOCUS => WindowTakeFocus {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
-                    api::SDL_WindowEventID_SDL_WINDOWEVENT_HIT_TEST => WindowHitTest {
+                    api::SDL_WINDOWEVENT_HIT_TEST => WindowHitTest {
                         timestamp: event.window.timestamp,
                         window_id: event.window.windowID,
                     },
                     _ => panic!("unknown SDL window event type"),
                 },
-                api::SDL_EventType_SDL_SYSWMEVENT => SysWMEvent {
+                api::SDL_SYSWMEVENT => SysWMEvent {
                     timestamp: event.syswm.timestamp,
                     msg: event.syswm.msg,
                 },
-                api::SDL_EventType_SDL_KEYDOWN => KeyDown {
+                api::SDL_KEYDOWN => KeyDown {
                     timestamp: event.key.timestamp,
                     window_id: event.key.windowID,
                     repeat: event.key.repeat != 0,
@@ -936,14 +936,14 @@ impl From<api::SDL_Event> for Event {
                     keycode: make_keycode(event.key.keysym.sym),
                     modifiers: KeyModifiers(event.key.keysym.mod_),
                 },
-                api::SDL_EventType_SDL_KEYUP => KeyUp {
+                api::SDL_KEYUP => KeyUp {
                     timestamp: event.key.timestamp,
                     window_id: event.key.windowID,
                     scancode: transmute(event.key.keysym.scancode as u32),
                     keycode: make_keycode(event.key.keysym.sym),
                     modifiers: KeyModifiers(event.key.keysym.mod_),
                 },
-                api::SDL_EventType_SDL_TEXTEDITING => TextEditing {
+                api::SDL_TEXTEDITING => TextEditing {
                     timestamp: event.edit.timestamp,
                     window_id: event.edit.windowID,
                     text: CStr::from_ptr(&event.edit.text as *const i8)
@@ -951,17 +951,17 @@ impl From<api::SDL_Event> for Event {
                         .into(),
                     start: event.edit.start as usize,
                 },
-                api::SDL_EventType_SDL_TEXTINPUT => TextInput {
+                api::SDL_TEXTINPUT => TextInput {
                     timestamp: event.edit.timestamp,
                     window_id: event.edit.windowID,
                     text: CStr::from_ptr(&event.edit.text as *const i8)
                         .to_string_lossy()
                         .into(),
                 },
-                api::SDL_EventType_SDL_KEYMAPCHANGED => KeyMapChanged {
+                api::SDL_KEYMAPCHANGED => KeyMapChanged {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_MOUSEMOTION => MouseMotion {
+                api::SDL_MOUSEMOTION => MouseMotion {
                     timestamp: event.motion.timestamp,
                     window_id: event.motion.windowID,
                     which: MouseID(event.motion.which),
@@ -971,7 +971,7 @@ impl From<api::SDL_Event> for Event {
                     x_relative: event.motion.xrel,
                     y_relative: event.motion.yrel,
                 },
-                api::SDL_EventType_SDL_MOUSEBUTTONDOWN => MouseButtonDown {
+                api::SDL_MOUSEBUTTONDOWN => MouseButtonDown {
                     timestamp: event.button.timestamp,
                     window_id: event.button.windowID,
                     which: MouseID(event.button.which),
@@ -979,7 +979,7 @@ impl From<api::SDL_Event> for Event {
                     x: event.button.x,
                     y: event.button.y,
                 },
-                api::SDL_EventType_SDL_MOUSEBUTTONUP => MouseButtonUp {
+                api::SDL_MOUSEBUTTONUP => MouseButtonUp {
                     timestamp: event.button.timestamp,
                     window_id: event.button.windowID,
                     which: MouseID(event.button.which),
@@ -987,88 +987,84 @@ impl From<api::SDL_Event> for Event {
                     x: event.button.x,
                     y: event.button.y,
                 },
-                api::SDL_EventType_SDL_MOUSEWHEEL => MouseWheel {
+                api::SDL_MOUSEWHEEL => MouseWheel {
                     timestamp: event.wheel.timestamp,
                     window_id: event.wheel.windowID,
                     which: MouseID(event.wheel.which),
                     x: event.wheel.x,
                     y: event.wheel.y,
                     direction: match event.wheel.direction {
-                        api::SDL_MouseWheelDirection_SDL_MOUSEWHEEL_FLIPPED => {
-                            MouseWheelDirection::Flipped
-                        }
-                        api::SDL_MouseWheelDirection_SDL_MOUSEWHEEL_NORMAL => {
-                            MouseWheelDirection::Normal
-                        }
+                        api::SDL_MOUSEWHEEL_FLIPPED => MouseWheelDirection::Flipped,
+                        api::SDL_MOUSEWHEEL_NORMAL => MouseWheelDirection::Normal,
                         _ => panic!("unimplemented mouse wheel direction"),
                     },
                 },
-                api::SDL_EventType_SDL_JOYAXISMOTION => JoystickAxisMotion {
+                api::SDL_JOYAXISMOTION => JoystickAxisMotion {
                     timestamp: event.jaxis.timestamp,
                     which: JoystickID::from_sdl(event.jaxis.which).unwrap(),
                     axis: event.jaxis.axis,
                     value: event.jaxis.value,
                 },
-                api::SDL_EventType_SDL_JOYBALLMOTION => JoystickBallMotion {
+                api::SDL_JOYBALLMOTION => JoystickBallMotion {
                     timestamp: event.jball.timestamp,
                     which: JoystickID::from_sdl(event.jball.which).unwrap(),
                     ball: event.jball.ball,
                     x_relative: event.jball.xrel,
                     y_relative: event.jball.yrel,
                 },
-                api::SDL_EventType_SDL_JOYHATMOTION => JoystickHatMotion {
+                api::SDL_JOYHATMOTION => JoystickHatMotion {
                     timestamp: event.jhat.timestamp,
                     which: JoystickID::from_sdl(event.jhat.which).unwrap(),
                     hat: event.jhat.hat,
                     value: JoystickHatDirection::from_sdl(event.jhat.value),
                 },
-                api::SDL_EventType_SDL_JOYBUTTONDOWN => JoystickButtonDown {
+                api::SDL_JOYBUTTONDOWN => JoystickButtonDown {
                     timestamp: event.jbutton.timestamp,
                     which: JoystickID::from_sdl(event.jbutton.which).unwrap(),
                     button: event.jbutton.button,
                 },
-                api::SDL_EventType_SDL_JOYBUTTONUP => JoystickButtonUp {
+                api::SDL_JOYBUTTONUP => JoystickButtonUp {
                     timestamp: event.jbutton.timestamp,
                     which: JoystickID::from_sdl(event.jbutton.which).unwrap(),
                     button: event.jbutton.button,
                 },
-                api::SDL_EventType_SDL_JOYDEVICEADDED => JoystickDeviceAdded {
+                api::SDL_JOYDEVICEADDED => JoystickDeviceAdded {
                     timestamp: event.jdevice.timestamp,
                     which: event.jdevice.which,
                 },
-                api::SDL_EventType_SDL_JOYDEVICEREMOVED => JoystickDeviceRemoved {
+                api::SDL_JOYDEVICEREMOVED => JoystickDeviceRemoved {
                     timestamp: event.jdevice.timestamp,
                     which: JoystickID::from_sdl(event.jdevice.which).unwrap(),
                 },
-                api::SDL_EventType_SDL_CONTROLLERAXISMOTION => ControllerAxisMotion {
+                api::SDL_CONTROLLERAXISMOTION => ControllerAxisMotion {
                     timestamp: event.caxis.timestamp,
                     which: JoystickID::from_sdl(event.caxis.which).unwrap(),
                     axis: event.caxis.axis,
                     value: event.caxis.value,
                 },
-                api::SDL_EventType_SDL_CONTROLLERBUTTONDOWN => ControllerButtonDown {
+                api::SDL_CONTROLLERBUTTONDOWN => ControllerButtonDown {
                     timestamp: event.cbutton.timestamp,
                     which: JoystickID::from_sdl(event.cbutton.which).unwrap(),
                     button: event.cbutton.button,
                 },
-                api::SDL_EventType_SDL_CONTROLLERBUTTONUP => ControllerButtonUp {
+                api::SDL_CONTROLLERBUTTONUP => ControllerButtonUp {
                     timestamp: event.cbutton.timestamp,
                     which: JoystickID::from_sdl(event.cbutton.which).unwrap(),
                     button: event.cbutton.button,
                 },
-                api::SDL_EventType_SDL_CONTROLLERDEVICEADDED => ControllerDeviceAdded {
+                api::SDL_CONTROLLERDEVICEADDED => ControllerDeviceAdded {
                     timestamp: event.cdevice.timestamp,
                     which: event.cdevice.which,
                 },
-                api::SDL_EventType_SDL_CONTROLLERDEVICEREMOVED => ControllerDeviceRemoved {
+                api::SDL_CONTROLLERDEVICEREMOVED => ControllerDeviceRemoved {
                     timestamp: event.cdevice.timestamp,
                     which: JoystickID::from_sdl(event.cdevice.which).unwrap(),
                 },
-                api::SDL_EventType_SDL_CONTROLLERDEVICEREMAPPED => ControllerDeviceRemapped {
+                api::SDL_CONTROLLERDEVICEREMAPPED => ControllerDeviceRemapped {
                     timestamp: event.cdevice.timestamp,
                     which: JoystickID::from_sdl(event.cdevice.which).unwrap(),
                 },
-                api::SDL_EventType_SDL_FINGERDOWN => FingerDown {
+                api::SDL_FINGERDOWN => FingerDown {
                     timestamp: event.tfinger.timestamp,
                     touch_id: event.tfinger.touchId,
                     finger_id: event.tfinger.fingerId,
@@ -1076,7 +1072,7 @@ impl From<api::SDL_Event> for Event {
                     y: event.tfinger.y,
                     pressure: event.tfinger.pressure,
                 },
-                api::SDL_EventType_SDL_FINGERUP => FingerUp {
+                api::SDL_FINGERUP => FingerUp {
                     timestamp: event.tfinger.timestamp,
                     touch_id: event.tfinger.touchId,
                     finger_id: event.tfinger.fingerId,
@@ -1084,7 +1080,7 @@ impl From<api::SDL_Event> for Event {
                     y: event.tfinger.y,
                     pressure: event.tfinger.pressure,
                 },
-                api::SDL_EventType_SDL_FINGERMOTION => FingerMotion {
+                api::SDL_FINGERMOTION => FingerMotion {
                     timestamp: event.tfinger.timestamp,
                     touch_id: event.tfinger.touchId,
                     finger_id: event.tfinger.fingerId,
@@ -1094,7 +1090,7 @@ impl From<api::SDL_Event> for Event {
                     dy: event.tfinger.dy,
                     pressure: event.tfinger.pressure,
                 },
-                api::SDL_EventType_SDL_DOLLARGESTURE => DollarGesture {
+                api::SDL_DOLLARGESTURE => DollarGesture {
                     timestamp: event.dgesture.timestamp,
                     touch_id: event.dgesture.touchId,
                     gesture_id: event.dgesture.gestureId,
@@ -1103,12 +1099,12 @@ impl From<api::SDL_Event> for Event {
                     y: event.dgesture.y,
                     finger_count: event.dgesture.numFingers,
                 },
-                api::SDL_EventType_SDL_DOLLARRECORD => DollarRecord {
+                api::SDL_DOLLARRECORD => DollarRecord {
                     timestamp: event.dgesture.timestamp,
                     touch_id: event.dgesture.touchId,
                     gesture_id: event.dgesture.gestureId,
                 },
-                api::SDL_EventType_SDL_MULTIGESTURE => MultiGesture {
+                api::SDL_MULTIGESTURE => MultiGesture {
                     timestamp: event.mgesture.timestamp,
                     touch_id: event.mgesture.touchId,
                     delta_distance: event.mgesture.dDist,
@@ -1117,46 +1113,44 @@ impl From<api::SDL_Event> for Event {
                     y: event.mgesture.y,
                     finger_count: event.mgesture.numFingers as u32,
                 },
-                api::SDL_EventType_SDL_CLIPBOARDUPDATE => ClipboardUpdate {
+                api::SDL_CLIPBOARDUPDATE => ClipboardUpdate {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_DROPFILE => DropFile {
+                api::SDL_DROPFILE => DropFile {
                     timestamp: event.drop.timestamp,
                     window_id: event.drop.windowID,
                     file: owned_c_string_to_string(event.drop.file),
                 },
-                api::SDL_EventType_SDL_DROPTEXT => DropText {
+                api::SDL_DROPTEXT => DropText {
                     timestamp: event.drop.timestamp,
                     window_id: event.drop.windowID,
                     text: owned_c_string_to_string(event.drop.file),
                 },
-                api::SDL_EventType_SDL_DROPBEGIN => DropBegin {
+                api::SDL_DROPBEGIN => DropBegin {
                     timestamp: event.drop.timestamp,
                     window_id: event.drop.windowID,
                 },
-                api::SDL_EventType_SDL_DROPCOMPLETE => DropComplete {
+                api::SDL_DROPCOMPLETE => DropComplete {
                     timestamp: event.drop.timestamp,
                     window_id: event.drop.windowID,
                 },
-                api::SDL_EventType_SDL_AUDIODEVICEADDED => AudioDeviceAdded {
+                api::SDL_AUDIODEVICEADDED => AudioDeviceAdded {
                     timestamp: event.adevice.timestamp,
                     device_index: event.adevice.which,
                     is_capture: event.adevice.iscapture != 0,
                 },
-                api::SDL_EventType_SDL_AUDIODEVICEREMOVED => AudioDeviceRemoved {
+                api::SDL_AUDIODEVICEREMOVED => AudioDeviceRemoved {
                     timestamp: event.adevice.timestamp,
                     device_id: event.adevice.which,
                     is_capture: event.adevice.iscapture != 0,
                 },
-                api::SDL_EventType_SDL_RENDER_TARGETS_RESET => RenderTargetsReset {
+                api::SDL_RENDER_TARGETS_RESET => RenderTargetsReset {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_RENDER_DEVICE_RESET => RenderDeviceReset {
+                api::SDL_RENDER_DEVICE_RESET => RenderDeviceReset {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_EventType_SDL_USEREVENT..=api::SDL_EventType_SDL_LASTEVENT => {
-                    User(event.user)
-                }
+                api::SDL_USEREVENT..=api::SDL_LASTEVENT => User(event.user),
                 _ => panic!("unknown SDL event type"),
             }
         }

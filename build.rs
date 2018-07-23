@@ -6,21 +6,39 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rustc-link-lib=SDL2");
     println!("cargo:rustc-link-lib=SDL2main");
-    println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=sdl-wrapper.h");
+    println!("cargo:rerun-if-changed=vulkan-wrapper.h");
     let bindings = bindgen::Builder::default()
-        .header("wrapper.h")
+        .header("sdl-wrapper.h")
         .clang_arg("-I/usr/include/SDL2")
         .clang_arg("-D_REENTRANT")
         .whitelist_function("SDL_.*")
         .whitelist_type("SDL_.*")
         .whitelist_var("SDL_.*")
+        .whitelist_var("KMOD_.*")
+        .whitelist_var("SDLK_.*")
         .blacklist_type("VkSurfaceKHR.*")
         .raw_line("pub type VkSurfaceKHR = u64;")
         .opaque_type("FILE")
+        .rustfmt_bindings(true)
+        .prepend_enum_name(false)
         .generate()
-        .expect("Unable to generate bindings");
+        .expect("Unable to generate sdl bindings");
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+        .write_to_file(out_path.join("sdl-bindings.rs"))
+        .expect("Couldn't write sdl bindings!");
+    let bindings = bindgen::Builder::default()
+        .header("vulkan-wrapper.h")
+        .whitelist_type("Vk.*")
+        .whitelist_type("PFN_vk.*")
+        .whitelist_var("VK_.*")
+        .rustfmt_bindings(true)
+        .prepend_enum_name(false)
+        .generate()
+        .expect("Unable to generate vulkan bindings");
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("vulkan-bindings.rs"))
+        .expect("Couldn't write vulkan bindings!");
 }

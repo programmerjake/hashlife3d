@@ -5,27 +5,38 @@ use std::ptr::null_mut;
 
 pub struct Window(*mut api::SDL_Window);
 
+unsafe impl Sync for Window {}
+
 impl Window {
-    pub fn with_position<T: Into<String>>(title: T, x: i32, y: i32, w: u32, h: u32) -> Self {
-        let flags = api::SDL_WindowFlags_SDL_WINDOW_VULKAN;
+    pub fn new<T: Into<String>>(
+        title: T,
+        position: Option<(i32, i32)>,
+        size: (u32, u32),
+        flags: u32,
+    ) -> Self {
         let title = title.into();
         let title = CString::new(title).unwrap();
+        let position = match position {
+            Some(position) => position,
+            None => (
+                api::SDL_WINDOWPOS_UNDEFINED as i32,
+                api::SDL_WINDOWPOS_UNDEFINED as i32,
+            ),
+        };
         unsafe {
-            let window = api::SDL_CreateWindow(title.as_ptr(), x, y, w as c_int, h as c_int, flags);
+            let window = api::SDL_CreateWindow(
+                title.as_ptr(),
+                position.0,
+                position.1,
+                size.0 as c_int,
+                size.1 as c_int,
+                flags,
+            );
             if window == null_mut() {
-                panic!("SDL_CreateWindow failed: {}", super::get_error_message());
+                panic!("SDL_CreateWindow failed: {}", super::get_error());
             }
             Window(window)
         }
-    }
-    pub fn new<T: Into<String>>(title: T, w: u32, h: u32) -> Self {
-        Self::with_position(
-            title,
-            api::SDL_WINDOWPOS_UNDEFINED as i32,
-            api::SDL_WINDOWPOS_UNDEFINED as i32,
-            w,
-            h,
-        )
     }
     pub fn get(&self) -> *mut api::SDL_Window {
         self.0

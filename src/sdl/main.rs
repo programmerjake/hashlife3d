@@ -30,7 +30,7 @@ pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
             env::set_var("RUST_BACKTRACE", "1");
         }
         if api::SDL_Init(api::SDL_INIT_VIDEO) != 0 {
-            panic!("SDL_Init failed: {}", super::get_error_message());
+            panic!("SDL_Init failed: {}", super::get_error());
         }
         let sdl = CallOnDrop::new(|| api::SDL_Quit());
         let retval = ::rust_main(&super::event::make_event_source());

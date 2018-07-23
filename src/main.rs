@@ -1,13 +1,16 @@
 #![no_main]
 #![feature(termination_trait_lib)]
+#![feature(concat_idents)]
 extern crate libc;
 mod hashtable;
+mod renderer;
 mod sdl;
 mod world3d;
 pub use self::sdl::SDL_main;
+use renderer::*;
 use sdl::event::Event;
-use world3d::{State, World};
 use std::mem;
+use world3d::{State, World};
 
 #[no_mangle]
 #[cfg(
@@ -84,14 +87,15 @@ fn rust_main(event_source: &sdl::event::EventSource) {
         }
     });
     {
-        let window = sdl::window::Window::new("Title", 640, 480);
+        let device_factory = renderer::vulkan::VulkanDeviceFactory::new(event_source);
+        let device = device_factory.create("Title", None, (640, 480), 0).unwrap();
         loop {
             match event_source.next() {
                 Event::Quit { .. } => break,
                 event => println!("unhandled event: {:?}", event),
             }
         }
-        mem::drop(window);
+        mem::drop(device);
     }
     world_thread.join().unwrap()
 }
