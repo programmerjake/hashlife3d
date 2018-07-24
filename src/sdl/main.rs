@@ -2,9 +2,9 @@ use super::api;
 use libc::c_char;
 use libc::c_int;
 use std::env;
+use std::mem::drop;
 use std::panic::catch_unwind;
 use std::process::Termination;
-use std::mem::drop;
 
 struct CallOnDrop<F: FnOnce()> {
     f: Option<F>,

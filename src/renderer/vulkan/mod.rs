@@ -46,7 +46,9 @@ impl Drop for VulkanFence {
     }
 }
 
-pub struct VulkanQueue {}
+pub struct VulkanQueue {
+    queue: api::VkQueue,
+}
 
 impl Queue for VulkanQueue {}
 
@@ -55,6 +57,9 @@ struct InstanceFunctions {
     vkGetInstanceProcAddr: api::PFN_vkGetInstanceProcAddr,
     vkCreateInstance: api::PFN_vkCreateInstance,
 }
+
+unsafe impl Sync for InstanceFunctions {}
+unsafe impl Send for InstanceFunctions {}
 
 pub unsafe fn get_instance_fn(
     vk_get_instance_proc_addr: api::PFN_vkGetInstanceProcAddr,
@@ -117,6 +122,7 @@ struct InstanceWrapper {
 }
 
 unsafe impl Send for InstanceWrapper {}
+
 unsafe impl Sync for InstanceWrapper {}
 
 impl InstanceWrapper {
@@ -236,7 +242,11 @@ struct DeviceWrapper {
     vkWaitForFences: api::PFN_vkWaitForFences,
     vkCreateFence: api::PFN_vkCreateFence,
     vkDestroyFence: api::PFN_vkDestroyFence,
+    vkGetDeviceQueue: api::PFN_vkGetDeviceQueue,
 }
+
+unsafe impl Sync for DeviceWrapper {}
+unsafe impl Send for DeviceWrapper {}
 
 impl DeviceWrapper {
     pub unsafe fn new(
@@ -289,6 +299,11 @@ impl DeviceWrapper {
                     ),
                     vkCreateFence: get_device_fn!(vk_get_device_proc_addr, device, vkCreateFence),
                     vkDestroyFence: get_device_fn!(vk_get_device_proc_addr, device, vkDestroyFence),
+                    vkGetDeviceQueue: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkGetDeviceQueue
+                    ),
                 })
             }
             result => Err(VulkanError::VulkanError(result)),
@@ -306,7 +321,7 @@ impl Drop for DeviceWrapper {
 }
 
 struct SurfaceWrapper {
-    window: Window,
+    window: sdl::window::Window,
     instance: Arc<InstanceWrapper>,
     surface: api::VkSurfaceKHR,
 }
@@ -324,7 +339,7 @@ impl Drop for SurfaceWrapper {
 }
 
 impl SurfaceWrapper {
-    unsafe fn new(window: Window, instance: Arc<InstanceWrapper>) -> Result<Self> {
+    unsafe fn new(window: sdl::window::Window, instance: Arc<InstanceWrapper>) -> Result<Self> {
         let mut surface = 0;
         if sdl::api::SDL_Vulkan_CreateSurface(
             window.get(),
@@ -343,14 +358,17 @@ impl SurfaceWrapper {
     }
 }
 
-pub struct VulkanDevice {
+#[derive(Clone)]
+pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
-    surface: Arc<SurfaceWrapper>,
-    queue: VulkanQueue,
-    present_queue: VulkanQueue,
 }
 
-unsafe impl Sync for VulkanDevice {}
+pub struct VulkanDevice {
+    device_reference: VulkanDeviceReference,
+    surface: Arc<SurfaceWrapper>,
+    queue: VulkanQueue,
+    present_queue: api::VkQueue,
+}
 
 fn get_wait_timeout(duration: Duration) -> u64 {
     if duration > Duration::from_nanos(u64::MAX) {
@@ -425,14 +443,10 @@ impl Error for VulkanError {}
 
 pub type Result<T> = result::Result<T, VulkanError>;
 
-impl Device for VulkanDevice {
+impl DeviceReference for VulkanDeviceReference {
     type Semaphore = VulkanSemaphore;
     type Fence = VulkanFence;
-    type Queue = VulkanQueue;
     type Error = VulkanError;
-    fn get_window(&self) -> &Window {
-        &self.surface.window
-    }
     fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
         let mut fence = 0;
         match unsafe {
@@ -457,6 +471,17 @@ impl Device for VulkanDevice {
             result => Err(VulkanError::VulkanError(result)),
         }
     }
+}
+
+impl Device for VulkanDevice {
+    type Reference = VulkanDeviceReference;
+    type Queue = VulkanQueue;
+    fn get_window(&self) -> &sdl::window::Window {
+        &self.surface.window
+    }
+    fn get_device_ref(&self) -> VulkanDeviceReference {
+        self.device_reference.clone()
+    }
     fn get_queue(&self) -> &VulkanQueue {
         &self.queue
     }
@@ -472,8 +497,8 @@ impl Device for VulkanDevice {
         }
         assert_eq!(final_fences.len() as u32 as usize, final_fences.len());
         unsafe {
-            match self.device.vkWaitForFences.unwrap()(
-                self.device.device,
+            match self.device_reference.device.vkWaitForFences.unwrap()(
+                self.device_reference.device.device,
                 final_fences.len() as u32,
                 final_fences.as_ptr(),
                 wait_for_all as api::VkBool32,
@@ -705,7 +730,35 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                             None,
                         )
                     }?;
-                    unimplemented!();
+                    let mut present_queue = null_mut();
+                    let mut render_queue = null_mut();
+                    unsafe {
+                        device.vkGetDeviceQueue.unwrap()(
+                            device.device,
+                            present_queue_index,
+                            0,
+                            &mut present_queue,
+                        )
+                    };
+                    unsafe {
+                        device.vkGetDeviceQueue.unwrap()(
+                            device.device,
+                            render_queue_index,
+                            0,
+                            &mut render_queue,
+                        )
+                    };
+                    let render_queue = VulkanQueue {
+                        queue: render_queue,
+                    };
+                    return Ok(VulkanDevice {
+                        device_reference: VulkanDeviceReference {
+                            device: Arc::new(device),
+                        },
+                        surface: Arc::new(surface),
+                        queue: render_queue,
+                        present_queue: present_queue,
+                    });
                 }
                 _ => continue,
             }

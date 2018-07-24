@@ -9,6 +9,7 @@ mod world3d;
 pub use self::sdl::SDL_main;
 use renderer::*;
 use sdl::event::Event;
+use std::error;
 use std::mem;
 use world3d::{State, World};
 
@@ -86,16 +87,48 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             }
         }
     });
-    {
-        let device_factory = renderer::vulkan::VulkanDeviceFactory::new(event_source);
-        let device = device_factory.create("Title", None, (640, 480), 0).unwrap();
-        loop {
-            match event_source.next() {
-                Event::Quit { .. } => break,
-                event => println!("unhandled event: {:?}", event),
+    struct MainLoop {}
+    impl renderer::MainLoop for MainLoop {
+        fn startup<DF: renderer::DeviceFactory>(
+            &self,
+            device_factory: DF,
+        ) -> Result<DF::Device, Box<error::Error>> {
+            device_factory
+                .create("", None, (640, 480), 0)
+                .map_err(|v| Box::new(v).into())
+        }
+        fn main_loop<D: renderer::Device>(self, device: D, event_source: &sdl::event::EventSource) {
+            loop {
+                match event_source.next() {
+                    Event::Quit { .. } => break,
+                    event => println!("unhandled event: {:?}", event),
+                }
+            }
+            mem::drop(device);
+        }
+    }
+    struct BackendVisitor<'a> {
+        main_loop: Option<MainLoop>,
+        event_source: &'a sdl::event::EventSource,
+    }
+    impl<'a> renderer::BackendVisitor for BackendVisitor<'a> {
+        fn visit<B: Backend>(&mut self, backend: B) -> renderer::BackendVisitorResult {
+            eprintln!("starting using {}", backend.get_name());
+            match backend.run_main_loop(self.main_loop.take().unwrap(), self.event_source) {
+                renderer::BackendRunResult::StartupFailed { error, main_loop } => {
+                    self.main_loop = Some(main_loop);
+                    eprintln!("starting using {} failed: {}", backend.get_name(), error);
+                    renderer::BackendVisitorResult::Continue
+                }
+                renderer::BackendRunResult::RanMainLoop => renderer::BackendVisitorResult::Break,
             }
         }
-        mem::drop(device);
+    }
+    if let BackendVisitorResult::Continue = renderer::for_each_backend(&mut BackendVisitor {
+        main_loop: Some(MainLoop {}),
+        event_source: event_source,
+    }) {
+        panic!("all graphics backends failed to start");
     }
     world_thread.join().unwrap()
 }
