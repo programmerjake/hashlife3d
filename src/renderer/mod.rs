@@ -1,5 +1,5 @@
-pub mod gles2;
-pub mod vulkan;
+mod gles2;
+mod vulkan;
 use super::sdl;
 use std::error;
 use std::time::Duration;
@@ -28,9 +28,18 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
 }
 
-pub trait Device {
+pub trait PausedDevice {
+    fn get_window(&self) -> &sdl::window::Window;
+}
+
+pub trait Device: Sized {
     type Reference: DeviceReference;
     type Queue: Queue;
+    type PausedDevice: PausedDevice;
+    fn pause(self) -> Self::PausedDevice;
+    fn resume(
+        paused_device: Self::PausedDevice,
+    ) -> Result<Self, <Self::Reference as DeviceReference>::Error>;
     fn get_window(&self) -> &sdl::window::Window;
     fn get_device_ref(&self) -> Self::Reference;
     fn get_queue(&self) -> &Self::Queue;
@@ -122,6 +131,7 @@ pub enum BackendRunResult<ML: MainLoop> {
 
 pub trait Backend {
     fn get_name(&self) -> &'static str;
+    fn get_title(&self) -> &'static str;
     fn run_main_loop<ML: MainLoop>(
         &self,
         main_loop: ML,
@@ -138,13 +148,16 @@ pub trait BackendVisitor {
     fn visit<B: Backend>(&mut self, backend: B) -> BackendVisitorResult;
 }
 
-pub fn for_each_backend<BV: BackendVisitor>(backend_visitor: &mut BV)->BackendVisitorResult {
+pub fn for_each_backend<BV: BackendVisitor>(backend_visitor: &mut BV) -> BackendVisitorResult {
     macro_rules! visit_backend {
-        ($device_factory:ty, $name:expr) => {{
+        ($device_factory:ty, $name:expr, $title:expr) => {{
             struct BackendStruct {}
             impl Backend for BackendStruct {
                 fn get_name(&self) -> &'static str {
                     $name
+                }
+                fn get_title(&self) -> &'static str {
+                    $title
                 }
                 fn run_main_loop<ML: MainLoop>(
                     &self,
@@ -168,7 +181,7 @@ pub fn for_each_backend<BV: BackendVisitor>(backend_visitor: &mut BV)->BackendVi
             }
         }};
     }
-    visit_backend!(self::vulkan::VulkanDeviceFactory, "Vulkan");
-    visit_backend!(self::gles2::GLES2DeviceFactory, "OpenGL ES 2.0");
+    visit_backend!(self::vulkan::VulkanDeviceFactory, "vulkan", "Vulkan");
+    visit_backend!(self::gles2::GLES2DeviceFactory, "gles2", "OpenGL ES 2.0");
     BackendVisitorResult::Continue
 }

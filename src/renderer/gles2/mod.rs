@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use std::fmt;
 use std::mem;
 use std::os::raw::*;
+use std::ptr::*;
 use std::result;
 
 #[allow(dead_code)]
@@ -12,25 +13,11 @@ use std::result;
 #[allow(non_camel_case_types)]
 #[allow(non_snake_case)]
 mod api {
-    pub type khronos_int8_t = i8;
-    pub type khronos_uint8_t = u8;
-    pub type khronos_int16_t = i16;
-    pub type khronos_uint16_t = u16;
-    pub type khronos_int32_t = i32;
-    pub type khronos_uint32_t = u32;
-    pub type khronos_int64_t = i64;
-    pub type khronos_uint64_t = u64;
-    pub type khronos_intptr_t = isize;
-    pub type khronos_uintptr_t = usize;
-    pub type khronos_ssize_t = isize;
-    pub type khronos_usize_t = usize;
-    pub type khronos_float_t = f32;
-    pub type khronos_utime_nanoseconds_t = khronos_uint64_t;
-    pub type khronos_stime_nanoseconds_t = khronos_int64_t;
     include!(concat!(env!("OUT_DIR"), "/gles2-bindings.rs"));
 }
 
 #[allow(non_snake_case)]
+#[allow(dead_code)]
 pub struct Api {
     pub glActiveTexture: api::PFNGLACTIVETEXTUREPROC,
     pub glAttachShader: api::PFNGLATTACHSHADERPROC,
@@ -386,6 +373,12 @@ pub enum GLES2Error {
     SDLError(sdl::SDLError),
 }
 
+impl From<sdl::SDLError> for GLES2Error {
+    fn from(v: sdl::SDLError) -> Self {
+        GLES2Error::SDLError(v)
+    }
+}
+
 impl fmt::Display for GLES2Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -420,22 +413,53 @@ impl DeviceReference for GLES2DeviceReference {
     }
 }
 
+struct SurfaceState {
+    window: sdl::window::Window,
+}
+
+pub struct GLES2PausedDevice {
+    surface_state: SurfaceState,
+}
+
 pub struct GLES2Device {
     device_reference: GLES2DeviceReference,
-    window: sdl::window::Window,
+    surface_state: SurfaceState,
     render_queue: GLES2Queue,
 }
 
 pub type Result<T> = result::Result<T, GLES2Error>;
 
+impl PausedDevice for GLES2PausedDevice {
+    fn get_window(&self) -> &sdl::window::Window {
+        &self.surface_state.window
+    }
+}
+
 impl Device for GLES2Device {
     type Reference = GLES2DeviceReference;
     type Queue = GLES2Queue;
+    type PausedDevice = GLES2PausedDevice;
+    fn pause(self) -> GLES2PausedDevice {
+        GLES2PausedDevice {
+            surface_state: self.surface_state,
+        }
+    }
+    fn resume(paused_device: GLES2PausedDevice) -> Result<Self> {
+        let SurfaceState { window } = paused_device.surface_state;
+        unsafe {
+            set_gl_attributes()?;
+        }
+        Ok(GLES2Device {
+            device_reference: GLES2DeviceReference {},
+            surface_state: SurfaceState { window: window },
+            render_queue: GLES2Queue {},
+        })
+    }
     fn get_device_ref(&self) -> GLES2DeviceReference {
         self.device_reference.clone()
     }
     fn get_window(&self) -> &sdl::window::Window {
-        &self.window
+        &self.surface_state.window
     }
     fn get_queue(&self) -> &GLES2Queue {
         &self.render_queue
@@ -458,6 +482,24 @@ impl<'a> GLES2DeviceFactory<'a> {
     }
 }
 
+unsafe fn set_gl_attributes() -> Result<()> {
+    macro_rules! sdl_gl_set_attribute {
+        ($which:ident, $value:expr) => {
+            if sdl::api::SDL_GL_SetAttribute(sdl::api::$which, $value) != 0 {
+                return Err(sdl::get_error().into());
+            }
+        };
+    }
+    sdl::api::SDL_GL_ResetAttributes();
+    sdl_gl_set_attribute!(
+        SDL_GL_CONTEXT_PROFILE_MASK,
+        sdl::api::SDL_GL_CONTEXT_PROFILE_ES as c_int
+    );
+    sdl_gl_set_attribute!(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    sdl_gl_set_attribute!(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    Ok(())
+}
+
 impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
     type Device = GLES2Device;
     fn create<T: Into<String>>(
@@ -465,8 +507,22 @@ impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
         title: T,
         position: Option<(i32, i32)>,
         size: (u32, u32),
-        flags: u32,
+        mut flags: u32,
     ) -> Result<GLES2Device> {
-        unimplemented!()
+        assert_eq!(
+            flags & (sdl::api::SDL_WINDOW_OPENGL | sdl::api::SDL_WINDOW_VULKAN),
+            0
+        );
+        flags |= sdl::api::SDL_WINDOW_OPENGL;
+        if unsafe { sdl::api::SDL_GL_LoadLibrary(null()) } != 0 {
+            return Err(sdl::get_error().into());
+        }
+        unsafe {
+            set_gl_attributes()?;
+        }
+        let window = sdl::window::Window::new(title, position, size, flags)?;
+        GLES2Device::resume(GLES2PausedDevice {
+            surface_state: SurfaceState { window: window },
+        })
     }
 }

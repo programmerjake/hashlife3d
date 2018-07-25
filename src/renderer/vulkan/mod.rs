@@ -340,19 +340,19 @@ impl Drop for SurfaceWrapper {
 
 impl SurfaceWrapper {
     unsafe fn new(window: sdl::window::Window, instance: Arc<InstanceWrapper>) -> Result<Self> {
-        let mut surface = 0;
+        let mut surface = null_mut();
         if sdl::api::SDL_Vulkan_CreateSurface(
             window.get(),
             instance.instance as sdl::api::VkInstance,
             &mut surface,
         ) == 0
         {
-            Err(VulkanError::SDLError(sdl::get_error()))
+            Err(sdl::get_error().into())
         } else {
             Ok(Self {
                 window: window,
                 instance: instance,
-                surface: surface,
+                surface: surface as api::VkSurfaceKHR,
             })
         }
     }
@@ -363,9 +363,20 @@ pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
 }
 
+struct SurfaceState {
+    surface: SurfaceWrapper,
+    present_queue_index: u32,
+    render_queue_index: u32,
+    physical_device: api::VkPhysicalDevice,
+}
+
+pub struct VulkanPausedDevice {
+    surface_state: SurfaceState,
+}
+
 pub struct VulkanDevice {
     device_reference: VulkanDeviceReference,
-    surface: Arc<SurfaceWrapper>,
+    surface_state: SurfaceState,
     queue: VulkanQueue,
     present_queue: api::VkQueue,
 }
@@ -382,6 +393,12 @@ pub enum VulkanError {
     VulkanError(api::VkResult),
     SDLError(sdl::SDLError),
     NoMatchingPhysicalDevice,
+}
+
+impl From<sdl::SDLError> for VulkanError {
+    fn from(v: sdl::SDLError) -> Self {
+        VulkanError::SDLError(v)
+    }
 }
 
 impl fmt::Display for VulkanError {
@@ -473,11 +490,101 @@ impl DeviceReference for VulkanDeviceReference {
     }
 }
 
+impl PausedDevice for VulkanPausedDevice {
+    fn get_window(&self) -> &sdl::window::Window {
+        &self.surface_state.surface.window
+    }
+}
+
 impl Device for VulkanDevice {
     type Reference = VulkanDeviceReference;
     type Queue = VulkanQueue;
+    type PausedDevice = VulkanPausedDevice;
+    fn pause(self) -> VulkanPausedDevice {
+        VulkanPausedDevice {
+            surface_state: self.surface_state,
+        }
+    }
+    fn resume(paused_device: VulkanPausedDevice) -> Result<Self> {
+        let SurfaceState {
+            surface,
+            present_queue_index,
+            render_queue_index,
+            physical_device,
+        } = paused_device.surface_state;
+        let device_queue_create_infos = [
+            api::VkDeviceQueueCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                queueFamilyIndex: present_queue_index,
+                queueCount: 1,
+                pQueuePriorities: [0.0].as_ptr(),
+            },
+            api::VkDeviceQueueCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                queueFamilyIndex: render_queue_index,
+                queueCount: 1,
+                pQueuePriorities: [0.0].as_ptr(),
+            },
+        ];
+        let device_queue_create_infos = if present_queue_index == render_queue_index {
+            &device_queue_create_infos[0..1]
+        } else {
+            &device_queue_create_infos[0..2]
+        };
+        let device = unsafe {
+            DeviceWrapper::new(
+                surface.instance.clone(),
+                physical_device,
+                device_queue_create_infos,
+                &[
+                    CStr::from_bytes_with_nul(api::VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+                        .unwrap()
+                        .as_ptr(),
+                ],
+                None,
+            )
+        }?;
+        let mut present_queue = null_mut();
+        let mut render_queue = null_mut();
+        unsafe {
+            device.vkGetDeviceQueue.unwrap()(
+                device.device,
+                present_queue_index,
+                0,
+                &mut present_queue,
+            )
+        };
+        unsafe {
+            device.vkGetDeviceQueue.unwrap()(
+                device.device,
+                render_queue_index,
+                0,
+                &mut render_queue,
+            )
+        };
+        let render_queue = VulkanQueue {
+            queue: render_queue,
+        };
+        return Ok(VulkanDevice {
+            device_reference: VulkanDeviceReference {
+                device: Arc::new(device),
+            },
+            surface_state: SurfaceState {
+                surface: surface,
+                present_queue_index: present_queue_index,
+                render_queue_index: render_queue_index,
+                physical_device: physical_device,
+            },
+            queue: render_queue,
+            present_queue: present_queue,
+        });
+    }
     fn get_window(&self) -> &sdl::window::Window {
-        &self.surface.window
+        &self.surface_state.surface.window
     }
     fn get_device_ref(&self) -> VulkanDeviceReference {
         self.device_reference.clone()
@@ -535,9 +642,9 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         );
         flags |= sdl::api::SDL_WINDOW_VULKAN;
         if unsafe { sdl::api::SDL_Vulkan_LoadLibrary(null()) } != 0 {
-            return Err(VulkanError::SDLError(sdl::get_error()));
+            return Err(sdl::get_error().into());
         }
-        let window = sdl::window::Window::new(title, position, size, flags);
+        let window = sdl::window::Window::new(title, position, size, flags)?;
         let instance_functions =
             unsafe { InstanceFunctions::new(sdl::api::SDL_Vulkan_GetVkGetInstanceProcAddr()) };
         let mut extension_count = 0;
@@ -549,7 +656,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             )
         } == 0
         {
-            return Err(VulkanError::SDLError(sdl::get_error()));
+            return Err(sdl::get_error().into());
         }
         let mut extensions = Vec::new();
         extensions.resize(extension_count as usize, null());
@@ -561,7 +668,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             )
         } == 0
         {
-            return Err(VulkanError::SDLError(sdl::get_error()));
+            return Err(sdl::get_error().into());
         }
         let layers = [];
         let instance = unsafe {
@@ -667,7 +774,8 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 result => return Err(VulkanError::VulkanError(result)),
             }
             device_extensions.clear();
-            device_extensions.resize(device_extension_count as usize, unsafe { mem::zeroed() });
+            device_extensions
+                .resize_with(device_extension_count as usize, || unsafe { mem::zeroed() });
             match unsafe {
                 instance.vkEnumerateDeviceExtensionProperties.unwrap()(
                     physical_device,
@@ -694,70 +802,13 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 has_swapchain_extension,
             ) {
                 (Some(present_queue_index), Some(render_queue_index), true) => {
-                    let device_queue_create_infos = [
-                        api::VkDeviceQueueCreateInfo {
-                            sType: api::VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                            pNext: null(),
-                            flags: 0,
-                            queueFamilyIndex: present_queue_index,
-                            queueCount: 1,
-                            pQueuePriorities: [0.0].as_ptr(),
+                    return VulkanDevice::resume(VulkanPausedDevice {
+                        surface_state: SurfaceState {
+                            surface: surface,
+                            present_queue_index: present_queue_index,
+                            render_queue_index: render_queue_index,
+                            physical_device: physical_device,
                         },
-                        api::VkDeviceQueueCreateInfo {
-                            sType: api::VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                            pNext: null(),
-                            flags: 0,
-                            queueFamilyIndex: render_queue_index,
-                            queueCount: 1,
-                            pQueuePriorities: [0.0].as_ptr(),
-                        },
-                    ];
-                    let device_queue_create_infos = if present_queue_index == render_queue_index {
-                        &device_queue_create_infos[0..1]
-                    } else {
-                        &device_queue_create_infos[0..2]
-                    };
-                    let device = unsafe {
-                        DeviceWrapper::new(
-                            instance,
-                            physical_device,
-                            device_queue_create_infos,
-                            &[
-                                CStr::from_bytes_with_nul(api::VK_KHR_SWAPCHAIN_EXTENSION_NAME)
-                                    .unwrap()
-                                    .as_ptr(),
-                            ],
-                            None,
-                        )
-                    }?;
-                    let mut present_queue = null_mut();
-                    let mut render_queue = null_mut();
-                    unsafe {
-                        device.vkGetDeviceQueue.unwrap()(
-                            device.device,
-                            present_queue_index,
-                            0,
-                            &mut present_queue,
-                        )
-                    };
-                    unsafe {
-                        device.vkGetDeviceQueue.unwrap()(
-                            device.device,
-                            render_queue_index,
-                            0,
-                            &mut render_queue,
-                        )
-                    };
-                    let render_queue = VulkanQueue {
-                        queue: render_queue,
-                    };
-                    return Ok(VulkanDevice {
-                        device_reference: VulkanDeviceReference {
-                            device: Arc::new(device),
-                        },
-                        surface: Arc::new(surface),
-                        queue: render_queue,
-                        present_queue: present_queue,
                     });
                 }
                 _ => continue,

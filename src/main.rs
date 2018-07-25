@@ -1,6 +1,7 @@
 #![no_main]
 #![feature(termination_trait_lib)]
 #![feature(concat_idents)]
+#![feature(vec_resize_with)]
 extern crate libc;
 mod hashtable;
 mod renderer;
@@ -97,14 +98,26 @@ fn rust_main(event_source: &sdl::event::EventSource) {
                 .create("", None, (640, 480), 0)
                 .map_err(|v| Box::new(v).into())
         }
-        fn main_loop<D: renderer::Device>(self, device: D, event_source: &sdl::event::EventSource) {
+        fn main_loop<D: renderer::Device>(self, mut device: D, event_source: &sdl::event::EventSource) {
             loop {
                 match event_source.next() {
-                    Event::Quit { .. } => break,
+                    Event::WindowHidden { .. } => {
+                        let paused_device = device.pause();
+                        loop {
+                            match event_source.next() {
+                                Event::Quit { .. } => return,
+                                Event::WindowShown { .. } => {
+                                    device = renderer::Device::resume(paused_device).unwrap();
+                                    break;
+                                }
+                                event => println!("unhandled event while paused: {:?}", event),
+                            }
+                        }
+                    }
+                    Event::Quit { .. } => return,
                     event => println!("unhandled event: {:?}", event),
                 }
             }
-            mem::drop(device);
         }
     }
     struct BackendVisitor<'a> {
@@ -113,11 +126,11 @@ fn rust_main(event_source: &sdl::event::EventSource) {
     }
     impl<'a> renderer::BackendVisitor for BackendVisitor<'a> {
         fn visit<B: Backend>(&mut self, backend: B) -> renderer::BackendVisitorResult {
-            eprintln!("starting using {}", backend.get_name());
+            eprintln!("starting using {}", backend.get_title());
             match backend.run_main_loop(self.main_loop.take().unwrap(), self.event_source) {
                 renderer::BackendRunResult::StartupFailed { error, main_loop } => {
                     self.main_loop = Some(main_loop);
-                    eprintln!("starting using {} failed: {}", backend.get_name(), error);
+                    eprintln!("starting using {} failed: {}", backend.get_title(), error);
                     renderer::BackendVisitorResult::Continue
                 }
                 renderer::BackendRunResult::RanMainLoop => renderer::BackendVisitorResult::Break,

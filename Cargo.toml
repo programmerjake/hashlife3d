@@ -4,7 +4,8 @@ version = "0.1.0"
 authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
 [build-dependencies]
-bindgen = "0.37.4"
+bindgen = "0.29.1"
+pkg-config = "0.3.12"
 
 [dependencies]
 libc = "0.2"

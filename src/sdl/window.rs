@@ -13,7 +13,7 @@ impl Window {
         position: Option<(i32, i32)>,
         size: (u32, u32),
         flags: u32,
-    ) -> Self {
+    ) -> Result<Self, super::SDLError> {
         let title = title.into();
         let title = CString::new(title).unwrap();
         let position = match position {
@@ -33,9 +33,10 @@ impl Window {
                 flags,
             );
             if window == null_mut() {
-                panic!("SDL_CreateWindow failed: {}", super::get_error());
+                Err(super::get_error())
+            } else {
+                Ok(Window(window))
             }
-            Window(window)
         }
     }
     pub fn get(&self) -> *mut api::SDL_Window {
