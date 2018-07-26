@@ -162,6 +162,11 @@ macro_rules! impl_op_unary {
     };
 }
 
+pub trait Dot<RHS = Self> {
+    type Output;
+    fn dot(self, rhs: RHS) -> Self::Output;
+}
+
 macro_rules! make_vec {
     ($name:ident, $size:expr, ($($members:ident), *), $last_member:ident) => {
         #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash, Default)]
@@ -330,9 +335,35 @@ macro_rules! make_vec {
 
         impl_op_unary!($name, Neg, neg);
         impl_op_unary!($name, Not, not);
+
+        impl<R, T: Mul<R>> Dot<$name<R>> for $name<T> where T::Output: Add<Output = T::Output> {
+            type Output = <T::Output as Add>::Output;
+            fn dot(self, rhs: $name<R>) -> Self::Output {
+                self.mul(rhs).reduce(|a, b| a.add(b))
+            }
+        }
     };
 }
 
 make_vec!(Vec2, 2, (x), y);
 make_vec!(Vec3, 3, (x, y), z);
 make_vec!(Vec4, 4, (x, y, z), w);
+
+pub trait Cross<RHS = Self> {
+    type Output;
+    fn cross(self, rhs: RHS) -> Self::Output;
+}
+
+impl<R: Clone, T: Mul<R> + Clone> Cross<Vec3<R>> for Vec3<T>
+where
+    T::Output: Sub,
+{
+    type Output = Vec3<<T::Output as Sub>::Output>;
+    fn cross(self, rhs: Vec3<R>) -> Self::Output {
+        Vec3::new(
+            self.y.clone() * rhs.z.clone() - self.z.clone() * rhs.y.clone(),
+            self.z * rhs.x.clone() - self.x.clone() * rhs.z,
+            self.x * rhs.y - self.y * rhs.x,
+        )
+    }
+}
