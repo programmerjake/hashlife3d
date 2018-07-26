@@ -1,4 +1,5 @@
 mod gles2;
+pub mod math;
 mod vulkan;
 use super::sdl;
 use std::error;
