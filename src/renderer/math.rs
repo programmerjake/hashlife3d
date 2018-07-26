@@ -171,7 +171,7 @@ macro_rules! make_vec {
     ($name:ident, $size:expr, ($($members:ident), *), $last_member:ident) => {
         #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash, Default)]
         #[repr(C)]
-        pub struct $name<T> {
+        pub struct $name<T = f32> {
             $(pub $members: T,)*
             pub $last_member: T
         }
@@ -244,6 +244,12 @@ macro_rules! make_vec {
                     $($members: &mut self.$members,)*
                     $last_member: &mut self.$last_member
                 }
+            }
+            pub fn iter(&self) -> VecIter<&T> {
+                self.into_iter()
+            }
+            pub fn iter_mut(&mut self) -> VecIter<&mut T> {
+                self.into_iter()
             }
         }
 
@@ -364,6 +370,139 @@ where
             self.y.clone() * rhs.z.clone() - self.z.clone() * rhs.y.clone(),
             self.z * rhs.x.clone() - self.x.clone() * rhs.z,
             self.x * rhs.y - self.y * rhs.x,
+        )
+    }
+}
+
+/// Column-major 4x4 Matrix
+#[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash, Default)]
+#[repr(C)]
+pub struct Mat4<T = f32> {
+    pub c0: Vec4<T>,
+    pub c1: Vec4<T>,
+    pub c2: Vec4<T>,
+    pub c3: Vec4<T>,
+}
+
+impl<T> Mat4<T> {
+    pub fn new(c0: Vec4<T>, c1: Vec4<T>, c2: Vec4<T>, c3: Vec4<T>) -> Self {
+        Self {
+            c0: c0,
+            c1: c1,
+            c2: c2,
+            c3: c3,
+        }
+    }
+    pub fn transpose(self) -> Self {
+        let Self { c0, c1, c2, c3 } = self;
+        Self::new(
+            Vec4::new(c0.x, c1.x, c2.x, c3.x),
+            Vec4::new(c0.y, c1.y, c2.y, c3.y),
+            Vec4::new(c0.z, c1.z, c2.z, c3.z),
+            Vec4::new(c0.w, c1.w, c2.w, c3.w),
+        )
+    }
+}
+
+impl<T: Clone> Mat4<T> {
+    pub fn splat(value: T) -> Self {
+        Self::new(
+            Vec4::splat(value.clone()),
+            Vec4::splat(value.clone()),
+            Vec4::splat(value.clone()),
+            Vec4::splat(value),
+        )
+    }
+}
+
+pub trait Zero: Add + Sized {
+    fn zero() -> Self;
+}
+
+pub trait One: Mul + Sized {
+    fn one() -> Self;
+}
+
+macro_rules! impl_zero_one {
+    ($($types:ty)*) => {
+        $(
+            impl Zero for $types {
+                fn zero() -> $types {
+                    0 as $types
+                }
+            }
+
+            impl One for $types {
+                fn one() -> $types {
+                    1 as $types
+                }
+            }
+        )*
+    };
+}
+
+impl_zero_one!(u8 i8 u16 i16 u32 i32 u64 i64 f32 f64);
+
+impl<T: Zero + One> Mat4<T> {
+    pub fn identity() -> Self {
+        let zero = || Zero::zero();
+        let one = || One::one();
+        Self::new(
+            Vec4::new(one(), zero(), zero(), zero()),
+            Vec4::new(zero(), one(), zero(), zero()),
+            Vec4::new(zero(), zero(), one(), zero()),
+            Vec4::new(zero(), zero(), zero(), one()),
+        )
+    }
+}
+
+impl<T> Index<usize> for Mat4<T> {
+    type Output = Vec4<T>;
+    fn index(&self, index: usize) -> &Vec4<T> {
+        [&self.c0, &self.c1, &self.c2, &self.c3][index]
+    }
+}
+
+impl<T> IndexMut<usize> for Mat4<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Vec4<T> {
+        [&mut self.c0, &mut self.c1, &mut self.c2, &mut self.c3][index]
+    }
+}
+
+impl<L, R, O> Mul<Mat4<R>> for Mat4<L>
+where
+    L: Mul<R, Output = O> + Clone,
+    R: Clone,
+    O: Add<Output = O>,
+{
+    type Output = Mat4<O>;
+    fn mul(self, r: Mat4<R>) -> Mat4<O> {
+        let l = self.transpose();
+        Mat4::new(
+            Vec4::new(
+                l.c0.clone().dot(r.c0.clone()),
+                l.c1.clone().dot(r.c0.clone()),
+                l.c2.clone().dot(r.c0.clone()),
+                l.c3.clone().dot(r.c0),
+            ),
+            Vec4::new(
+                l.c0.clone().dot(r.c1.clone()),
+                l.c1.clone().dot(r.c1.clone()),
+                l.c2.clone().dot(r.c1.clone()),
+                l.c3.clone().dot(r.c1),
+            ),
+            Vec4::new(
+                l.c0.clone().dot(r.c2.clone()),
+                l.c1.clone().dot(r.c2.clone()),
+                l.c2.clone().dot(r.c2.clone()),
+                l.c3.clone().dot(r.c2),
+            ),
+            Vec4::new(
+                l.c0.dot(r.c3.clone()),
+                l.c1.dot(r.c3.clone()),
+                l.c2.dot(r.c3.clone()),
+                l.c3.dot(r.c3),
+            ),
         )
     }
 }
