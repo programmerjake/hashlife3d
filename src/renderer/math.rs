@@ -1,3 +1,5 @@
+//! vector and matrix types designed off of GLSL's vector and matrix types
+
 use std::fmt;
 use std::mem;
 use std::ops::*;
@@ -443,6 +445,18 @@ macro_rules! impl_zero_one {
 
 impl_zero_one!(u8 i8 u16 i16 u32 i32 u64 i64 f32 f64);
 
+impl<T: Zero> Mat4<T> {
+    pub fn zero() -> Self {
+        let zero = || Zero::zero();
+        Self::new(
+            Vec4::new(zero(), zero(), zero(), zero()),
+            Vec4::new(zero(), zero(), zero(), zero()),
+            Vec4::new(zero(), zero(), zero(), zero()),
+            Vec4::new(zero(), zero(), zero(), zero()),
+        )
+    }
+}
+
 impl<T: Zero + One> Mat4<T> {
     pub fn identity() -> Self {
         let zero = || Zero::zero();
@@ -503,6 +517,41 @@ where
                 l.c2.dot(r.c3.clone()),
                 l.c3.dot(r.c3),
             ),
+        )
+    }
+}
+
+impl<L, R, O> Mul<Mat4<R>> for Vec4<L>
+where
+    L: Mul<R, Output = O> + Clone,
+    R: Clone,
+    O: Add<Output = O>,
+{
+    type Output = Vec4<O>;
+    fn mul(self, rhs: Mat4<R>) -> Vec4<O> {
+        Vec4::new(
+            self.clone().dot(rhs.c0),
+            self.clone().dot(rhs.c1),
+            self.clone().dot(rhs.c2),
+            self.dot(rhs.c3),
+        )
+    }
+}
+
+impl<L, R, O> Mul<Vec4<R>> for Mat4<L>
+where
+    L: Mul<R, Output = O> + Clone,
+    R: Clone,
+    O: Add<Output = O>,
+{
+    type Output = Vec4<O>;
+    fn mul(self, rhs: Vec4<R>) -> Vec4<O> {
+        let l = self.transpose();
+        Vec4::new(
+            l.c0.dot(rhs.clone()),
+            l.c1.dot(rhs.clone()),
+            l.c2.dot(rhs.clone()),
+            l.c3.dot(rhs.clone()),
         )
     }
 }
