@@ -17,6 +17,12 @@ pub enum WaitResult {
     Timeout,
 }
 
+pub enum ShaderSource {
+    MainVertex,
+}
+
+pub trait Shader {}
+
 pub enum FenceState {
     Signaled,
     Unsignaled,
@@ -26,6 +32,8 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Semaphore: Semaphore;
     type Fence: Fence;
     type Error: error::Error;
+    type Shader: Shader;
+    fn get_shader(&self, shader_source: ShaderSource) -> Result<Self::Shader, Self::Error>;
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
 }
 

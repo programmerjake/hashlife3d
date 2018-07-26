@@ -6,6 +6,7 @@ authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 [build-dependencies]
 bindgen = "0.29.1"
 pkg-config = "0.3.12"
+glsl-to-spirv = "0.1.6"
 
 [dependencies]
 libc = "0.2"

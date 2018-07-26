@@ -1,11 +1,19 @@
 extern crate bindgen;
+extern crate glsl_to_spirv;
 extern crate pkg_config;
 
 use std::env;
-use std::error;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::mem;
+use std::path::*;
+use std::str;
 
-fn main() -> Result<(), Box<error::Error>> {
+fn get_out_path() -> PathBuf {
+    PathBuf::from(env::var("OUT_DIR").unwrap())
+}
+
+fn main() -> Result<(), String> {
     let target = env::var("TARGET").unwrap();
     let host = env::var("HOST").unwrap();
     let mut include_paths = Vec::new();
@@ -20,7 +28,40 @@ fn main() -> Result<(), Box<error::Error>> {
     {
         include_paths.push(path.to_str().unwrap().to_string());
     }
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_path = get_out_path();
+    struct VulkanShader {
+        file_name: &'static str,
+        stage: glsl_to_spirv::ShaderType,
+    };
+    let shaders_path = PathBuf::from("shaders");
+    for VulkanShader { file_name, stage } in &[VulkanShader {
+        file_name: "vulkan_main.vert",
+        stage: glsl_to_spirv::ShaderType::Vertex,
+    }] {
+        let input_file = shaders_path.join(file_name);
+        println!("cargo:rerun-if-changed={}", input_file.to_str().unwrap());
+        let source = fs::read(input_file).map_err(|e| format!("{}", e))?;
+        let mut output = match glsl_to_spirv::compile(
+            str::from_utf8(&source).map_err(|e| format!("{}", e))?,
+            stage.clone(),
+        ) {
+            Err(error) => {
+                eprintln!("{}", error);
+                return Err("shader compile failed".into());
+            }
+            Ok(v) => v,
+        };
+        output
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| format!("{}", e))?;
+        let mut buffer = Vec::new();
+        output
+            .read_to_end(&mut buffer)
+            .map_err(|e| format!("{}", e))?;
+        mem::drop(output);
+        fs::write(out_path.join(String::from(*file_name) + ".spv"), buffer)
+            .map_err(|e| format!("{}", e))?;
+    }
     println!("cargo:rerun-if-changed=sdl-wrapper.h");
     let mut sdl_bindings = Some(
         bindgen::Builder::default()

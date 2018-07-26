@@ -11,6 +11,28 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::u32;
 
+trait NullOrZero {
+    fn null_or_zero() -> Self;
+}
+
+impl NullOrZero for u64 {
+    fn null_or_zero() -> u64 {
+        0
+    }
+}
+
+impl<T> NullOrZero for *mut T {
+    fn null_or_zero() -> *mut T {
+        null_mut()
+    }
+}
+
+impl<T> NullOrZero for *const T {
+    fn null_or_zero() -> *const T {
+        null()
+    }
+}
+
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(non_camel_case_types)]
@@ -243,6 +265,8 @@ struct DeviceWrapper {
     vkCreateFence: api::PFN_vkCreateFence,
     vkDestroyFence: api::PFN_vkDestroyFence,
     vkGetDeviceQueue: api::PFN_vkGetDeviceQueue,
+    vkCreateShaderModule: api::PFN_vkCreateShaderModule,
+    vkDestroyShaderModule: api::PFN_vkDestroyShaderModule,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -303,6 +327,16 @@ impl DeviceWrapper {
                         vk_get_device_proc_addr,
                         device,
                         vkGetDeviceQueue
+                    ),
+                    vkCreateShaderModule: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateShaderModule
+                    ),
+                    vkDestroyShaderModule: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroyShaderModule
                     ),
                 })
             }
@@ -460,12 +494,71 @@ impl Error for VulkanError {}
 
 pub type Result<T> = result::Result<T, VulkanError>;
 
+pub struct VulkanShader {
+    device: Arc<DeviceWrapper>,
+    shader_module: api::VkShaderModule,
+}
+
+impl Shader for VulkanShader {}
+
+impl Drop for VulkanShader {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroyShaderModule.unwrap()(
+                self.device.device,
+                self.shader_module,
+                null(),
+            );
+        }
+    }
+}
+
 impl DeviceReference for VulkanDeviceReference {
     type Semaphore = VulkanSemaphore;
     type Fence = VulkanFence;
     type Error = VulkanError;
+    type Shader = VulkanShader;
+    fn get_shader(&self, shader_source: ShaderSource) -> Result<VulkanShader> {
+        let shader_source = match shader_source {
+            ShaderSource::MainVertex => {
+                include_bytes!(concat!(env!("OUT_DIR"), "/vulkan_main.vert.spv")) as &[u8]
+            }
+        };
+        assert_eq!(shader_source.len() % mem::size_of::<u32>(), 0);
+        assert!(shader_source.len() != 0);
+        let mut shader_source_buf: Vec<u32> = Vec::new(); // copy to new memory to ensure it's aligned properly
+        shader_source_buf.resize(shader_source.len() / mem::size_of::<u32>(), 0);
+        unsafe {
+            copy_nonoverlapping(
+                shader_source.as_ptr(),
+                shader_source_buf.as_mut_ptr() as *mut u8,
+                shader_source.len(),
+            );
+        }
+        let mut shader_module = NullOrZero::null_or_zero();
+        match unsafe {
+            self.device.vkCreateShaderModule.unwrap()(
+                self.device.device,
+                &api::VkShaderModuleCreateInfo {
+                    sType: api::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                    pNext: null(),
+                    flags: 0,
+                    codeSize: shader_source.len(),
+                    pCode: shader_source_buf.as_ptr(),
+                },
+                null(),
+                &mut shader_module,
+            )
+        } {
+            api::VK_SUCCESS => Ok(VulkanShader {
+                device: self.device.clone(),
+                shader_module: shader_module,
+            }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
     fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
-        let mut fence = 0;
+        let mut fence = NullOrZero::null_or_zero();
         match unsafe {
             self.device.vkCreateFence.unwrap()(
                 self.device.device,

@@ -11,7 +11,6 @@ pub use self::sdl::SDL_main;
 use renderer::*;
 use sdl::event::Event;
 use std::error;
-use std::mem;
 use world3d::{State, World};
 
 #[no_mangle]
@@ -98,7 +97,11 @@ fn rust_main(event_source: &sdl::event::EventSource) {
                 .create("", None, (640, 480), 0)
                 .map_err(|v| Box::new(v).into())
         }
-        fn main_loop<D: renderer::Device>(self, mut device: D, event_source: &sdl::event::EventSource) {
+        fn main_loop<D: renderer::Device>(
+            self,
+            mut device: D,
+            event_source: &sdl::event::EventSource,
+        ) {
             loop {
                 match event_source.next() {
                     Event::WindowHidden { .. } => {

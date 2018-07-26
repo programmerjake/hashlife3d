@@ -404,10 +404,18 @@ impl Queue for GLES2Queue {}
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}
 
+pub struct GLES2Shader {}
+
+impl Shader for GLES2Shader {}
+
 impl DeviceReference for GLES2DeviceReference {
     type Semaphore = GLES2Semaphore;
     type Fence = GLES2Fence;
     type Error = GLES2Error;
+    type Shader = GLES2Shader;
+    fn get_shader(&self, shader_source: ShaderSource) -> Result<GLES2Shader> {
+        unimplemented!()
+    }
     fn create_fence(&self, initial_state: FenceState) -> Result<GLES2Fence> {
         unimplemented!()
     }
