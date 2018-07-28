@@ -178,6 +178,12 @@ macro_rules! make_vec {
             pub $last_member: T
         }
 
+        impl<T> Into<[T; $size]> for $name<T> {
+            fn into(self) -> [T; $size] {
+                [$(self.$members,)* self.$last_member]
+            }
+        }
+
         impl VecSizeTrait for $name<()> {
             fn len(&self) -> usize {
                 $size
@@ -403,6 +409,23 @@ impl<T> Mat4<T> {
             Vec4::new(c0.z, c1.z, c2.z, c3.z),
             Vec4::new(c0.w, c1.w, c2.w, c3.w),
         )
+    }
+}
+
+impl<T> Into<[Vec4<T>; 4]> for Mat4<T> {
+    fn into(self) -> [Vec4<T>; 4] {
+        [self.c0, self.c1, self.c2, self.c3]
+    }
+}
+
+impl<T> Into<[[T; 4]; 4]> for Mat4<T> {
+    fn into(self) -> [[T; 4]; 4] {
+        [
+            self.c0.into(),
+            self.c1.into(),
+            self.c2.into(),
+            self.c3.into(),
+        ]
     }
 }
 

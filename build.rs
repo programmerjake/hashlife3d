@@ -34,10 +34,16 @@ fn main() -> Result<(), String> {
         stage: glsl_to_spirv::ShaderType,
     };
     let shaders_path = PathBuf::from("shaders");
-    for VulkanShader { file_name, stage } in &[VulkanShader {
-        file_name: "vulkan_main.vert",
-        stage: glsl_to_spirv::ShaderType::Vertex,
-    }] {
+    for VulkanShader { file_name, stage } in &[
+        VulkanShader {
+            file_name: "vulkan_main.vert",
+            stage: glsl_to_spirv::ShaderType::Vertex,
+        },
+        VulkanShader {
+            file_name: "vulkan_main.frag",
+            stage: glsl_to_spirv::ShaderType::Fragment,
+        },
+    ] {
         let input_file = shaders_path.join(file_name);
         println!("cargo:rerun-if-changed={}", input_file.to_str().unwrap());
         let source = fs::read(input_file).map_err(|e| format!("{}", e))?;

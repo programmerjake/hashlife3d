@@ -17,12 +17,6 @@ pub enum WaitResult {
     Timeout,
 }
 
-pub enum ShaderSource {
-    MainVertex,
-}
-
-pub trait Shader {}
-
 pub enum FenceState {
     Signaled,
     Unsignaled,
@@ -31,103 +25,103 @@ pub enum FenceState {
 pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Semaphore: Semaphore;
     type Fence: Fence;
-    type Error: error::Error;
-    type Shader: Shader;
-    fn get_shader(&self, shader_source: ShaderSource) -> Result<Self::Shader, Self::Error>;
+    type Error: error::Error + 'static;
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
 }
 
-pub trait PausedDevice {
+pub trait PausedDevice: Sized {
+    type Device: Device<PausedDevice = Self>;
     fn get_window(&self) -> &sdl::window::Window;
 }
 
 pub trait Device: Sized {
-    type Reference: DeviceReference;
+    type Semaphore: Semaphore;
+    type Fence: Fence;
+    type Error: error::Error + 'static;
+    type Reference: DeviceReference<
+        Semaphore = Self::Semaphore,
+        Fence = Self::Fence,
+        Error = Self::Error,
+    >;
     type Queue: Queue;
-    type PausedDevice: PausedDevice;
+    type PausedDevice: PausedDevice<Device = Self>;
     fn pause(self) -> Self::PausedDevice;
-    fn resume(
-        paused_device: Self::PausedDevice,
-    ) -> Result<Self, <Self::Reference as DeviceReference>::Error>;
+    fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
-    fn get_device_ref(&self) -> Self::Reference;
+    fn get_device_ref(&self) -> &Self::Reference;
     fn get_queue(&self) -> &Self::Queue;
     fn wait_for_fences_with_timeout(
         &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
+        fences: &[&Self::Fence],
         wait_for_all: bool,
         timeout: Duration,
-    ) -> Result<WaitResult, <Self::Reference as DeviceReference>::Error>;
+    ) -> Result<WaitResult, Self::Error>;
     fn wait_for_fences(
         &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
+        fences: &[&Self::Fence],
         wait_for_all: bool,
-    ) -> Result<(), <Self::Reference as DeviceReference>::Error> {
+    ) -> Result<(), Self::Error> {
         self.wait_for_fences_with_timeout(fences, wait_for_all, Duration::new(u64::MAX, 0))
             .map(|_| ())
     }
-    fn wait_for_all_fences(
-        &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
-    ) -> Result<(), <Self::Reference as DeviceReference>::Error> {
+    fn wait_for_all_fences(&self, fences: &[&Self::Fence]) -> Result<(), Self::Error> {
         self.wait_for_fences(fences, true)
     }
-    fn wait_for_any_fence(
-        &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
-    ) -> Result<(), <Self::Reference as DeviceReference>::Error> {
+    fn wait_for_any_fence(&self, fences: &[&Self::Fence]) -> Result<(), Self::Error> {
         self.wait_for_fences(fences, false)
     }
-    fn wait_for_fence(
-        &self,
-        fence: &<Self::Reference as DeviceReference>::Fence,
-    ) -> Result<(), <Self::Reference as DeviceReference>::Error> {
+    fn wait_for_fence(&self, fence: &Self::Fence) -> Result<(), Self::Error> {
         self.wait_for_fences(&[fence], false)
     }
     fn wait_for_all_fences_with_timeout(
         &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
+        fences: &[&Self::Fence],
         timeout: Duration,
-    ) -> Result<WaitResult, <Self::Reference as DeviceReference>::Error> {
+    ) -> Result<WaitResult, Self::Error> {
         self.wait_for_fences_with_timeout(fences, true, timeout)
     }
     fn wait_for_any_fence_with_timeout(
         &self,
-        fences: &[&<Self::Reference as DeviceReference>::Fence],
+        fences: &[&Self::Fence],
         timeout: Duration,
-    ) -> Result<WaitResult, <Self::Reference as DeviceReference>::Error> {
+    ) -> Result<WaitResult, Self::Error> {
         self.wait_for_fences_with_timeout(fences, false, timeout)
     }
     fn wait_for_fence_with_timeout(
         &self,
-        fence: &<Self::Reference as DeviceReference>::Fence,
+        fence: &Self::Fence,
         timeout: Duration,
-    ) -> Result<WaitResult, <Self::Reference as DeviceReference>::Error> {
+    ) -> Result<WaitResult, Self::Error> {
         self.wait_for_fences_with_timeout(&[fence], false, timeout)
+    }
+    fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error> {
+        self.get_device_ref().create_fence(initial_state)
     }
 }
 
 pub trait DeviceFactory {
-    type Device: Device;
+    type Error: error::Error + 'static;
+    type Device: Device<Error = Self::Error, PausedDevice = Self::PausedDevice>;
+    type PausedDevice: PausedDevice<Device = Self::Device>;
     fn create<T: Into<String>>(
         &self,
         title: T,
         position: Option<(i32, i32)>,
         size: (u32, u32),
         flags: u32,
-    ) -> Result<Self::Device, <<Self::Device as Device>::Reference as DeviceReference>::Error>;
+    ) -> Result<Self::PausedDevice, Self::Error>;
 }
 
 pub trait MainLoop {
     fn startup<DF: DeviceFactory>(
         &self,
         device_factory: DF,
-    ) -> Result<DF::Device, Box<error::Error>> {
+    ) -> Result<DF::PausedDevice, Box<error::Error>> {
         device_factory
             .create("", None, (640, 480), 0)
             .map_err(|v| Box::new(v).into())
     }
-    fn main_loop<D: Device>(self, device: D, event_source: &sdl::event::EventSource);
+    fn main_loop<PD: PausedDevice>(self, paused_device: PD, event_source: &sdl::event::EventSource);
 }
 
 pub enum BackendRunResult<ML: MainLoop> {

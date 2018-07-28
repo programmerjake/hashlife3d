@@ -1,12 +1,25 @@
-use super::super::sdl;
+#[macro_use]
+mod instance_functions;
+mod device;
+mod error;
+mod fence;
+mod instance;
+mod queue;
+mod semaphore;
+mod surface;
+use self::device::*;
+use self::error::*;
+use self::fence::*;
+use self::instance::*;
+use self::instance_functions::*;
+use self::queue::*;
+use self::semaphore::*;
+use self::surface::*;
 use super::*;
-use std::error::Error;
+use sdl;
 use std::ffi::CStr;
-use std::fmt;
 use std::mem;
-use std::os::raw::*;
 use std::ptr::*;
-use std::result;
 use std::sync::Arc;
 use std::time::Duration;
 use std::u32;
@@ -33,6 +46,10 @@ impl<T> NullOrZero for *const T {
     }
 }
 
+fn null_or_zero<T: NullOrZero>() -> T {
+    NullOrZero::null_or_zero()
+}
+
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(non_camel_case_types)]
@@ -41,367 +58,16 @@ mod api {
     include!(concat!(env!("OUT_DIR"), "/vulkan-bindings.rs"));
 }
 
-pub struct VulkanSemaphore {}
-
-impl Drop for VulkanSemaphore {
-    fn drop(&mut self) {
-        unimplemented!()
-    }
-}
-
-impl Semaphore for VulkanSemaphore {}
-
-pub struct VulkanFence {
-    device: Arc<DeviceWrapper>,
-    fence: api::VkFence,
-}
-
-unsafe impl Send for VulkanFence {}
-
-impl Fence for VulkanFence {}
-
-impl Drop for VulkanFence {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.vkDestroyFence.unwrap()(self.device.device, self.fence, null());
-        }
-    }
-}
-
-pub struct VulkanQueue {
-    queue: api::VkQueue,
-}
-
-impl Queue for VulkanQueue {}
-
-#[allow(non_snake_case)]
-struct InstanceFunctions {
-    vkGetInstanceProcAddr: api::PFN_vkGetInstanceProcAddr,
-    vkCreateInstance: api::PFN_vkCreateInstance,
-}
-
-unsafe impl Sync for InstanceFunctions {}
-unsafe impl Send for InstanceFunctions {}
-
-pub unsafe fn get_instance_fn(
-    vk_get_instance_proc_addr: api::PFN_vkGetInstanceProcAddr,
-    instance: api::VkInstance,
-    name: &[u8],
-) -> api::PFN_vkVoidFunction {
-    let name = CStr::from_bytes_with_nul(name).unwrap();
-    match vk_get_instance_proc_addr.unwrap()(instance, name.as_ptr()) {
-        Some(retval) => Some(retval),
-        None => panic!(
-            "vkGetInstanceProcAddr failed: function not found: {}",
-            name.to_string_lossy()
-        ),
-    }
-}
-
-macro_rules! get_instance_fn {
-    ($vk_get_instance_proc_addr:expr, $instance:expr, $name:ident) => {{
-        use self::api::*;
-        mem::transmute::<api::PFN_vkVoidFunction, concat_idents!(PFN_, $name)>(
-            self::get_instance_fn(
-                $vk_get_instance_proc_addr,
-                $instance,
-                concat!(stringify!($name), "\0").as_bytes(),
-            ),
-        )
-    }};
-}
-
-macro_rules! get_global_fn {
-    ($vk_get_instance_proc_addr:expr, $name:ident) => {
-        get_instance_fn!($vk_get_instance_proc_addr, null_mut(), $name)
-    };
-}
-
-impl InstanceFunctions {
-    unsafe fn new(vk_get_instance_proc_addr: *const c_void) -> Self {
-        let vk_get_instance_proc_addr: api::PFN_vkGetInstanceProcAddr =
-            mem::transmute(vk_get_instance_proc_addr);
-        assert!(vk_get_instance_proc_addr.is_some());
-        Self {
-            vkGetInstanceProcAddr: vk_get_instance_proc_addr,
-            vkCreateInstance: get_global_fn!(vk_get_instance_proc_addr, vkCreateInstance),
-        }
-    }
-}
-
-#[allow(non_snake_case)]
-struct InstanceWrapper {
-    instance: api::VkInstance,
-    _instance_functions: InstanceFunctions,
-    vkDestroyInstance: api::PFN_vkDestroyInstance,
-    vkCreateDevice: api::PFN_vkCreateDevice,
-    vkGetDeviceProcAddr: api::PFN_vkGetDeviceProcAddr,
-    vkDestroySurfaceKHR: api::PFN_vkDestroySurfaceKHR,
-    vkEnumeratePhysicalDevices: api::PFN_vkEnumeratePhysicalDevices,
-    vkGetPhysicalDeviceSurfaceSupportKHR: api::PFN_vkGetPhysicalDeviceSurfaceSupportKHR,
-    vkGetPhysicalDeviceQueueFamilyProperties: api::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
-    vkEnumerateDeviceExtensionProperties: api::PFN_vkEnumerateDeviceExtensionProperties,
-}
-
-unsafe impl Send for InstanceWrapper {}
-
-unsafe impl Sync for InstanceWrapper {}
-
-impl InstanceWrapper {
-    pub unsafe fn new(
-        instance_functions: InstanceFunctions,
-        application_info: *const api::VkApplicationInfo,
-        enabled_layer_names: &[*const c_char],
-        enabled_extension_names: &[*const c_char],
-    ) -> Result<Self> {
-        let mut instance = null_mut();
-        match instance_functions.vkCreateInstance.unwrap()(
-            &api::VkInstanceCreateInfo {
-                sType: api::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                pNext: null(),
-                flags: 0,
-                pApplicationInfo: application_info,
-                enabledLayerCount: enabled_layer_names.len() as u32,
-                ppEnabledLayerNames: enabled_layer_names.as_ptr(),
-                enabledExtensionCount: enabled_extension_names.len() as u32,
-                ppEnabledExtensionNames: enabled_extension_names.as_ptr(),
-            },
-            null(),
-            &mut instance,
-        ) {
-            api::VK_SUCCESS => {
-                let vk_get_instance_proc_addr = instance_functions.vkGetInstanceProcAddr;
-                Ok(Self {
-                    instance: instance,
-                    _instance_functions: instance_functions,
-                    vkDestroyInstance: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkDestroyInstance
-                    ),
-                    vkCreateDevice: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkCreateDevice
-                    ),
-                    vkGetDeviceProcAddr: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkGetDeviceProcAddr
-                    ),
-                    vkDestroySurfaceKHR: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkDestroySurfaceKHR
-                    ),
-                    vkEnumeratePhysicalDevices: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkEnumeratePhysicalDevices
-                    ),
-                    vkGetPhysicalDeviceSurfaceSupportKHR: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkGetPhysicalDeviceSurfaceSupportKHR
-                    ),
-                    vkGetPhysicalDeviceQueueFamilyProperties: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkGetPhysicalDeviceQueueFamilyProperties
-                    ),
-                    vkEnumerateDeviceExtensionProperties: get_instance_fn!(
-                        vk_get_instance_proc_addr,
-                        instance,
-                        vkEnumerateDeviceExtensionProperties
-                    ),
-                })
-            }
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
-}
-
-impl Drop for InstanceWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.vkDestroyInstance.unwrap()(self.instance, null());
-        }
-    }
-}
-
-pub unsafe fn get_device_fn(
-    vk_get_device_proc_addr: api::PFN_vkGetDeviceProcAddr,
-    device: api::VkDevice,
-    name: &[u8],
-) -> api::PFN_vkVoidFunction {
-    let name = CStr::from_bytes_with_nul(name).unwrap();
-    match vk_get_device_proc_addr.unwrap()(device, name.as_ptr()) {
-        Some(retval) => Some(retval),
-        None => panic!(
-            "vkGetDeviceProcAddr failed: function not found: {}",
-            name.to_string_lossy()
-        ),
-    }
-}
-
-macro_rules! get_device_fn {
-    ($vk_get_device_proc_addr:expr, $device:expr, $name:ident) => {{
-        use self::api::*;
-        mem::transmute::<api::PFN_vkVoidFunction, concat_idents!(PFN_, $name)>(self::get_device_fn(
-            $vk_get_device_proc_addr,
-            $device,
-            concat!(stringify!($name), "\0").as_bytes(),
-        ))
-    }};
-}
-
-#[allow(non_snake_case)]
-struct DeviceWrapper {
-    device: api::VkDevice,
-    _instance: Arc<InstanceWrapper>,
-    vkDestroyDevice: api::PFN_vkDestroyDevice,
-    vkDeviceWaitIdle: api::PFN_vkDeviceWaitIdle,
-    vkWaitForFences: api::PFN_vkWaitForFences,
-    vkCreateFence: api::PFN_vkCreateFence,
-    vkDestroyFence: api::PFN_vkDestroyFence,
-    vkGetDeviceQueue: api::PFN_vkGetDeviceQueue,
-    vkCreateShaderModule: api::PFN_vkCreateShaderModule,
-    vkDestroyShaderModule: api::PFN_vkDestroyShaderModule,
-}
-
-unsafe impl Sync for DeviceWrapper {}
-unsafe impl Send for DeviceWrapper {}
-
-impl DeviceWrapper {
-    pub unsafe fn new(
-        instance: Arc<InstanceWrapper>,
-        physical_device: api::VkPhysicalDevice,
-        queue_create_infos: &[api::VkDeviceQueueCreateInfo],
-        enabled_extension_names: &[*const c_char],
-        enabled_features: Option<&api::VkPhysicalDeviceFeatures>,
-    ) -> Result<Self> {
-        let mut device = null_mut();
-        match instance.vkCreateDevice.unwrap()(
-            physical_device,
-            &api::VkDeviceCreateInfo {
-                sType: api::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                pNext: null(),
-                flags: 0,
-                queueCreateInfoCount: queue_create_infos.len() as u32,
-                pQueueCreateInfos: queue_create_infos.as_ptr(),
-                enabledLayerCount: 0,
-                ppEnabledLayerNames: null(),
-                enabledExtensionCount: enabled_extension_names.len() as u32,
-                ppEnabledExtensionNames: enabled_extension_names.as_ptr(),
-                pEnabledFeatures: match enabled_features {
-                    Some(v) => v,
-                    None => null(),
-                },
-            },
-            null(),
-            &mut device,
-        ) {
-            api::VK_SUCCESS => {
-                let vk_get_device_proc_addr = instance.vkGetDeviceProcAddr;
-                Ok(Self {
-                    device: device,
-                    _instance: instance,
-                    vkDestroyDevice: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkDestroyDevice
-                    ),
-                    vkDeviceWaitIdle: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkDeviceWaitIdle
-                    ),
-                    vkWaitForFences: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkWaitForFences
-                    ),
-                    vkCreateFence: get_device_fn!(vk_get_device_proc_addr, device, vkCreateFence),
-                    vkDestroyFence: get_device_fn!(vk_get_device_proc_addr, device, vkDestroyFence),
-                    vkGetDeviceQueue: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkGetDeviceQueue
-                    ),
-                    vkCreateShaderModule: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkCreateShaderModule
-                    ),
-                    vkDestroyShaderModule: get_device_fn!(
-                        vk_get_device_proc_addr,
-                        device,
-                        vkDestroyShaderModule
-                    ),
-                })
-            }
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
-}
-
-impl Drop for DeviceWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.vkDeviceWaitIdle.unwrap()(self.device);
-            self.vkDestroyDevice.unwrap()(self.device, null());
-        }
-    }
-}
-
-struct SurfaceWrapper {
-    window: sdl::window::Window,
-    instance: Arc<InstanceWrapper>,
-    surface: api::VkSurfaceKHR,
-}
-
-impl Drop for SurfaceWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.instance.vkDestroySurfaceKHR.unwrap()(
-                self.instance.instance,
-                self.surface,
-                null(),
-            );
-        }
-    }
-}
-
-impl SurfaceWrapper {
-    unsafe fn new(window: sdl::window::Window, instance: Arc<InstanceWrapper>) -> Result<Self> {
-        let mut surface = null_mut();
-        if sdl::api::SDL_Vulkan_CreateSurface(
-            window.get(),
-            instance.instance as sdl::api::VkInstance,
-            &mut surface,
-        ) == 0
-        {
-            Err(sdl::get_error().into())
-        } else {
-            Ok(Self {
-                window: window,
-                instance: instance,
-                surface: surface as api::VkSurfaceKHR,
-            })
-        }
-    }
+fn vk_make_version(major: u32, minor: u32, patch: u32) -> u32 {
+    assert!(major < 0x1000);
+    assert!(minor < 0x1000);
+    assert!(patch < 0x4000);
+    major << 22 | minor << 12 | patch
 }
 
 #[derive(Clone)]
 pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
-}
-
-struct SurfaceState {
-    surface: SurfaceWrapper,
-    present_queue_index: u32,
-    render_queue_index: u32,
-    physical_device: api::VkPhysicalDevice,
 }
 
 pub struct VulkanPausedDevice {
@@ -423,85 +89,12 @@ fn get_wait_timeout(duration: Duration) -> u64 {
     }
 }
 
-pub enum VulkanError {
-    VulkanError(api::VkResult),
-    SDLError(sdl::SDLError),
-    NoMatchingPhysicalDevice,
-}
-
-impl From<sdl::SDLError> for VulkanError {
-    fn from(v: sdl::SDLError) -> Self {
-        VulkanError::SDLError(v)
-    }
-}
-
-impl fmt::Display for VulkanError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            VulkanError::VulkanError(result) => {
-                let name = match *result {
-                    api::VK_SUCCESS => "VK_SUCCESS",
-                    api::VK_NOT_READY => "VK_NOT_READY",
-                    api::VK_TIMEOUT => "VK_TIMEOUT",
-                    api::VK_EVENT_SET => "VK_EVENT_SET",
-                    api::VK_EVENT_RESET => "VK_EVENT_RESET",
-                    api::VK_INCOMPLETE => "VK_INCOMPLETE",
-                    api::VK_ERROR_OUT_OF_HOST_MEMORY => "VK_ERROR_OUT_OF_HOST_MEMORY",
-                    api::VK_ERROR_OUT_OF_DEVICE_MEMORY => "VK_ERROR_OUT_OF_DEVICE_MEMORY",
-                    api::VK_ERROR_INITIALIZATION_FAILED => "VK_ERROR_INITIALIZATION_FAILED",
-                    api::VK_ERROR_DEVICE_LOST => "VK_ERROR_DEVICE_LOST",
-                    api::VK_ERROR_MEMORY_MAP_FAILED => "VK_ERROR_MEMORY_MAP_FAILED",
-                    api::VK_ERROR_LAYER_NOT_PRESENT => "VK_ERROR_LAYER_NOT_PRESENT",
-                    api::VK_ERROR_EXTENSION_NOT_PRESENT => "VK_ERROR_EXTENSION_NOT_PRESENT",
-                    api::VK_ERROR_FEATURE_NOT_PRESENT => "VK_ERROR_FEATURE_NOT_PRESENT",
-                    api::VK_ERROR_INCOMPATIBLE_DRIVER => "VK_ERROR_INCOMPATIBLE_DRIVER",
-                    api::VK_ERROR_TOO_MANY_OBJECTS => "VK_ERROR_TOO_MANY_OBJECTS",
-                    api::VK_ERROR_FORMAT_NOT_SUPPORTED => "VK_ERROR_FORMAT_NOT_SUPPORTED",
-                    api::VK_ERROR_FRAGMENTED_POOL => "VK_ERROR_FRAGMENTED_POOL",
-                    api::VK_ERROR_SURFACE_LOST_KHR => "VK_ERROR_SURFACE_LOST_KHR",
-                    api::VK_ERROR_NATIVE_WINDOW_IN_USE_KHR => "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR",
-                    api::VK_SUBOPTIMAL_KHR => "VK_SUBOPTIMAL_KHR",
-                    api::VK_ERROR_OUT_OF_DATE_KHR => "VK_ERROR_OUT_OF_DATE_KHR",
-                    api::VK_ERROR_INCOMPATIBLE_DISPLAY_KHR => "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR",
-                    api::VK_ERROR_VALIDATION_FAILED_EXT => "VK_ERROR_VALIDATION_FAILED_EXT",
-                    api::VK_ERROR_INVALID_SHADER_NV => "VK_ERROR_INVALID_SHADER_NV",
-                    api::VK_ERROR_NOT_PERMITTED_EXT => "VK_ERROR_NOT_PERMITTED_EXT",
-                    api::VK_ERROR_OUT_OF_POOL_MEMORY_KHR => "VK_ERROR_OUT_OF_POOL_MEMORY_KHR",
-                    api::VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR => {
-                        "VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR"
-                    }
-                    result => return write!(f, "<unknown VkResult: {}>", result),
-                };
-                f.write_str(name)
-            }
-            VulkanError::SDLError(error) => (error as &fmt::Display).fmt(f),
-            VulkanError::NoMatchingPhysicalDevice => f.write_str("no matching physical device"),
-        }
-    }
-}
-
-impl fmt::Debug for VulkanError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            VulkanError::SDLError(error) => (error as &fmt::Debug).fmt(f),
-            VulkanError::VulkanError(_) => (self as &fmt::Display).fmt(f),
-            VulkanError::NoMatchingPhysicalDevice => f.write_str("NoMatchingPhysicalDevice"),
-        }
-    }
-}
-
-impl Error for VulkanError {}
-
-pub type Result<T> = result::Result<T, VulkanError>;
-
-pub struct VulkanShader {
+struct ShaderModuleWrapper {
     device: Arc<DeviceWrapper>,
     shader_module: api::VkShaderModule,
 }
 
-impl Shader for VulkanShader {}
-
-impl Drop for VulkanShader {
+impl Drop for ShaderModuleWrapper {
     fn drop(&mut self) {
         unsafe {
             self.device.vkDestroyShaderModule.unwrap()(
@@ -513,15 +106,82 @@ impl Drop for VulkanShader {
     }
 }
 
-impl DeviceReference for VulkanDeviceReference {
-    type Semaphore = VulkanSemaphore;
-    type Fence = VulkanFence;
-    type Error = VulkanError;
-    type Shader = VulkanShader;
-    fn get_shader(&self, shader_source: ShaderSource) -> Result<VulkanShader> {
+struct RenderPassWrapper {
+    device: Arc<DeviceWrapper>,
+    render_pass: api::VkRenderPass,
+}
+
+impl Drop for RenderPassWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroyRenderPass.unwrap()(self.device.device, self.render_pass, null());
+        }
+    }
+}
+
+struct GraphicsPipelineWrapper {
+    device: Arc<DeviceWrapper>,
+    pipeline: api::VkPipeline,
+    pipeline_layout: PipelineLayoutWrapper,
+    vertex_shader: ShaderModuleWrapper,
+    fragment_shader: ShaderModuleWrapper,
+    render_pass: RenderPassWrapper,
+}
+
+impl Drop for GraphicsPipelineWrapper {
+    fn drop(&mut self) {
+        unsafe { self.device.vkDestroyPipeline.unwrap()(self.device.device, self.pipeline, null()) }
+    }
+}
+
+struct DescriptorSetLayoutWrapper {
+    device: Arc<DeviceWrapper>,
+    descriptor_set_layout: api::VkDescriptorSetLayout,
+}
+
+impl Drop for DescriptorSetLayoutWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroyDescriptorSetLayout.unwrap()(
+                self.device.device,
+                self.descriptor_set_layout,
+                null(),
+            )
+        }
+    }
+}
+
+struct PipelineLayoutWrapper {
+    device: Arc<DeviceWrapper>,
+    pipeline_layout: api::VkPipelineLayout,
+    descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
+}
+
+impl Drop for PipelineLayoutWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroyPipelineLayout.unwrap()(
+                self.device.device,
+                self.pipeline_layout,
+                null(),
+            )
+        }
+    }
+}
+
+enum ShaderSource {
+    MainVertex,
+    MainFragment,
+}
+
+impl VulkanDeviceReference {
+    fn get_shader(&self, shader_source: ShaderSource) -> Result<ShaderModuleWrapper> {
         let shader_source = match shader_source {
             ShaderSource::MainVertex => {
                 include_bytes!(concat!(env!("OUT_DIR"), "/vulkan_main.vert.spv")) as &[u8]
+            }
+            ShaderSource::MainFragment => {
+                include_bytes!(concat!(env!("OUT_DIR"), "/vulkan_main.frag.spv")) as &[u8]
             }
         };
         assert_eq!(shader_source.len() % mem::size_of::<u32>(), 0);
@@ -535,7 +195,7 @@ impl DeviceReference for VulkanDeviceReference {
                 shader_source.len(),
             );
         }
-        let mut shader_module = NullOrZero::null_or_zero();
+        let mut shader_module = null_or_zero();
         match unsafe {
             self.device.vkCreateShaderModule.unwrap()(
                 self.device.device,
@@ -550,15 +210,21 @@ impl DeviceReference for VulkanDeviceReference {
                 &mut shader_module,
             )
         } {
-            api::VK_SUCCESS => Ok(VulkanShader {
+            api::VK_SUCCESS => Ok(ShaderModuleWrapper {
                 device: self.device.clone(),
                 shader_module: shader_module,
             }),
             result => Err(VulkanError::VulkanError(result)),
         }
     }
+}
+
+impl DeviceReference for VulkanDeviceReference {
+    type Semaphore = VulkanSemaphore;
+    type Fence = VulkanFence;
+    type Error = VulkanError;
     fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
-        let mut fence = NullOrZero::null_or_zero();
+        let mut fence = null_or_zero();
         match unsafe {
             self.device.vkCreateFence.unwrap()(
                 self.device.device,
@@ -584,12 +250,254 @@ impl DeviceReference for VulkanDeviceReference {
 }
 
 impl PausedDevice for VulkanPausedDevice {
+    type Device = VulkanDevice;
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.surface.window
     }
 }
 
+const fragment_textures_binding: u32 = 0;
+const fragment_textures_binding_descriptor_count: u32 = 8;
+
+#[repr(C)]
+#[repr(align(16))]
+struct AlignedMat4([[f32; 4]; 4]);
+
+impl From<math::Mat4> for AlignedMat4 {
+    fn from(v: math::Mat4) -> AlignedMat4 {
+        AlignedMat4(v.into())
+    }
+}
+
+/// must match PushConstants in shaders/vulkan_main.vert
+#[repr(C)]
+struct PushConstants {
+    transform: AlignedMat4,
+}
+
+impl VulkanDevice {
+    fn get_shader(&self, shader_source: ShaderSource) -> Result<ShaderModuleWrapper> {
+        self.get_device_ref().get_shader(shader_source)
+    }
+    fn create_render_pass(&self) -> Result<RenderPassWrapper> {
+        let device = self.device_reference.device.clone();
+        let mut render_pass = null_or_zero();
+        const depth_attachement_index: u32 = 0;
+        const color_attachement_index: u32 = 1;
+        let attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
+        attachments[color_attachement_index as usize] = api::VkAttachmentDescription {
+            flags: 0,
+            format: self.surface_state.surface_format.format,
+            samples: api::VK_SAMPLE_COUNT_1_BIT,
+            loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: api::VK_ATTACHMENT_STORE_OP_STORE,
+            stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+            finalLayout: api::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+        attachments[depth_attachement_index as usize] = api::VkAttachmentDescription {
+            flags: 0,
+            format: self.surface_state.depth_format,
+            samples: api::VK_SAMPLE_COUNT_1_BIT,
+            loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+            finalLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        let color_attachments = [api::VkAttachmentReference {
+            attachment: color_attachement_index,
+            layout: api::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        }];
+        let subpasses = [api::VkSubpassDescription {
+            flags: 0,
+            pipelineBindPoint: api::VK_PIPELINE_BIND_POINT_GRAPHICS,
+            inputAttachmentCount: 0,
+            pInputAttachments: null(),
+            colorAttachmentCount: color_attachments.len() as u32,
+            pColorAttachments: color_attachments.as_ptr(),
+            pResolveAttachments: null(),
+            pDepthStencilAttachment: &api::VkAttachmentReference {
+                attachment: depth_attachement_index,
+                layout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            },
+            preserveAttachmentCount: 0,
+            pPreserveAttachments: null(),
+        }];
+        let dependencies = [];
+        match unsafe {
+            device.vkCreateRenderPass.unwrap()(
+                device.device,
+                &api::VkRenderPassCreateInfo {
+                    sType: api::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                    pNext: null(),
+                    flags: 0,
+                    attachmentCount: attachments.len() as u32,
+                    pAttachments: attachments.as_ptr(),
+                    subpassCount: subpasses.len() as u32,
+                    pSubpasses: subpasses.as_ptr(),
+                    dependencyCount: dependencies.len() as u32,
+                    pDependencies: dependencies.as_ptr(),
+                },
+                null(),
+                &mut render_pass,
+            )
+        } {
+            api::VK_SUCCESS => Ok(RenderPassWrapper {
+                device: device,
+                render_pass: render_pass,
+            }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
+    fn create_descriptor_set_layout(&self) -> Result<DescriptorSetLayoutWrapper> {
+        let device = self.device_reference.device.clone();
+        let bindings = [api::VkDescriptorSetLayoutBinding {
+            binding: fragment_textures_binding,
+            descriptorType: api::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptorCount: fragment_textures_binding_descriptor_count,
+            stageFlags: api::VK_SHADER_STAGE_FRAGMENT_BIT,
+            pImmutableSamplers: null(),
+        }];
+        let mut descriptor_set_layout = null_or_zero();
+        match unsafe {
+            device.vkCreateDescriptorSetLayout.unwrap()(
+                device.device,
+                &api::VkDescriptorSetLayoutCreateInfo {
+                    sType: api::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                    pNext: null(),
+                    flags: 0,
+                    bindingCount: bindings.len() as u32,
+                    pBindings: bindings.as_ptr(),
+                },
+                null(),
+                &mut descriptor_set_layout,
+            )
+        } {
+            api::VK_SUCCESS => Ok(DescriptorSetLayoutWrapper {
+                device: device,
+                descriptor_set_layout: descriptor_set_layout,
+            }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
+    fn create_pipeline_layout(
+        &self,
+        descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
+    ) -> Result<PipelineLayoutWrapper> {
+        let device = self.device_reference.device.clone();
+        let mut pipeline_layout = null_or_zero();
+        let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
+            .iter()
+            .map(|v| v.descriptor_set_layout)
+            .collect();
+        let push_constant_ranges = [api::VkPushConstantRange {
+            stageFlags: api::VK_SHADER_STAGE_VERTEX_BIT,
+            offset: 0,
+            size: mem::size_of::<PushConstants>() as u32,
+        }];
+        match unsafe {
+            device.vkCreatePipelineLayout.unwrap()(
+                device.device,
+                &api::VkPipelineLayoutCreateInfo {
+                    sType: api::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                    pNext: null(),
+                    flags: 0,
+                    setLayoutCount: vk_descriptor_set_layouts.len() as u32,
+                    pSetLayouts: vk_descriptor_set_layouts.as_ptr(),
+                    pushConstantRangeCount: push_constant_ranges.len() as u32,
+                    pPushConstantRanges: push_constant_ranges.as_ptr(),
+                },
+                null(),
+                &mut pipeline_layout,
+            )
+        } {
+            api::VK_SUCCESS => Ok(PipelineLayoutWrapper {
+                device: device,
+                pipeline_layout: pipeline_layout,
+                descriptor_set_layouts: descriptor_set_layouts,
+            }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
+    fn create_graphics_pipeline(&self) -> Result<GraphicsPipelineWrapper> {
+        let device = self.device_reference.device.clone();
+        let vertex_shader = self.get_shader(ShaderSource::MainVertex)?;
+        let fragment_shader = self.get_shader(ShaderSource::MainFragment)?;
+        let pipeline_layout =
+            self.create_pipeline_layout(vec![self.create_descriptor_set_layout()?])?;
+        let render_pass = self.create_render_pass()?;
+        let mut pipeline = null_or_zero();
+        let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
+        let stages = [
+            api::VkPipelineShaderStageCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                stage: api::VK_SHADER_STAGE_VERTEX_BIT,
+                module: vertex_shader.shader_module,
+                pName: shader_entry_name.as_ptr(),
+                pSpecializationInfo: null(),
+            },
+            api::VkPipelineShaderStageCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                stage: api::VK_SHADER_STAGE_FRAGMENT_BIT,
+                module: fragment_shader.shader_module,
+                pName: shader_entry_name.as_ptr(),
+                pSpecializationInfo: null(),
+            },
+        ];
+        match unsafe {
+            device.vkCreateGraphicsPipelines.unwrap()(
+                device.device,
+                null_or_zero(),
+                1,
+                &api::VkGraphicsPipelineCreateInfo {
+                    sType: api::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                    pNext: null(),
+                    flags: 0,
+                    stageCount: stages.len() as u32,
+                    pStages: stages.as_ptr(),
+                    pVertexInputState: &api::VkPipelineVertexInputStateCreateInfo {},
+                    pInputAssemblyState: &api::VkPipelineInputAssemblyStateCreateInfo {},
+                    pTessellationState: null(),
+                    pViewportState: &api::VkPipelineViewportStateCreateInfo {},
+                    pRasterizationState: &api::VkPipelineRasterizationStateCreateInfo {},
+                    pMultisampleState: &api::VkPipelineMultisampleStateCreateInfo {},
+                    pDepthStencilState: &api::VkPipelineDepthStencilStateCreateInfo {},
+                    pColorBlendState: &api::VkPipelineColorBlendStateCreateInfo {},
+                    pDynamicState: &api::VkPipelineDynamicStateCreateInfo {},
+                    layout: pipeline_layout.pipeline_layout,
+                    renderPass: render_pass.render_pass,
+                    subpass: 0,
+                    basePipelineHandle: null_or_zero(),
+                    basePipelineIndex: -1,
+                },
+                null(),
+                &mut pipeline,
+            )
+        } {
+            api::VK_SUCCESS => Ok(GraphicsPipelineWrapper {
+                device: device,
+                pipeline: pipeline,
+                pipeline_layout: pipeline_layout,
+                vertex_shader: vertex_shader,
+                fragment_shader: fragment_shader,
+                render_pass: render_pass,
+            }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
+}
+
 impl Device for VulkanDevice {
+    type Semaphore = VulkanSemaphore;
+    type Fence = VulkanFence;
+    type Error = VulkanError;
     type Reference = VulkanDeviceReference;
     type Queue = VulkanQueue;
     type PausedDevice = VulkanPausedDevice;
@@ -601,9 +509,11 @@ impl Device for VulkanDevice {
     fn resume(paused_device: VulkanPausedDevice) -> Result<Self> {
         let SurfaceState {
             surface,
+            physical_device,
             present_queue_index,
             render_queue_index,
-            physical_device,
+            surface_format,
+            depth_format,
         } = paused_device.surface_state;
         let device_queue_create_infos = [
             api::VkDeviceQueueCreateInfo {
@@ -668,9 +578,11 @@ impl Device for VulkanDevice {
             },
             surface_state: SurfaceState {
                 surface: surface,
+                physical_device: physical_device,
                 present_queue_index: present_queue_index,
                 render_queue_index: render_queue_index,
-                physical_device: physical_device,
+                surface_format: surface_format,
+                depth_format: depth_format,
             },
             queue: render_queue,
             present_queue: present_queue,
@@ -679,8 +591,8 @@ impl Device for VulkanDevice {
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.surface.window
     }
-    fn get_device_ref(&self) -> VulkanDeviceReference {
-        self.device_reference.clone()
+    fn get_device_ref(&self) -> &VulkanDeviceReference {
+        &self.device_reference
     }
     fn get_queue(&self) -> &VulkanQueue {
         &self.queue
@@ -693,7 +605,7 @@ impl Device for VulkanDevice {
     ) -> Result<WaitResult> {
         let mut final_fences = Vec::with_capacity(fences.len());
         for fence in fences {
-            final_fences.push(fence.fence);
+            final_fences.push(fence.get());
         }
         assert_eq!(final_fences.len() as u32 as usize, final_fences.len());
         unsafe {
@@ -722,13 +634,15 @@ impl<'a> VulkanDeviceFactory<'a> {
 
 impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
     type Device = VulkanDevice;
+    type PausedDevice = VulkanPausedDevice;
+    type Error = VulkanError;
     fn create<T: Into<String>>(
         &self,
         title: T,
         position: Option<(i32, i32)>,
         size: (u32, u32),
         mut flags: u32,
-    ) -> Result<VulkanDevice> {
+    ) -> Result<VulkanPausedDevice> {
         assert_eq!(
             flags & (sdl::api::SDL_WINDOW_OPENGL | sdl::api::SDL_WINDOW_VULKAN),
             0
@@ -763,23 +677,40 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         {
             return Err(sdl::get_error().into());
         }
+        let application_info = &api::VkApplicationInfo {
+            sType: api::VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            pNext: null(),
+            pApplicationName: null(),
+            applicationVersion: 0,
+            pEngineName: null(),
+            engineVersion: 0,
+            apiVersion: vk_make_version(1, 0, 0),
+        };
+        #[cfg(debug_assertions)]
+        let layers = [
+            CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_standard_validation\0")
+                .unwrap()
+                .as_ptr(),
+        ];
+        #[cfg(not(debug_assertions))]
         let layers = [];
-        let instance = unsafe {
-            InstanceWrapper::new(
-                instance_functions,
-                &api::VkApplicationInfo {
-                    sType: api::VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                    pNext: null(),
-                    pApplicationName: null(),
-                    applicationVersion: 0,
-                    pEngineName: null(),
-                    engineVersion: 0,
-                    apiVersion: 0,
-                },
-                &layers,
-                &extensions,
-            )
-        }?;
+        let instance = match unsafe {
+            InstanceWrapper::new(instance_functions, application_info, &layers, &extensions)
+        } {
+            Ok(instance) => instance,
+            Err(initial_error) => {
+                if layers.len() == 0 {
+                    return Err(initial_error);
+                }
+                eprintln!(
+                    "failed to create Vulkan instance with layers enabled: {}",
+                    initial_error
+                );
+                unsafe {
+                    InstanceWrapper::new(instance_functions, application_info, &[], &extensions)
+                }?
+            }
+        };
         let instance = Arc::new(instance);
         let surface = unsafe { SurfaceWrapper::new(window, instance.clone()) }?;
         let mut physical_device_count = 0;
@@ -807,7 +738,85 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         }
         let mut queue_family_properties_vec = Vec::new();
         let mut device_extensions = Vec::new();
+        let mut surface_formats = Vec::new();
         for physical_device in physical_devices {
+            let mut depth_32_format_properties = unsafe { mem::zeroed() };
+            unsafe {
+                instance.vkGetPhysicalDeviceFormatProperties.unwrap()(
+                    physical_device,
+                    api::VK_FORMAT_D32_SFLOAT,
+                    &mut depth_32_format_properties,
+                );
+            }
+            let depth_format;
+            if (depth_32_format_properties.optimalTilingFeatures
+                & api::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
+            {
+                depth_format = api::VK_FORMAT_D32_SFLOAT;
+            } else {
+                depth_format = api::VK_FORMAT_X8_D24_UNORM_PACK32;
+            }
+            let mut surface_capabilities = unsafe { mem::zeroed() };
+            match unsafe {
+                instance.vkGetPhysicalDeviceSurfaceCapabilitiesKHR.unwrap()(
+                    physical_device,
+                    surface.surface,
+                    &mut surface_capabilities,
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            let mut surface_format_count = 0;
+            match unsafe {
+                instance.vkGetPhysicalDeviceSurfaceFormatsKHR.unwrap()(
+                    physical_device,
+                    surface.surface,
+                    &mut surface_format_count,
+                    null_mut(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            surface_formats.clear();
+            surface_formats.resize(surface_format_count as usize, unsafe { mem::zeroed() });
+            match unsafe {
+                instance.vkGetPhysicalDeviceSurfaceFormatsKHR.unwrap()(
+                    physical_device,
+                    surface.surface,
+                    &mut surface_format_count,
+                    surface_formats.as_mut_ptr(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            assert!(surface_formats.len() != 0);
+            let surface_format;
+            if surface_formats.len() == 1 && surface_formats[0].format == api::VK_FORMAT_UNDEFINED {
+                surface_format = Some(api::VkSurfaceFormatKHR {
+                    format: api::VK_FORMAT_B8G8R8A8_SRGB,
+                    colorSpace: api::VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+                });
+            } else {
+                surface_format = surface_formats
+                    .iter()
+                    .find(|&&format| {
+                        let mut format_properties = unsafe { mem::zeroed() };
+                        unsafe {
+                            instance.vkGetPhysicalDeviceFormatProperties.unwrap()(
+                                physical_device,
+                                format.format,
+                                &mut format_properties,
+                            );
+                        }
+                        let required = api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+                            | api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+                        (format_properties.optimalTilingFeatures & required) != required
+                    })
+                    .map(|v| *v);
+            }
             let mut queue_family_count = 0;
             unsafe {
                 instance.vkGetPhysicalDeviceQueueFamilyProperties.unwrap()(
@@ -893,14 +902,22 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 present_queue_index,
                 render_queue_index,
                 has_swapchain_extension,
+                surface_format,
             ) {
-                (Some(present_queue_index), Some(render_queue_index), true) => {
-                    return VulkanDevice::resume(VulkanPausedDevice {
+                (
+                    Some(present_queue_index),
+                    Some(render_queue_index),
+                    true,
+                    Some(surface_format),
+                ) => {
+                    return Ok(VulkanPausedDevice {
                         surface_state: SurfaceState {
                             surface: surface,
+                            physical_device: physical_device,
                             present_queue_index: present_queue_index,
                             render_queue_index: render_queue_index,
-                            physical_device: physical_device,
+                            surface_format: surface_format,
+                            depth_format: depth_format,
                         },
                     });
                 }

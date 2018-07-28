@@ -42,6 +42,68 @@ fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
     }
 }
 
+fn render_main_loop<PD: renderer::PausedDevice>(
+    paused_device: PD,
+    event_source: &sdl::event::EventSource,
+) {
+    struct Running<D: renderer::Device> {
+        device: D,
+    }
+    impl<D: renderer::Device> Running<D> {
+        fn new(device: D) -> Result<Self, D::Error> {
+            Ok(Self { device: device })
+        }
+    }
+    struct Paused<PD: renderer::PausedDevice> {
+        device: PD,
+    }
+    enum State<D: renderer::Device<PausedDevice = PD>, PD: renderer::PausedDevice<Device = D>> {
+        Running(Running<D>),
+        Paused(Paused<PD>),
+    }
+    let mut state_enum = State::Paused(Paused {
+        device: paused_device,
+    });
+    loop {
+        match state_enum {
+            State::Running(state) => {
+                match event_source.next() {
+                    event @ Event::WindowHidden { .. } => {
+                        println!("event: {:?}", event);
+                        state_enum = State::Paused(Paused {
+                            device: state.device.pause(),
+                        });
+                        continue;
+                    }
+                    event @ Event::Quit { .. } => {
+                        println!("event: {:?}", event);
+                        return;
+                    }
+                    event => println!("unhandled event: {:?}", event),
+                }
+                state_enum = State::Running(state);
+            }
+            State::Paused(state) => {
+                match event_source.next() {
+                    event @ Event::Quit { .. } => {
+                        println!("event while paused: {:?}", event);
+                        return;
+                    }
+                    event @ Event::WindowShown { .. } => {
+                        println!("event while paused: {:?}", event);
+                        state_enum = State::Running(
+                            Running::new(renderer::Device::resume(state.device).unwrap()).unwrap(),
+                        );
+                        continue;
+                    }
+                    event => println!("unhandled event while paused: {:?}", event),
+                }
+                state_enum = State::Paused(state);
+            }
+        }
+    }
+}
+
 fn rust_main(event_source: &sdl::event::EventSource) {
     let world_thread = std::thread::spawn(|| {
         if false {
@@ -92,35 +154,17 @@ fn rust_main(event_source: &sdl::event::EventSource) {
         fn startup<DF: renderer::DeviceFactory>(
             &self,
             device_factory: DF,
-        ) -> Result<DF::Device, Box<error::Error>> {
+        ) -> Result<DF::PausedDevice, Box<error::Error>> {
             device_factory
                 .create("", None, (640, 480), 0)
                 .map_err(|v| Box::new(v).into())
         }
-        fn main_loop<D: renderer::Device>(
+        fn main_loop<PD: renderer::PausedDevice>(
             self,
-            mut device: D,
+            paused_device: PD,
             event_source: &sdl::event::EventSource,
         ) {
-            loop {
-                match event_source.next() {
-                    Event::WindowHidden { .. } => {
-                        let paused_device = device.pause();
-                        loop {
-                            match event_source.next() {
-                                Event::Quit { .. } => return,
-                                Event::WindowShown { .. } => {
-                                    device = renderer::Device::resume(paused_device).unwrap();
-                                    break;
-                                }
-                                event => println!("unhandled event while paused: {:?}", event),
-                            }
-                        }
-                    }
-                    Event::Quit { .. } => return,
-                    event => println!("unhandled event: {:?}", event),
-                }
-            }
+            render_main_loop(paused_device, event_source);
         }
     }
     struct BackendVisitor<'a> {

@@ -404,18 +404,10 @@ impl Queue for GLES2Queue {}
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}
 
-pub struct GLES2Shader {}
-
-impl Shader for GLES2Shader {}
-
 impl DeviceReference for GLES2DeviceReference {
     type Semaphore = GLES2Semaphore;
     type Fence = GLES2Fence;
     type Error = GLES2Error;
-    type Shader = GLES2Shader;
-    fn get_shader(&self, shader_source: ShaderSource) -> Result<GLES2Shader> {
-        unimplemented!()
-    }
     fn create_fence(&self, initial_state: FenceState) -> Result<GLES2Fence> {
         unimplemented!()
     }
@@ -438,12 +430,16 @@ pub struct GLES2Device {
 pub type Result<T> = result::Result<T, GLES2Error>;
 
 impl PausedDevice for GLES2PausedDevice {
+    type Device = GLES2Device;
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.window
     }
 }
 
 impl Device for GLES2Device {
+    type Semaphore = GLES2Semaphore;
+    type Fence = GLES2Fence;
+    type Error = GLES2Error;
     type Reference = GLES2DeviceReference;
     type Queue = GLES2Queue;
     type PausedDevice = GLES2PausedDevice;
@@ -463,8 +459,8 @@ impl Device for GLES2Device {
             render_queue: GLES2Queue {},
         })
     }
-    fn get_device_ref(&self) -> GLES2DeviceReference {
-        self.device_reference.clone()
+    fn get_device_ref(&self) -> &GLES2DeviceReference {
+        &self.device_reference
     }
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.window
@@ -510,13 +506,15 @@ unsafe fn set_gl_attributes() -> Result<()> {
 
 impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
     type Device = GLES2Device;
+    type Error = GLES2Error;
+    type PausedDevice = GLES2PausedDevice;
     fn create<T: Into<String>>(
         &self,
         title: T,
         position: Option<(i32, i32)>,
         size: (u32, u32),
         mut flags: u32,
-    ) -> Result<GLES2Device> {
+    ) -> Result<GLES2PausedDevice> {
         assert_eq!(
             flags & (sdl::api::SDL_WINDOW_OPENGL | sdl::api::SDL_WINDOW_VULKAN),
             0
@@ -529,7 +527,7 @@ impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
             set_gl_attributes()?;
         }
         let window = sdl::window::Window::new(title, position, size, flags)?;
-        GLES2Device::resume(GLES2PausedDevice {
+        Ok(GLES2PausedDevice {
             surface_state: SurfaceState { window: window },
         })
     }
