@@ -51,6 +51,13 @@ pub struct DeviceWrapper {
     pub vkCreatePipelineLayout: api::PFN_vkCreatePipelineLayout,
     pub vkDestroyRenderPass: api::PFN_vkDestroyRenderPass,
     pub vkCreateRenderPass: api::PFN_vkCreateRenderPass,
+    pub vkDestroyCommandPool: api::PFN_vkDestroyCommandPool,
+    pub vkCreateCommandPool: api::PFN_vkCreateCommandPool,
+    pub vkAllocateCommandBuffers: api::PFN_vkAllocateCommandBuffers,
+    pub vkFreeCommandBuffers: api::PFN_vkFreeCommandBuffers,
+    pub vkEndCommandBuffer: api::PFN_vkEndCommandBuffer,
+    pub vkCreateSwapchainKHR: api::PFN_vkCreateSwapchainKHR,
+    pub vkDestroySwapchainKHR: api::PFN_vkDestroySwapchainKHR,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -161,6 +168,41 @@ impl DeviceWrapper {
                         vk_get_device_proc_addr,
                         device,
                         vkCreateRenderPass
+                    ),
+                    vkDestroyCommandPool: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroyCommandPool
+                    ),
+                    vkCreateCommandPool: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateCommandPool
+                    ),
+                    vkAllocateCommandBuffers: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkAllocateCommandBuffers
+                    ),
+                    vkFreeCommandBuffers: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkFreeCommandBuffers
+                    ),
+                    vkEndCommandBuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkEndCommandBuffer
+                    ),
+                    vkCreateSwapchainKHR: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateSwapchainKHR
+                    ),
+                    vkDestroySwapchainKHR: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroySwapchainKHR
                     ),
                 })
             }

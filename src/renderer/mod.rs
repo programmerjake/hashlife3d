@@ -6,6 +6,40 @@ use std::error;
 use std::time::Duration;
 use std::u64;
 
+#[repr(C)]
+pub struct VertexBufferElement {
+    pub position: [f32; 3],
+    pub color: [u8; 4],
+    pub texture_coord: [f32; 2],
+    pub texture_index: u16,
+}
+
+impl VertexBufferElement {
+    pub fn new(
+        position: math::Vec3,
+        color: math::Vec4<u8>,
+        texture_coord: math::Vec2,
+        texture_index: u16,
+    ) -> Self {
+        Self {
+            position: position.into(),
+            color: color.into(),
+            texture_coord: texture_coord.into(),
+            texture_index: texture_index,
+        }
+    }
+}
+
+pub type IndexBufferElement = u16;
+
+pub trait CommandBufferBuilder: Sized {
+    type Error: error::Error + 'static;
+    type CommandBuffer: CommandBuffer;
+    fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
+}
+
+pub trait CommandBuffer: Sized + 'static + Send {}
+
 pub trait Semaphore: Send {}
 
 pub trait Fence: Send {}
@@ -26,7 +60,13 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Semaphore: Semaphore;
     type Fence: Fence;
     type Error: error::Error + 'static;
+    type CommandBuffer: CommandBuffer;
+    type CommandBufferBuilder: CommandBufferBuilder<
+        Error = Self::Error,
+        CommandBuffer = Self::CommandBuffer,
+    >;
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
+    fn create_command_buffer_builder(&self) -> Result<Self::CommandBufferBuilder, Self::Error>;
 }
 
 pub trait PausedDevice: Sized {
@@ -42,9 +82,16 @@ pub trait Device: Sized {
         Semaphore = Self::Semaphore,
         Fence = Self::Fence,
         Error = Self::Error,
+        CommandBuffer = Self::CommandBuffer,
+        CommandBufferBuilder = Self::CommandBufferBuilder,
     >;
     type Queue: Queue;
     type PausedDevice: PausedDevice<Device = Self>;
+    type CommandBuffer: CommandBuffer;
+    type CommandBufferBuilder: CommandBufferBuilder<
+        Error = Self::Error,
+        CommandBuffer = Self::CommandBuffer,
+    >;
     fn pause(self) -> Self::PausedDevice;
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
@@ -96,6 +143,9 @@ pub trait Device: Sized {
     }
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error> {
         self.get_device_ref().create_fence(initial_state)
+    }
+    fn create_command_buffer_builder(&self) -> Result<Self::CommandBufferBuilder, Self::Error> {
+        self.get_device_ref().create_command_buffer_builder()
     }
 }
 

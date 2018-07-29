@@ -1,7 +1,7 @@
 use super::{api, Queue};
 
 pub struct VulkanQueue {
-    queue: api::VkQueue,
+    pub queue: api::VkQueue,
 }
 
 impl Queue for VulkanQueue {}

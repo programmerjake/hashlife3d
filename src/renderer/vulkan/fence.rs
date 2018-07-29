@@ -3,8 +3,8 @@ use std::ptr::null;
 use std::sync::Arc;
 
 pub struct VulkanFence {
-    device: Arc<DeviceWrapper>,
-    fence: api::VkFence,
+    pub device: Arc<DeviceWrapper>,
+    pub fence: api::VkFence,
 }
 
 unsafe impl Send for VulkanFence {}

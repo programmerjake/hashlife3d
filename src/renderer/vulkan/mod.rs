@@ -1,5 +1,6 @@
 #[macro_use]
 mod instance_functions;
+mod command_buffer;
 mod device;
 mod error;
 mod fence;
@@ -7,6 +8,7 @@ mod instance;
 mod queue;
 mod semaphore;
 mod surface;
+use self::command_buffer::*;
 use self::device::*;
 use self::error::*;
 use self::fence::*;
@@ -20,6 +22,7 @@ use sdl;
 use std::ffi::CStr;
 use std::mem;
 use std::ptr::*;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use std::u32;
@@ -74,11 +77,27 @@ pub struct VulkanPausedDevice {
     surface_state: SurfaceState,
 }
 
+struct SwapchainWrapper {
+    device: Arc<DeviceWrapper>,
+    _surface: Rc<SurfaceWrapper>,
+    swapchain: api::VkSwapchainKHR,
+}
+
+impl Drop for SwapchainWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroySwapchainKHR.unwrap()(self.device.device, self.swapchain, null());
+        }
+    }
+}
+
 pub struct VulkanDevice {
     device_reference: VulkanDeviceReference,
     surface_state: SurfaceState,
     queue: VulkanQueue,
     present_queue: api::VkQueue,
+    graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
+    swapchain: Option<Arc<SwapchainWrapper>>,
 }
 
 fn get_wait_timeout(duration: Duration) -> u64 {
@@ -122,10 +141,10 @@ impl Drop for RenderPassWrapper {
 struct GraphicsPipelineWrapper {
     device: Arc<DeviceWrapper>,
     pipeline: api::VkPipeline,
-    pipeline_layout: PipelineLayoutWrapper,
-    vertex_shader: ShaderModuleWrapper,
-    fragment_shader: ShaderModuleWrapper,
-    render_pass: RenderPassWrapper,
+    _pipeline_layout: PipelineLayoutWrapper,
+    _vertex_shader: ShaderModuleWrapper,
+    _fragment_shader: ShaderModuleWrapper,
+    _render_pass: RenderPassWrapper,
 }
 
 impl Drop for GraphicsPipelineWrapper {
@@ -154,7 +173,7 @@ impl Drop for DescriptorSetLayoutWrapper {
 struct PipelineLayoutWrapper {
     device: Arc<DeviceWrapper>,
     pipeline_layout: api::VkPipelineLayout,
-    descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
+    _descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
 }
 
 impl Drop for PipelineLayoutWrapper {
@@ -223,6 +242,8 @@ impl DeviceReference for VulkanDeviceReference {
     type Semaphore = VulkanSemaphore;
     type Fence = VulkanFence;
     type Error = VulkanError;
+    type CommandBuffer = VulkanCommandBuffer;
+    type CommandBufferBuilder = VulkanCommandBufferBuilder;
     fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
         let mut fence = null_or_zero();
         match unsafe {
@@ -247,6 +268,9 @@ impl DeviceReference for VulkanDeviceReference {
             result => Err(VulkanError::VulkanError(result)),
         }
     }
+    fn create_command_buffer_builder(&self) -> Result<VulkanCommandBufferBuilder> {
+        unimplemented!()
+    }
 }
 
 impl PausedDevice for VulkanPausedDevice {
@@ -256,8 +280,8 @@ impl PausedDevice for VulkanPausedDevice {
     }
 }
 
-const fragment_textures_binding: u32 = 0;
-const fragment_textures_binding_descriptor_count: u32 = 8;
+const FRAGMENT_TEXTURES_BINDING: u32 = 0;
+const FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT: u32 = 8;
 
 #[repr(C)]
 #[repr(align(16))]
@@ -275,6 +299,98 @@ struct PushConstants {
     transform: AlignedMat4,
 }
 
+#[derive(PartialEq, Eq, Debug)]
+enum FormatKind {
+    Normalized,
+    FullRange,
+}
+
+trait FormatFromType: 'static + Sized {
+    fn get(format_kind: FormatKind) -> api::VkFormat;
+}
+
+impl<T: FormatFromType> FormatFromType for [T; 1] {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        <T as FormatFromType>::get(format_kind)
+    }
+}
+
+impl FormatFromType for u16 {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        match format_kind {
+            FormatKind::FullRange => api::VK_FORMAT_R16_UINT,
+            FormatKind::Normalized => api::VK_FORMAT_R16_UNORM,
+        }
+    }
+}
+
+impl FormatFromType for [u8; 4] {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        match format_kind {
+            FormatKind::FullRange => api::VK_FORMAT_R8G8B8A8_UINT,
+            FormatKind::Normalized => api::VK_FORMAT_R8G8B8A8_UNORM,
+        }
+    }
+}
+
+impl FormatFromType for f32 {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        assert_eq!(format_kind, FormatKind::FullRange);
+        api::VK_FORMAT_R32_SFLOAT
+    }
+}
+
+impl FormatFromType for [f32; 2] {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        assert_eq!(format_kind, FormatKind::FullRange);
+        api::VK_FORMAT_R32G32_SFLOAT
+    }
+}
+
+impl FormatFromType for [f32; 3] {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        assert_eq!(format_kind, FormatKind::FullRange);
+        api::VK_FORMAT_R32G32B32_SFLOAT
+    }
+}
+
+impl FormatFromType for [f32; 4] {
+    fn get(format_kind: FormatKind) -> api::VkFormat {
+        assert_eq!(format_kind, FormatKind::FullRange);
+        api::VK_FORMAT_R32G32B32A32_SFLOAT
+    }
+}
+
+fn get_vulkan_format_from_type<'a, T: 'static + Sized + FormatFromType>(
+    _: &'a T,
+    format_kind: FormatKind,
+) -> api::VkFormat {
+    <T as FormatFromType>::get(format_kind)
+}
+
+macro_rules! get_vertex_input_attribute_description {
+    ($location:expr, $binding:expr, $format_kind:expr, $member:tt) => {{
+        let retval;
+        let vertex_buffer_element: VertexBufferElement = unsafe { mem::uninitialized() };
+        {
+            let member_ref: &_ = &(vertex_buffer_element.$member);
+            retval = api::VkVertexInputAttributeDescription {
+                location: $location,
+                binding: $binding,
+                format: get_vulkan_format_from_type(member_ref, $format_kind),
+                offset: (member_ref as *const _ as usize
+                    - &vertex_buffer_element as *const _ as usize) as u32,
+            };
+            assert!(
+                retval.offset as usize + mem::size_of_val(member_ref)
+                    <= mem::size_of::<VertexBufferElement>()
+            );
+        }
+        mem::forget(vertex_buffer_element);
+        retval
+    }};
+}
+
 impl VulkanDevice {
     fn get_shader(&self, shader_source: ShaderSource) -> Result<ShaderModuleWrapper> {
         self.get_device_ref().get_shader(shader_source)
@@ -282,9 +398,9 @@ impl VulkanDevice {
     fn create_render_pass(&self) -> Result<RenderPassWrapper> {
         let device = self.device_reference.device.clone();
         let mut render_pass = null_or_zero();
-        const depth_attachement_index: u32 = 0;
-        const color_attachement_index: u32 = 1;
-        let attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
+        let depth_attachement_index = 0;
+        let color_attachement_index = 1;
+        let mut attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
         attachments[color_attachement_index as usize] = api::VkAttachmentDescription {
             flags: 0,
             format: self.surface_state.surface_format.format,
@@ -305,7 +421,7 @@ impl VulkanDevice {
             stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
             initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+            finalLayout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
         let color_attachments = [api::VkAttachmentReference {
             attachment: color_attachement_index,
@@ -355,9 +471,9 @@ impl VulkanDevice {
     fn create_descriptor_set_layout(&self) -> Result<DescriptorSetLayoutWrapper> {
         let device = self.device_reference.device.clone();
         let bindings = [api::VkDescriptorSetLayoutBinding {
-            binding: fragment_textures_binding,
+            binding: FRAGMENT_TEXTURES_BINDING,
             descriptorType: api::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            descriptorCount: fragment_textures_binding_descriptor_count,
+            descriptorCount: FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT,
             stageFlags: api::VK_SHADER_STAGE_FRAGMENT_BIT,
             pImmutableSamplers: null(),
         }];
@@ -417,7 +533,7 @@ impl VulkanDevice {
             api::VK_SUCCESS => Ok(PipelineLayoutWrapper {
                 device: device,
                 pipeline_layout: pipeline_layout,
-                descriptor_set_layouts: descriptor_set_layouts,
+                _descriptor_set_layouts: descriptor_set_layouts,
             }),
             result => Err(VulkanError::VulkanError(result)),
         }
@@ -451,6 +567,29 @@ impl VulkanDevice {
                 pSpecializationInfo: null(),
             },
         ];
+        let vertex_attribute_descriptions = [
+            get_vertex_input_attribute_description!(0, 0, FormatKind::FullRange, position),
+            get_vertex_input_attribute_description!(1, 0, FormatKind::Normalized, color),
+            get_vertex_input_attribute_description!(2, 0, FormatKind::FullRange, texture_coord),
+            get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_index),
+        ];
+        let attachments = [api::VkPipelineColorBlendAttachmentState {
+            blendEnable: api::VK_TRUE,
+            srcColorBlendFactor: api::VK_BLEND_FACTOR_SRC_ALPHA,
+            dstColorBlendFactor: api::VK_BLEND_FACTOR_DST_ALPHA,
+            colorBlendOp: api::VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor: api::VK_BLEND_FACTOR_ZERO,
+            dstAlphaBlendFactor: api::VK_BLEND_FACTOR_CONSTANT_ALPHA,
+            alphaBlendOp: api::VK_BLEND_OP_ADD,
+            colorWriteMask: api::VK_COLOR_COMPONENT_R_BIT
+                | api::VK_COLOR_COMPONENT_G_BIT
+                | api::VK_COLOR_COMPONENT_B_BIT
+                | api::VK_COLOR_COMPONENT_A_BIT,
+        }];
+        let dynamic_states = [
+            api::VK_DYNAMIC_STATE_VIEWPORT,
+            api::VK_DYNAMIC_STATE_SCISSOR,
+        ];
         match unsafe {
             device.vkCreateGraphicsPipelines.unwrap()(
                 device.device,
@@ -462,15 +601,93 @@ impl VulkanDevice {
                     flags: 0,
                     stageCount: stages.len() as u32,
                     pStages: stages.as_ptr(),
-                    pVertexInputState: &api::VkPipelineVertexInputStateCreateInfo {},
-                    pInputAssemblyState: &api::VkPipelineInputAssemblyStateCreateInfo {},
+                    pVertexInputState: &api::VkPipelineVertexInputStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        vertexBindingDescriptionCount: 1,
+                        pVertexBindingDescriptions: &api::VkVertexInputBindingDescription {
+                            binding: 0,
+                            stride: mem::size_of::<VertexBufferElement>() as u32,
+                            inputRate: api::VK_VERTEX_INPUT_RATE_VERTEX,
+                        },
+                        vertexAttributeDescriptionCount: vertex_attribute_descriptions.len() as u32,
+                        pVertexAttributeDescriptions: vertex_attribute_descriptions.as_ptr(),
+                    },
+                    pInputAssemblyState: &api::VkPipelineInputAssemblyStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        topology: api::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                        primitiveRestartEnable: api::VK_FALSE,
+                    },
                     pTessellationState: null(),
-                    pViewportState: &api::VkPipelineViewportStateCreateInfo {},
-                    pRasterizationState: &api::VkPipelineRasterizationStateCreateInfo {},
-                    pMultisampleState: &api::VkPipelineMultisampleStateCreateInfo {},
-                    pDepthStencilState: &api::VkPipelineDepthStencilStateCreateInfo {},
-                    pColorBlendState: &api::VkPipelineColorBlendStateCreateInfo {},
-                    pDynamicState: &api::VkPipelineDynamicStateCreateInfo {},
+                    pViewportState: &api::VkPipelineViewportStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        viewportCount: 1,
+                        pViewports: null(),
+                        scissorCount: 1,
+                        pScissors: null(),
+                    },
+                    pRasterizationState: &api::VkPipelineRasterizationStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        depthClampEnable: api::VK_FALSE,
+                        rasterizerDiscardEnable: api::VK_FALSE,
+                        polygonMode: api::VK_POLYGON_MODE_FILL,
+                        cullMode: api::VK_CULL_MODE_BACK_BIT,
+                        frontFace: api::VK_FRONT_FACE_CLOCKWISE,
+                        depthBiasEnable: api::VK_FALSE,
+                        depthBiasConstantFactor: 0.0,
+                        depthBiasClamp: 0.0,
+                        depthBiasSlopeFactor: 0.0,
+                        lineWidth: 1.0,
+                    },
+                    pMultisampleState: &api::VkPipelineMultisampleStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        rasterizationSamples: api::VK_SAMPLE_COUNT_1_BIT,
+                        sampleShadingEnable: api::VK_FALSE,
+                        minSampleShading: 0.0,
+                        pSampleMask: null(),
+                        alphaToCoverageEnable: api::VK_FALSE,
+                        alphaToOneEnable: api::VK_FALSE,
+                    },
+                    pDepthStencilState: &api::VkPipelineDepthStencilStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        depthTestEnable: api::VK_TRUE,
+                        depthWriteEnable: api::VK_TRUE,
+                        depthCompareOp: api::VK_COMPARE_OP_LESS,
+                        depthBoundsTestEnable: api::VK_FALSE,
+                        stencilTestEnable: api::VK_FALSE,
+                        front: mem::zeroed(),
+                        back: mem::zeroed(),
+                        minDepthBounds: 0.0,
+                        maxDepthBounds: 0.0,
+                    },
+                    pColorBlendState: &api::VkPipelineColorBlendStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        logicOpEnable: api::VK_FALSE,
+                        logicOp: api::VK_LOGIC_OP_COPY,
+                        attachmentCount: attachments.len() as u32,
+                        pAttachments: attachments.as_ptr(),
+                        blendConstants: [0.0, 0.0, 0.0, 1.0],
+                    },
+                    pDynamicState: &api::VkPipelineDynamicStateCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        dynamicStateCount: dynamic_states.len() as u32,
+                        pDynamicStates: dynamic_states.as_ptr(),
+                    },
                     layout: pipeline_layout.pipeline_layout,
                     renderPass: render_pass.render_pass,
                     subpass: 0,
@@ -484,11 +701,70 @@ impl VulkanDevice {
             api::VK_SUCCESS => Ok(GraphicsPipelineWrapper {
                 device: device,
                 pipeline: pipeline,
-                pipeline_layout: pipeline_layout,
-                vertex_shader: vertex_shader,
-                fragment_shader: fragment_shader,
-                render_pass: render_pass,
+                _pipeline_layout: pipeline_layout,
+                _vertex_shader: vertex_shader,
+                _fragment_shader: fragment_shader,
+                _render_pass: render_pass,
             }),
+            result => Err(VulkanError::VulkanError(result)),
+        }
+    }
+    fn create_swapchain(
+        &self,
+        previous_swapchain: Option<Arc<SwapchainWrapper>>,
+    ) -> Result<Option<SwapchainWrapper>> {
+        let mut dimensions = (0, 0);
+        unsafe {
+            sdl::api::SDL_Vulkan_GetDrawableSize(
+                self.get_window().get(),
+                &mut dimensions.0,
+                &mut dimensions.1,
+            );
+        }
+        match dimensions {
+            (0, _) | (_, 0) => return Ok(None),
+            _ => {}
+        }
+        let device = self.device_reference.device.clone();
+        let mut swapchain = null_or_zero();
+        match unsafe {
+            device.vkCreateSwapchainKHR.unwrap()(
+                device.device,
+                &api::VkSwapchainCreateInfoKHR {
+                    sType: api::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                    pNext: null(),
+                    flags: 0,
+                    surface: self.surface_state.surface.surface,
+                    minImageCount: self.surface_state.swapchain_desired_image_count,
+                    imageFormat: self.surface_state.surface_format.format,
+                    imageColorSpace: self.surface_state.surface_format.colorSpace,
+                    imageExtent: api::VkExtent2D {
+                        width: dimensions.0 as u32,
+                        height: dimensions.1 as u32,
+                    },
+                    imageArrayLayers: 1,
+                    imageUsage: api::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                    imageSharingMode: api::VK_SHARING_MODE_EXCLUSIVE,
+                    queueFamilyIndexCount: 0,
+                    pQueueFamilyIndices: null(),
+                    preTransform: self.surface_state.swapchain_pre_transform,
+                    compositeAlpha: self.surface_state.swapchain_composite_alpha,
+                    presentMode: self.surface_state.present_mode,
+                    clipped: api::VK_TRUE,
+                    oldSwapchain: match previous_swapchain {
+                        Some(v) => v.swapchain,
+                        None => null_or_zero(),
+                    },
+                },
+                null(),
+                &mut swapchain,
+            )
+        } {
+            api::VK_SUCCESS => Ok(Some(SwapchainWrapper {
+                device: device,
+                _surface: self.surface_state.surface.clone(),
+                swapchain: swapchain,
+            })),
             result => Err(VulkanError::VulkanError(result)),
         }
     }
@@ -501,6 +777,8 @@ impl Device for VulkanDevice {
     type Reference = VulkanDeviceReference;
     type Queue = VulkanQueue;
     type PausedDevice = VulkanPausedDevice;
+    type CommandBuffer = VulkanCommandBuffer;
+    type CommandBufferBuilder = VulkanCommandBufferBuilder;
     fn pause(self) -> VulkanPausedDevice {
         VulkanPausedDevice {
             surface_state: self.surface_state,
@@ -514,6 +792,10 @@ impl Device for VulkanDevice {
             render_queue_index,
             surface_format,
             depth_format,
+            present_mode,
+            swapchain_desired_image_count,
+            swapchain_pre_transform,
+            swapchain_composite_alpha,
         } = paused_device.surface_state;
         let device_queue_create_infos = [
             api::VkDeviceQueueCreateInfo {
@@ -572,7 +854,7 @@ impl Device for VulkanDevice {
         let render_queue = VulkanQueue {
             queue: render_queue,
         };
-        return Ok(VulkanDevice {
+        let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
                 device: Arc::new(device),
             },
@@ -583,10 +865,19 @@ impl Device for VulkanDevice {
                 render_queue_index: render_queue_index,
                 surface_format: surface_format,
                 depth_format: depth_format,
+                present_mode: present_mode,
+                swapchain_desired_image_count: swapchain_desired_image_count,
+                swapchain_pre_transform: swapchain_pre_transform,
+                swapchain_composite_alpha: swapchain_composite_alpha,
             },
             queue: render_queue,
             present_queue: present_queue,
-        });
+            graphics_pipeline: None,
+            swapchain: None,
+        };
+        retval.graphics_pipeline = Some(Arc::new(retval.create_graphics_pipeline()?));
+        retval.swapchain = retval.create_swapchain(None)?.map(|v| Arc::new(v));
+        return Ok(retval);
     }
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.surface.window
@@ -739,6 +1030,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         let mut queue_family_properties_vec = Vec::new();
         let mut device_extensions = Vec::new();
         let mut surface_formats = Vec::new();
+        let mut present_modes = Vec::new();
         for physical_device in physical_devices {
             let mut depth_32_format_properties = unsafe { mem::zeroed() };
             unsafe {
@@ -767,6 +1059,42 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 api::VK_SUCCESS => (),
                 result => return Err(VulkanError::VulkanError(result)),
             }
+            let required_image_usage = api::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            if (required_image_usage & surface_capabilities.supportedUsageFlags)
+                != required_image_usage
+            {
+                continue;
+            }
+            let swapchain_pre_transform;
+            if (surface_capabilities.supportedTransforms
+                & api::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0
+            {
+                swapchain_pre_transform = api::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+            } else if (surface_capabilities.supportedTransforms
+                & api::VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR) != 0
+            {
+                swapchain_pre_transform = api::VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR;
+            } else {
+                continue;
+            }
+            let mut swapchain_composite_alpha = None;
+            for &flag in &[
+                api::VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                api::VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+                api::VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+                api::VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+            ] {
+                if (surface_capabilities.supportedCompositeAlpha & flag) != 0 {
+                    swapchain_composite_alpha = Some(flag);
+                    break;
+                }
+            }
+            let swapchain_composite_alpha =
+                if let Some(swapchain_composite_alpha) = swapchain_composite_alpha {
+                    swapchain_composite_alpha
+                } else {
+                    continue;
+                };
             let mut surface_format_count = 0;
             match unsafe {
                 instance.vkGetPhysicalDeviceSurfaceFormatsKHR.unwrap()(
@@ -813,9 +1141,47 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                         }
                         let required = api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
                             | api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-                        (format_properties.optimalTilingFeatures & required) != required
+                        (format_properties.optimalTilingFeatures & required) == required
                     })
                     .map(|v| *v);
+            }
+            let mut present_mode_count = 0;
+            match unsafe {
+                instance.vkGetPhysicalDeviceSurfacePresentModesKHR.unwrap()(
+                    physical_device,
+                    surface.surface,
+                    &mut present_mode_count,
+                    null_mut(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            present_modes.clear();
+            present_modes.resize(present_mode_count as usize, unsafe { mem::zeroed() });
+            match unsafe {
+                instance.vkGetPhysicalDeviceSurfacePresentModesKHR.unwrap()(
+                    physical_device,
+                    surface.surface,
+                    &mut present_mode_count,
+                    present_modes.as_mut_ptr(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            let mut present_mode = api::VK_PRESENT_MODE_FIFO_KHR;
+            for &mode in &present_modes {
+                match (mode, present_mode) {
+                    (api::VK_PRESENT_MODE_IMMEDIATE_KHR, api::VK_PRESENT_MODE_FIFO_KHR) => {
+                        present_mode = mode;
+                    }
+                    (api::VK_PRESENT_MODE_MAILBOX_KHR, _) => {
+                        present_mode = mode;
+                        break;
+                    }
+                    _ => {}
+                }
             }
             let mut queue_family_count = 0;
             unsafe {
@@ -898,6 +1264,15 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                     break;
                 }
             }
+            let mut swapchain_desired_image_count = surface_capabilities.minImageCount + 1;
+            if swapchain_desired_image_count < 3 {
+                swapchain_desired_image_count = 3;
+            }
+            if swapchain_desired_image_count > surface_capabilities.maxImageCount
+                && surface_capabilities.maxImageCount != 0
+            {
+                swapchain_desired_image_count = surface_capabilities.maxImageCount;
+            }
             match (
                 present_queue_index,
                 render_queue_index,
@@ -912,12 +1287,16 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 ) => {
                     return Ok(VulkanPausedDevice {
                         surface_state: SurfaceState {
-                            surface: surface,
+                            surface: Rc::new(surface),
                             physical_device: physical_device,
                             present_queue_index: present_queue_index,
                             render_queue_index: render_queue_index,
                             surface_format: surface_format,
                             depth_format: depth_format,
+                            present_mode: present_mode,
+                            swapchain_desired_image_count: swapchain_desired_image_count,
+                            swapchain_pre_transform: swapchain_pre_transform,
+                            swapchain_composite_alpha: swapchain_composite_alpha,
                         },
                     });
                 }

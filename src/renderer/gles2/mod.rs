@@ -404,11 +404,30 @@ impl Queue for GLES2Queue {}
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}
 
+pub struct GLES2CommandBuffer {}
+
+impl CommandBuffer for GLES2CommandBuffer {}
+
+pub struct GLES2CommandBufferBuilder {}
+
+impl CommandBufferBuilder for GLES2CommandBufferBuilder {
+    type Error = GLES2Error;
+    type CommandBuffer = GLES2CommandBuffer;
+    fn finish(self) -> Result<GLES2CommandBuffer> {
+        unimplemented!()
+    }
+}
+
 impl DeviceReference for GLES2DeviceReference {
     type Semaphore = GLES2Semaphore;
     type Fence = GLES2Fence;
     type Error = GLES2Error;
+    type CommandBuffer = GLES2CommandBuffer;
+    type CommandBufferBuilder = GLES2CommandBufferBuilder;
     fn create_fence(&self, initial_state: FenceState) -> Result<GLES2Fence> {
+        unimplemented!()
+    }
+    fn create_command_buffer_builder(&self) -> Result<GLES2CommandBufferBuilder> {
         unimplemented!()
     }
 }
@@ -443,6 +462,8 @@ impl Device for GLES2Device {
     type Reference = GLES2DeviceReference;
     type Queue = GLES2Queue;
     type PausedDevice = GLES2PausedDevice;
+    type CommandBuffer = GLES2CommandBuffer;
+    type CommandBufferBuilder = GLES2CommandBufferBuilder;
     fn pause(self) -> GLES2PausedDevice {
         GLES2PausedDevice {
             surface_state: self.surface_state,

@@ -1,6 +1,7 @@
 use super::{api, InstanceWrapper, Result};
 use sdl;
 use std::ptr::{null, null_mut};
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub struct SurfaceWrapper {
@@ -42,10 +43,14 @@ impl SurfaceWrapper {
 }
 
 pub struct SurfaceState {
-    pub surface: SurfaceWrapper,
+    pub surface: Rc<SurfaceWrapper>,
     pub physical_device: api::VkPhysicalDevice,
     pub present_queue_index: u32,
     pub render_queue_index: u32,
     pub surface_format: api::VkSurfaceFormatKHR,
     pub depth_format: api::VkFormat,
+    pub present_mode: api::VkPresentModeKHR,
+    pub swapchain_desired_image_count: u32,
+    pub swapchain_pre_transform: api::VkSurfaceTransformFlagBitsKHR,
+    pub swapchain_composite_alpha: api::VkCompositeAlphaFlagBitsKHR,
 }
