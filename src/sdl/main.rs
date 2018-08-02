@@ -22,6 +22,7 @@ impl<F: FnOnce()> Drop for CallOnDrop<F> {
     }
 }
 
+#[cfg(not(test))]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {

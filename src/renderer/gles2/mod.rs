@@ -401,19 +401,82 @@ pub struct GLES2Queue {}
 
 impl Queue for GLES2Queue {}
 
+pub struct GLES2StagingVertexBuffer {}
+
+impl StagingVertexBuffer for GLES2StagingVertexBuffer {
+    fn len(&self) -> usize {
+        unimplemented!()
+    }
+    fn write(&mut self, index: usize, value: VertexBufferElement) {
+        unimplemented!()
+    }
+}
+
+#[derive(Clone)]
+pub struct GLES2DeviceVertexBuffer {}
+
+impl DeviceVertexBuffer for GLES2DeviceVertexBuffer {}
+
+pub struct GLES2StagingIndexBuffer {}
+
+impl StagingIndexBuffer for GLES2StagingIndexBuffer {
+    fn len(&self) -> usize {
+        unimplemented!()
+    }
+    fn write(&mut self, index: usize, value: IndexBufferElement) {
+        unimplemented!()
+    }
+}
+
+#[derive(Clone)]
+pub struct GLES2DeviceIndexBuffer {}
+
+impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {}
+
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}
 
-pub struct GLES2CommandBuffer {}
+pub struct GLES2LoaderCommandBuffer {}
 
-impl CommandBuffer for GLES2CommandBuffer {}
+impl CommandBuffer for GLES2LoaderCommandBuffer {}
 
-pub struct GLES2CommandBufferBuilder {}
+pub struct GLES2LoaderCommandBufferBuilder {}
 
-impl CommandBufferBuilder for GLES2CommandBufferBuilder {
+impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
     type Error = GLES2Error;
-    type CommandBuffer = GLES2CommandBuffer;
-    fn finish(self) -> Result<GLES2CommandBuffer> {
+    type CommandBuffer = GLES2LoaderCommandBuffer;
+    type StagingVertexBuffer = GLES2StagingVertexBuffer;
+    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
+    type StagingIndexBuffer = GLES2StagingIndexBuffer;
+    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    fn finish(self) -> Result<GLES2LoaderCommandBuffer> {
+        unimplemented!()
+    }
+    fn copy_vertex_buffer_to_device(
+        staging_vertex_buffer: GLES2StagingVertexBuffer,
+    ) -> Result<GLES2DeviceVertexBuffer> {
+        unimplemented!()
+    }
+    fn copy_index_buffer_to_device(
+        staging_index_buffer: GLES2StagingIndexBuffer,
+    ) -> Result<GLES2DeviceIndexBuffer> {
+        unimplemented!()
+    }
+}
+
+#[derive(Clone)]
+pub struct GLES2RenderCommandBuffer {}
+
+impl CommandBuffer for GLES2RenderCommandBuffer {}
+
+pub struct GLES2RenderCommandBufferBuilder {}
+
+impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
+    type Error = GLES2Error;
+    type CommandBuffer = GLES2RenderCommandBuffer;
+    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
+    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    fn finish(self) -> Result<GLES2RenderCommandBuffer> {
         unimplemented!()
     }
 }
@@ -422,12 +485,27 @@ impl DeviceReference for GLES2DeviceReference {
     type Semaphore = GLES2Semaphore;
     type Fence = GLES2Fence;
     type Error = GLES2Error;
-    type CommandBuffer = GLES2CommandBuffer;
-    type CommandBufferBuilder = GLES2CommandBufferBuilder;
+    type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
+    type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
+    type RenderCommandBuffer = GLES2RenderCommandBuffer;
+    type RenderCommandBufferBuilder = GLES2RenderCommandBufferBuilder;
+    type StagingVertexBuffer = GLES2StagingVertexBuffer;
+    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
+    type StagingIndexBuffer = GLES2StagingIndexBuffer;
+    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
     fn create_fence(&self, initial_state: FenceState) -> Result<GLES2Fence> {
         unimplemented!()
     }
-    fn create_command_buffer_builder(&self) -> Result<GLES2CommandBufferBuilder> {
+    fn create_loader_command_buffer_builder(&self) -> Result<GLES2LoaderCommandBufferBuilder> {
+        Ok(GLES2LoaderCommandBufferBuilder {})
+    }
+    fn create_render_command_buffer_builder(&self) -> Result<GLES2RenderCommandBufferBuilder> {
+        Ok(GLES2RenderCommandBufferBuilder {})
+    }
+    fn create_staging_vertex_buffer(&self, len: usize) -> Result<GLES2StagingVertexBuffer> {
+        unimplemented!()
+    }
+    fn create_staging_index_buffer(&self, len: usize) -> Result<GLES2StagingIndexBuffer> {
         unimplemented!()
     }
 }
@@ -462,8 +540,14 @@ impl Device for GLES2Device {
     type Reference = GLES2DeviceReference;
     type Queue = GLES2Queue;
     type PausedDevice = GLES2PausedDevice;
-    type CommandBuffer = GLES2CommandBuffer;
-    type CommandBufferBuilder = GLES2CommandBufferBuilder;
+    type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
+    type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
+    type RenderCommandBuffer = GLES2RenderCommandBuffer;
+    type RenderCommandBufferBuilder = GLES2RenderCommandBufferBuilder;
+    type StagingVertexBuffer = GLES2StagingVertexBuffer;
+    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
+    type StagingIndexBuffer = GLES2StagingIndexBuffer;
+    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
     fn pause(self) -> GLES2PausedDevice {
         GLES2PausedDevice {
             surface_state: self.surface_state,

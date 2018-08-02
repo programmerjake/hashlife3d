@@ -1,6 +1,7 @@
 pub mod event;
 mod main;
 pub mod window;
+#[cfg(not(test))]
 pub use self::main::SDL_main;
 use std::error::Error;
 use std::ffi::*;

@@ -32,9 +32,41 @@ impl VertexBufferElement {
 
 pub type IndexBufferElement = u16;
 
-pub trait CommandBufferBuilder: Sized {
+pub trait StagingVertexBuffer: Sized + Send {
+    fn len(&self) -> usize;
+    fn write(&mut self, index: usize, value: VertexBufferElement);
+}
+
+pub trait DeviceVertexBuffer: Sized + Send + Clone {}
+
+pub trait StagingIndexBuffer: Sized + Send {
+    fn len(&self) -> usize;
+    fn write(&mut self, index: usize, value: IndexBufferElement);
+}
+
+pub trait DeviceIndexBuffer: Sized + Send + Clone {}
+
+pub trait LoaderCommandBufferBuilder: Sized {
     type Error: error::Error + 'static;
     type CommandBuffer: CommandBuffer;
+    type StagingVertexBuffer: StagingVertexBuffer;
+    type DeviceVertexBuffer: DeviceVertexBuffer;
+    type StagingIndexBuffer: StagingIndexBuffer;
+    type DeviceIndexBuffer: DeviceIndexBuffer;
+    fn copy_vertex_buffer_to_device(
+        staging_vertex_buffer: Self::StagingVertexBuffer,
+    ) -> Result<Self::DeviceVertexBuffer, Self::Error>;
+    fn copy_index_buffer_to_device(
+        staging_index_buffer: Self::StagingIndexBuffer,
+    ) -> Result<Self::DeviceIndexBuffer, Self::Error>;
+    fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
+}
+
+pub trait RenderCommandBufferBuilder: Sized {
+    type Error: error::Error + 'static;
+    type CommandBuffer: CommandBuffer + Clone;
+    type DeviceVertexBuffer: DeviceVertexBuffer;
+    type DeviceIndexBuffer: DeviceIndexBuffer;
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
 }
 
@@ -60,13 +92,41 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Semaphore: Semaphore;
     type Fence: Fence;
     type Error: error::Error + 'static;
-    type CommandBuffer: CommandBuffer;
-    type CommandBufferBuilder: CommandBufferBuilder<
+    type StagingVertexBuffer: StagingVertexBuffer;
+    type DeviceVertexBuffer: DeviceVertexBuffer;
+    type StagingIndexBuffer: StagingIndexBuffer;
+    type DeviceIndexBuffer: DeviceIndexBuffer;
+    type RenderCommandBuffer: CommandBuffer + Clone;
+    type RenderCommandBufferBuilder: RenderCommandBufferBuilder<
+        CommandBuffer = Self::RenderCommandBuffer,
         Error = Self::Error,
-        CommandBuffer = Self::CommandBuffer,
+        DeviceVertexBuffer = Self::DeviceVertexBuffer,
+        DeviceIndexBuffer = Self::DeviceIndexBuffer,
+    >;
+    type LoaderCommandBuffer: CommandBuffer;
+    type LoaderCommandBufferBuilder: LoaderCommandBufferBuilder<
+        CommandBuffer = Self::LoaderCommandBuffer,
+        Error = Self::Error,
+        StagingVertexBuffer = Self::StagingVertexBuffer,
+        DeviceVertexBuffer = Self::DeviceVertexBuffer,
+        StagingIndexBuffer = Self::StagingIndexBuffer,
+        DeviceIndexBuffer = Self::DeviceIndexBuffer,
     >;
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
-    fn create_command_buffer_builder(&self) -> Result<Self::CommandBufferBuilder, Self::Error>;
+    fn create_render_command_buffer_builder(
+        &self,
+    ) -> Result<Self::RenderCommandBufferBuilder, Self::Error>;
+    fn create_loader_command_buffer_builder(
+        &self,
+    ) -> Result<Self::LoaderCommandBufferBuilder, Self::Error>;
+    fn create_staging_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::StagingVertexBuffer, Self::Error>;
+    fn create_staging_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::StagingIndexBuffer, Self::Error>;
 }
 
 pub trait PausedDevice: Sized {
@@ -82,16 +142,37 @@ pub trait Device: Sized {
         Semaphore = Self::Semaphore,
         Fence = Self::Fence,
         Error = Self::Error,
-        CommandBuffer = Self::CommandBuffer,
-        CommandBufferBuilder = Self::CommandBufferBuilder,
+        RenderCommandBuffer = Self::RenderCommandBuffer,
+        RenderCommandBufferBuilder = Self::RenderCommandBufferBuilder,
+        LoaderCommandBuffer = Self::LoaderCommandBuffer,
+        LoaderCommandBufferBuilder = Self::LoaderCommandBufferBuilder,
+        StagingVertexBuffer = Self::StagingVertexBuffer,
+        DeviceVertexBuffer = Self::DeviceVertexBuffer,
+        StagingIndexBuffer = Self::StagingIndexBuffer,
+        DeviceIndexBuffer = Self::DeviceIndexBuffer,
     >;
     type Queue: Queue;
     type PausedDevice: PausedDevice<Device = Self>;
-    type CommandBuffer: CommandBuffer;
-    type CommandBufferBuilder: CommandBufferBuilder<
+    type RenderCommandBuffer: CommandBuffer + Clone;
+    type RenderCommandBufferBuilder: RenderCommandBufferBuilder<
+        CommandBuffer = Self::RenderCommandBuffer,
         Error = Self::Error,
-        CommandBuffer = Self::CommandBuffer,
+        DeviceVertexBuffer = Self::DeviceVertexBuffer,
+        DeviceIndexBuffer = Self::DeviceIndexBuffer,
     >;
+    type LoaderCommandBuffer: CommandBuffer;
+    type LoaderCommandBufferBuilder: LoaderCommandBufferBuilder<
+        CommandBuffer = Self::LoaderCommandBuffer,
+        Error = Self::Error,
+        StagingVertexBuffer = Self::StagingVertexBuffer,
+        DeviceVertexBuffer = Self::DeviceVertexBuffer,
+        StagingIndexBuffer = Self::StagingIndexBuffer,
+        DeviceIndexBuffer = Self::DeviceIndexBuffer,
+    >;
+    type StagingVertexBuffer: StagingVertexBuffer;
+    type DeviceVertexBuffer: DeviceVertexBuffer;
+    type StagingIndexBuffer: StagingIndexBuffer;
+    type DeviceIndexBuffer: DeviceIndexBuffer;
     fn pause(self) -> Self::PausedDevice;
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
@@ -144,8 +225,27 @@ pub trait Device: Sized {
     fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error> {
         self.get_device_ref().create_fence(initial_state)
     }
-    fn create_command_buffer_builder(&self) -> Result<Self::CommandBufferBuilder, Self::Error> {
-        self.get_device_ref().create_command_buffer_builder()
+    fn create_render_command_buffer_builder(
+        &self,
+    ) -> Result<Self::RenderCommandBufferBuilder, Self::Error> {
+        self.get_device_ref().create_render_command_buffer_builder()
+    }
+    fn create_loader_command_buffer_builder(
+        &self,
+    ) -> Result<Self::LoaderCommandBufferBuilder, Self::Error> {
+        self.get_device_ref().create_loader_command_buffer_builder()
+    }
+    fn create_staging_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::StagingVertexBuffer, Self::Error> {
+        self.get_device_ref().create_staging_vertex_buffer(len)
+    }
+    fn create_staging_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::StagingIndexBuffer, Self::Error> {
+        self.get_device_ref().create_staging_index_buffer(len)
     }
 }
 

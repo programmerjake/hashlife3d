@@ -1,15 +1,19 @@
 #[macro_use]
 mod instance_functions;
+mod buffer;
 mod command_buffer;
 mod device;
+mod device_memory;
 mod error;
 mod fence;
 mod instance;
 mod queue;
 mod semaphore;
 mod surface;
+use self::buffer::*;
 use self::command_buffer::*;
 use self::device::*;
+use self::device_memory::*;
 use self::error::*;
 use self::fence::*;
 use self::instance::*;
@@ -71,6 +75,7 @@ fn vk_make_version(major: u32, minor: u32, patch: u32) -> u32 {
 #[derive(Clone)]
 pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
+    render_queue_index: u32,
 }
 
 pub struct VulkanPausedDevice {
@@ -94,7 +99,7 @@ impl Drop for SwapchainWrapper {
 pub struct VulkanDevice {
     device_reference: VulkanDeviceReference,
     surface_state: SurfaceState,
-    queue: VulkanQueue,
+    render_queue: VulkanQueue,
     present_queue: api::VkQueue,
     graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
     swapchain: Option<Arc<SwapchainWrapper>>,
@@ -242,8 +247,14 @@ impl DeviceReference for VulkanDeviceReference {
     type Semaphore = VulkanSemaphore;
     type Fence = VulkanFence;
     type Error = VulkanError;
-    type CommandBuffer = VulkanCommandBuffer;
-    type CommandBufferBuilder = VulkanCommandBufferBuilder;
+    type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
+    type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
+    type RenderCommandBuffer = VulkanRenderCommandBuffer;
+    type RenderCommandBufferBuilder = VulkanRenderCommandBufferBuilder;
+    type StagingVertexBuffer = VulkanStagingVertexBuffer;
+    type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
+    type StagingIndexBuffer = VulkanStagingIndexBuffer;
+    type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
     fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
         let mut fence = null_or_zero();
         match unsafe {
@@ -268,7 +279,16 @@ impl DeviceReference for VulkanDeviceReference {
             result => Err(VulkanError::VulkanError(result)),
         }
     }
-    fn create_command_buffer_builder(&self) -> Result<VulkanCommandBufferBuilder> {
+    fn create_loader_command_buffer_builder(&self) -> Result<VulkanLoaderCommandBufferBuilder> {
+        unsafe { VulkanLoaderCommandBufferBuilder::new(&self.device, self.render_queue_index) }
+    }
+    fn create_render_command_buffer_builder(&self) -> Result<VulkanRenderCommandBufferBuilder> {
+        unimplemented!()
+    }
+    fn create_staging_vertex_buffer(&self, len: usize) -> Result<VulkanStagingVertexBuffer> {
+        unimplemented!()
+    }
+    fn create_staging_index_buffer(&self, len: usize) -> Result<VulkanStagingIndexBuffer> {
         unimplemented!()
     }
 }
@@ -777,8 +797,14 @@ impl Device for VulkanDevice {
     type Reference = VulkanDeviceReference;
     type Queue = VulkanQueue;
     type PausedDevice = VulkanPausedDevice;
-    type CommandBuffer = VulkanCommandBuffer;
-    type CommandBufferBuilder = VulkanCommandBufferBuilder;
+    type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
+    type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
+    type RenderCommandBuffer = VulkanRenderCommandBuffer;
+    type RenderCommandBufferBuilder = VulkanRenderCommandBufferBuilder;
+    type StagingVertexBuffer = VulkanStagingVertexBuffer;
+    type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
+    type StagingIndexBuffer = VulkanStagingIndexBuffer;
+    type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
     fn pause(self) -> VulkanPausedDevice {
         VulkanPausedDevice {
             surface_state: self.surface_state,
@@ -857,6 +883,7 @@ impl Device for VulkanDevice {
         let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
                 device: Arc::new(device),
+                render_queue_index: render_queue_index,
             },
             surface_state: SurfaceState {
                 surface: surface,
@@ -870,7 +897,7 @@ impl Device for VulkanDevice {
                 swapchain_pre_transform: swapchain_pre_transform,
                 swapchain_composite_alpha: swapchain_composite_alpha,
             },
-            queue: render_queue,
+            render_queue: render_queue,
             present_queue: present_queue,
             graphics_pipeline: None,
             swapchain: None,
@@ -886,7 +913,7 @@ impl Device for VulkanDevice {
         &self.device_reference
     }
     fn get_queue(&self) -> &VulkanQueue {
-        &self.queue
+        &self.render_queue
     }
     fn wait_for_fences_with_timeout(
         &self,
@@ -1042,7 +1069,8 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             }
             let depth_format;
             if (depth_32_format_properties.optimalTilingFeatures
-                & api::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
+                & api::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                != 0
             {
                 depth_format = api::VK_FORMAT_D32_SFLOAT;
             } else {
@@ -1067,11 +1095,13 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             }
             let swapchain_pre_transform;
             if (surface_capabilities.supportedTransforms
-                & api::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0
+                & api::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+                != 0
             {
                 swapchain_pre_transform = api::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
             } else if (surface_capabilities.supportedTransforms
-                & api::VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR) != 0
+                & api::VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR)
+                != 0
             {
                 swapchain_pre_transform = api::VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR;
             } else {
@@ -1142,8 +1172,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                         let required = api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
                             | api::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
                         (format_properties.optimalTilingFeatures & required) == required
-                    })
-                    .map(|v| *v);
+                    }).map(|v| *v);
             }
             let mut present_mode_count = 0;
             match unsafe {

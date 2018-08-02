@@ -56,8 +56,15 @@ pub struct DeviceWrapper {
     pub vkAllocateCommandBuffers: api::PFN_vkAllocateCommandBuffers,
     pub vkFreeCommandBuffers: api::PFN_vkFreeCommandBuffers,
     pub vkEndCommandBuffer: api::PFN_vkEndCommandBuffer,
+    pub vkBeginCommandBuffer: api::PFN_vkBeginCommandBuffer,
     pub vkCreateSwapchainKHR: api::PFN_vkCreateSwapchainKHR,
     pub vkDestroySwapchainKHR: api::PFN_vkDestroySwapchainKHR,
+    pub vkCreateBuffer: api::PFN_vkCreateBuffer,
+    pub vkDestroyBuffer: api::PFN_vkDestroyBuffer,
+    pub vkAllocateMemory: api::PFN_vkAllocateMemory,
+    pub vkFreeMemory: api::PFN_vkFreeMemory,
+    pub vkMapMemory: api::PFN_vkMapMemory,
+    pub vkUnmapMemory: api::PFN_vkUnmapMemory,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -194,6 +201,11 @@ impl DeviceWrapper {
                         device,
                         vkEndCommandBuffer
                     ),
+                    vkBeginCommandBuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkBeginCommandBuffer
+                    ),
                     vkCreateSwapchainKHR: get_device_fn!(
                         vk_get_device_proc_addr,
                         device,
@@ -204,6 +216,20 @@ impl DeviceWrapper {
                         device,
                         vkDestroySwapchainKHR
                     ),
+                    vkCreateBuffer: get_device_fn!(vk_get_device_proc_addr, device, vkCreateBuffer),
+                    vkDestroyBuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroyBuffer
+                    ),
+                    vkAllocateMemory: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkAllocateMemory
+                    ),
+                    vkFreeMemory: get_device_fn!(vk_get_device_proc_addr, device, vkFreeMemory),
+                    vkMapMemory: get_device_fn!(vk_get_device_proc_addr, device, vkMapMemory),
+                    vkUnmapMemory: get_device_fn!(vk_get_device_proc_addr, device, vkUnmapMemory),
                 })
             }
             result => Err(VulkanError::VulkanError(result)),

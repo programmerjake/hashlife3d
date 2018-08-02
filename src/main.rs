@@ -1,12 +1,13 @@
-#![no_main]
 #![feature(termination_trait_lib)]
 #![feature(concat_idents)]
 #![feature(vec_resize_with)]
+#![cfg_attr(not(test), no_main)]
 extern crate libc;
 mod hashtable;
 mod renderer;
 mod sdl;
 mod world3d;
+#[cfg(not(test))]
 pub use self::sdl::SDL_main;
 use renderer::*;
 use sdl::event::Event;
@@ -19,7 +20,8 @@ use world3d::{State, World};
         any(
             target_os = "windows",
             target_os = "ios",
-            target_os = "android"
+            target_os = "android",
+            test
         )
     )
 )]
@@ -42,6 +44,7 @@ fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
     }
 }
 
+#[cfg(not(test))]
 fn render_main_loop<PD: renderer::PausedDevice>(
     paused_device: PD,
     event_source: &sdl::event::EventSource,
@@ -104,6 +107,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     }
 }
 
+#[cfg(not(test))]
 fn rust_main(event_source: &sdl::event::EventSource) {
     let world_thread = std::thread::spawn(|| {
         if false {
