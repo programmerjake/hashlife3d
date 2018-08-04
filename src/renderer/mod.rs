@@ -54,9 +54,11 @@ pub trait LoaderCommandBufferBuilder: Sized {
     type StagingIndexBuffer: StagingIndexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
     fn copy_vertex_buffer_to_device(
+        &mut self,
         staging_vertex_buffer: Self::StagingVertexBuffer,
     ) -> Result<Self::DeviceVertexBuffer, Self::Error>;
     fn copy_index_buffer_to_device(
+        &mut self,
         staging_index_buffer: Self::StagingIndexBuffer,
     ) -> Result<Self::DeviceIndexBuffer, Self::Error>;
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;

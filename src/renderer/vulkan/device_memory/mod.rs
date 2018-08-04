@@ -1,7 +1,7 @@
 mod buddy_suballocation_algorithm;
+use self::buddy_suballocation_algorithm::BuddySuballocationAlgorithm as SelectedSuballocationAlgorithm;
 use super::{api, null_or_zero, DeviceWrapper, Result, VulkanError};
-use std::collections::{HashMap, HashSet};
-use std::mem;
+use std::cmp;
 use std::ptr::*;
 use std::result;
 use std::slice;
@@ -26,6 +26,9 @@ trait SuballocationAlgorithm: Send {
     fn free(&mut self, suballocation: Self::Suballocation);
 }
 
+type SelectedSuballocation =
+    <SelectedSuballocationAlgorithm as SuballocationAlgorithm>::Suballocation;
+
 pub struct DeviceMemoryWrapper {
     device: Arc<DeviceWrapper>,
     device_memory: api::VkDeviceMemory,
@@ -46,6 +49,9 @@ impl Drop for DeviceMemoryWrapper {
 }
 
 impl DeviceMemoryWrapper {
+    pub fn get_device_memory(&self) -> api::VkDeviceMemory {
+        self.device_memory
+    }
     pub unsafe fn new(
         device: Arc<DeviceWrapper>,
         size: api::VkDeviceSize,
@@ -104,102 +110,25 @@ impl DeviceMemoryWrapper {
         self.mapped_memory = None;
         unsafe { self.device.vkUnmapMemory.unwrap()(self.device.device, self.device_memory) };
     }
-}
-
-enum DeviceMemoryNodeKind {
-    User,
-    Pool {
-        suballocations: (Option<Box<DeviceMemoryNode>>, Option<Box<DeviceMemoryNode>>),
-    },
-}
-
-impl DeviceMemoryNodeKind {
-    fn is_user(&self) -> bool {
-        if let DeviceMemoryNodeKind::User = self {
-            true
-        } else {
-            false
-        }
+    pub fn get_size(&self) -> api::VkDeviceSize {
+        self.size
     }
-    fn is_pool(&self) -> bool {
-        if let DeviceMemoryNodeKind::Pool { .. } = self {
-            true
-        } else {
-            false
-        }
-    }
-    fn get_suballocations_mut(
-        &mut self,
-    ) -> Option<&mut (Option<Box<DeviceMemoryNode>>, Option<Box<DeviceMemoryNode>>)> {
-        use self::DeviceMemoryNodeKind::*;
-        match self {
-            Pool { suballocations } => Some(suballocations),
-            User => None,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
-enum DeviceMemoryNodeOrChunk {
-    Node(NonNull<DeviceMemoryNode>),
-    Chunk(NonNull<DeviceMemoryChunk>),
-}
-
-impl DeviceMemoryNodeOrChunk {
-    unsafe fn get_node<'a>(self) -> &'a mut DeviceMemoryNode {
-        use self::DeviceMemoryNodeOrChunk::*;
-        match self {
-            Node(node) => &mut *node.as_ptr(),
-            Chunk(chunk) => &mut (*chunk.as_ptr()).allocation,
-        }
-    }
-    fn is_chunk(self) -> bool {
-        if let DeviceMemoryNodeOrChunk::Chunk(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-struct DeviceMemoryNode {
-    offset: api::VkDeviceSize,
-    log2_size: u8,
-    parent: DeviceMemoryNodeOrChunk,
-    kind: DeviceMemoryNodeKind,
 }
 
 struct DeviceMemoryChunk {
     device_memory: Arc<DeviceMemoryWrapper>,
-    allocation: DeviceMemoryNode,
-}
-
-impl DeviceMemoryChunk {
-    fn new(device_memory: Arc<DeviceMemoryWrapper>, log2_size: u8) -> Box<Self> {
-        let mut retval = Box::new(Self {
-            device_memory: device_memory,
-            allocation: DeviceMemoryNode {
-                offset: 0,
-                log2_size: log2_size,
-                parent: DeviceMemoryNodeOrChunk::Chunk(NonNull::dangling()),
-                kind: DeviceMemoryNodeKind::Pool {
-                    suballocations: (None, None),
-                },
-            },
-        });
-        retval.allocation.parent = DeviceMemoryNodeOrChunk::Chunk(retval.as_mut().into());
-        retval
-    }
+    suballocation_algorithm: Arc<Mutex<SelectedSuballocationAlgorithm>>,
 }
 
 struct DeviceMemoryPoolLockedState {
-    chunks: HashMap<NonNull<DeviceMemoryChunk>, Box<DeviceMemoryChunk>>,
-    nodes_with_free_children: Vec<HashSet<DeviceMemoryNodeOrChunk>>,
+    chunks: Vec<DeviceMemoryChunk>,
+    next_chunk: usize,
 }
 
 struct DeviceMemoryPool {
     device: Arc<DeviceWrapper>,
     memory_type_index: u32,
+    must_be_mapped: bool,
     state: Mutex<DeviceMemoryPoolLockedState>,
 }
 
@@ -208,98 +137,225 @@ pub struct DeviceMemoryPoolRef(Arc<DeviceMemoryPool>);
 unsafe impl Sync for DeviceMemoryPoolRef {}
 unsafe impl Send for DeviceMemoryPoolRef {}
 
-pub trait GenericDeviceMemoryPoolAllocation: Send {
-    fn get_device_memory(&self) -> &Arc<DeviceMemoryWrapper>;
-    fn get_offset(&self) -> api::VkDeviceSize;
-    fn get_size(&self) -> api::VkDeviceSize;
+struct SuballocationState {
+    suballocation_algorithm: Arc<Mutex<SelectedSuballocationAlgorithm>>,
+    suballocation: SelectedSuballocation,
 }
 
-pub trait GenericDeviceMemoryPoolRef: Sync + Send + Clone {
-    type Allocation: GenericDeviceMemoryPoolAllocation;
-    unsafe fn new(device: Arc<DeviceWrapper>, memory_type_index: u32) -> Self;
-    fn allocate(
-        &self,
-        size: api::VkDeviceSize,
-        alignment: api::VkDeviceSize,
-    ) -> Result<Self::Allocation>;
+pub struct DeviceMemoryPoolAllocation {
+    device_memory: Arc<DeviceMemoryWrapper>,
+    suballocation_state: Option<SuballocationState>,
 }
+
+impl DeviceMemoryPoolAllocation {
+    pub fn get_device_memory(&self) -> &Arc<DeviceMemoryWrapper> {
+        &self.device_memory
+    }
+    pub fn get_offset(&self) -> api::VkDeviceSize {
+        match &self.suballocation_state {
+            Some(SuballocationState { suballocation, .. }) => suballocation.get_offset(),
+            None => 0,
+        }
+    }
+    pub fn get_size(&self) -> api::VkDeviceSize {
+        match &self.suballocation_state {
+            Some(SuballocationState { suballocation, .. }) => suballocation.get_size(),
+            None => self.device_memory.get_size(),
+        }
+    }
+    pub fn get_mapped_memory(&self) -> Option<NonNull<[u8]>> {
+        let mapped_memory = match self.device_memory.get_mapped_memory() {
+            Some(m) => unsafe { &mut *m.as_ptr() },
+            None => return None,
+        };
+        let offset = self.get_offset() as usize;
+        let size = self.get_size() as usize;
+        Some(mapped_memory[offset..][..size].into())
+    }
+}
+
+impl Drop for DeviceMemoryPoolAllocation {
+    fn drop(&mut self) {
+        let SuballocationState {
+            suballocation_algorithm,
+            suballocation,
+        } = self.suballocation_state.take().unwrap();
+        suballocation_algorithm.lock().unwrap().free(suballocation);
+    }
+}
+
+const ALLOCATION_MIN_CHUNK_SIZE: api::VkDeviceSize = 16 << 20; // 16 MiB
+const ALLOCATION_MAX_NONDEDICATED_CHUNK_SIZE: api::VkDeviceSize = 128 << 20; // 128 MiB
 
 impl DeviceMemoryPoolRef {
-    pub unsafe fn new(device: Arc<DeviceWrapper>, memory_type_index: u32) -> Self {
+    pub unsafe fn new(
+        device: Arc<DeviceWrapper>,
+        memory_type_index: u32,
+        must_be_mapped: bool,
+    ) -> Self {
         DeviceMemoryPoolRef(Arc::new(DeviceMemoryPool {
             device: device,
             memory_type_index: memory_type_index,
+            must_be_mapped: must_be_mapped,
             state: Mutex::new(DeviceMemoryPoolLockedState {
-                chunks: HashMap::new(),
-                nodes_with_free_children: Vec::new(),
+                chunks: Vec::new(),
+                next_chunk: 0,
             }),
         }))
     }
     pub fn allocate(
         &self,
-        size: api::VkDeviceSize,
+        mut size: api::VkDeviceSize,
         alignment: api::VkDeviceSize,
     ) -> Result<DeviceMemoryPoolAllocation> {
         assert!(size != 0 && alignment != 0);
-        unimplemented!()
-    }
-}
-
-pub struct DeviceMemoryPoolAllocation {
-    pool: Arc<DeviceMemoryPool>,
-    device_memory: Arc<DeviceMemoryWrapper>,
-    offset: api::VkDeviceSize,
-    size: api::VkDeviceSize,
-    chunk: NonNull<DeviceMemoryChunk>,
-    node: DeviceMemoryNodeOrChunk,
-}
-
-impl GenericDeviceMemoryPoolAllocation for DeviceMemoryPoolAllocation {
-    fn get_device_memory(&self) -> &Arc<DeviceMemoryWrapper> {
-        unimplemented!()
-    }
-    fn get_offset(&self) -> api::VkDeviceSize {
-        unimplemented!()
-    }
-    fn get_size(&self) -> api::VkDeviceSize {
-        unimplemented!()
+        assert!(alignment.is_power_of_two());
+        size = cmp::max(size, alignment);
+        size = size.checked_next_power_of_two().unwrap();
+        let mut locked_state = self.0.state.lock().unwrap();
+        let DeviceMemoryPoolLockedState { chunks, next_chunk } = &mut *locked_state;
+        for _ in 0..chunks.len() {
+            if *next_chunk >= chunks.len() {
+                *next_chunk = 0;
+            }
+            let chunk = &chunks[*next_chunk];
+            if chunk.device_memory.get_size() < size {
+                match chunk
+                    .suballocation_algorithm
+                    .lock()
+                    .unwrap()
+                    .allocate(size, alignment)
+                {
+                    Ok(suballocation) => {
+                        return Ok(DeviceMemoryPoolAllocation {
+                            device_memory: chunk.device_memory.clone(),
+                            suballocation_state: Some(SuballocationState {
+                                suballocation_algorithm: chunk.suballocation_algorithm.clone(),
+                                suballocation: suballocation,
+                            }),
+                        });
+                    }
+                    Err(SuballocationFailed {}) => (),
+                }
+            }
+            *next_chunk = *next_chunk + 1;
+        }
+        *next_chunk = chunks.len();
+        assert!(ALLOCATION_MIN_CHUNK_SIZE > 1);
+        let mut new_chunk_size = chunks
+            .last()
+            .map(|chunk| chunk.device_memory.get_size() * 2)
+            .unwrap_or(ALLOCATION_MIN_CHUNK_SIZE);
+        new_chunk_size = cmp::max(new_chunk_size, ALLOCATION_MAX_NONDEDICATED_CHUNK_SIZE);
+        new_chunk_size = cmp::min(new_chunk_size, size);
+        let mut device_memory = unsafe {
+            DeviceMemoryWrapper::new(
+                self.0.device.clone(),
+                new_chunk_size,
+                self.0.memory_type_index,
+            )
+        }?;
+        if self.0.must_be_mapped {
+            unsafe {
+                device_memory.map_memory()?;
+            }
+        }
+        let device_memory = Arc::new(device_memory);
+        let mut suballocation_algorithm = SelectedSuballocationAlgorithm::new(new_chunk_size);
+        let suballocation = suballocation_algorithm.allocate(size, alignment).unwrap();
+        let suballocation_algorithm = Arc::new(Mutex::new(suballocation_algorithm));
+        chunks.push(DeviceMemoryChunk {
+            device_memory: device_memory.clone(),
+            suballocation_algorithm: suballocation_algorithm.clone(),
+        });
+        Ok(DeviceMemoryPoolAllocation {
+            device_memory: device_memory,
+            suballocation_state: Some(SuballocationState {
+                suballocation_algorithm: suballocation_algorithm,
+                suballocation: suballocation,
+            }),
+        })
     }
 }
 
 unsafe impl Send for DeviceMemoryPoolAllocation {}
 
-impl Drop for DeviceMemoryPoolAllocation {
-    fn drop(&mut self) {
-        unimplemented!()
-        /*
-        let state = self.pool.state.lock().unwrap();
-        unsafe {
-            let mut node = self.node;
-            assert!(node.get_node().kind.is_user());
-            node.get_node().kind = DeviceMemoryNodeKind::Pool {
-                suballocations: (None, None),
-            };
-            loop {
-                let parent = node.get_node().parent;
-                let parent_suballocations =
-                    parent.get_node().kind.get_suballocations_mut().unwrap();
-                let (my_suballocation, other_suballocation) = parent_suballocations;
-                if (node.get_node().offset & (1 << node.get_node().log2_size)) != 0 {
-                    mem::swap(&mut my_suballocation, &mut other_suballocation);
-                }
-                *my_suballocation = None;
-                node = parent;
-                if other_suballocation.is_none() && !node.is_chunk() {
-                    state.nodes_with_free_children[node.get_node().log2_size as usize]
-                        .remove(&node);
-                } else {
-                    unimplemented!();
-                    /* state.nodes_with_free_children[node.get_node().log2_size as usize]
-                        .insert(&node); */
-                    break;
-                }
+pub struct DeviceMemoryPools {
+    memory_pools: Vec<DeviceMemoryPoolRef>,
+    memory_properties: api::VkPhysicalDeviceMemoryProperties,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct NoMatchingMemoryType;
+
+impl DeviceMemoryPools {
+    pub unsafe fn new(
+        device: Arc<DeviceWrapper>,
+        memory_properties: api::VkPhysicalDeviceMemoryProperties,
+    ) -> Self {
+        assert!(memory_properties.memoryTypeCount <= api::VK_MAX_MEMORY_TYPES as u32);
+        let mut memory_pools = Vec::with_capacity(memory_properties.memoryTypeCount as usize);
+        for memory_type_index in 0..memory_properties.memoryTypeCount {
+            memory_pools.push(DeviceMemoryPoolRef::new(
+                device.clone(),
+                memory_type_index,
+                (memory_properties.memoryTypes[memory_type_index as usize].propertyFlags
+                    & api::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                    != 0,
+            ));
+        }
+        Self {
+            memory_pools: memory_pools,
+            memory_properties: memory_properties,
+        }
+    }
+    fn get_matching_memory_type_index_helper(
+        &self,
+        memory_type_bits: u32,
+        required_properties: api::VkMemoryPropertyFlags,
+    ) -> Option<u32> {
+        assert_eq!(
+            memory_type_bits >> self.memory_properties.memoryTypeCount,
+            0
+        );
+        for memory_type_index in 0..self.memory_properties.memoryTypeCount {
+            if (memory_type_bits & (1 << memory_type_index)) == 0 {
+                continue;
+            }
+            if (self.memory_properties.memoryTypes[memory_type_index as usize].propertyFlags
+                & required_properties)
+                == required_properties
+            {
+                return Some(memory_type_index);
             }
         }
-        mem::drop(state);*/
+        None
+    }
+    pub fn get_matching_memory_type_index(
+        &self,
+        memory_type_bits: u32,
+        preferred_properties: Option<api::VkMemoryPropertyFlags>,
+        required_properties: api::VkMemoryPropertyFlags,
+    ) -> result::Result<u32, NoMatchingMemoryType> {
+        preferred_properties
+            .map_or(None, |preferred_properties| {
+                self.get_matching_memory_type_index_helper(memory_type_bits, preferred_properties)
+            }).or_else(|| {
+                self.get_matching_memory_type_index_helper(memory_type_bits, required_properties)
+            }).ok_or(NoMatchingMemoryType {})
+    }
+    pub fn allocate_from_memory_requirements(
+        &self,
+        memory_requirements: api::VkMemoryRequirements,
+        preferred_properties: Option<api::VkMemoryPropertyFlags>,
+        required_properties: api::VkMemoryPropertyFlags,
+    ) -> Result<DeviceMemoryPoolAllocation> {
+        let memory_type_index = self.get_matching_memory_type_index(
+            memory_requirements.memoryTypeBits,
+            preferred_properties,
+            required_properties,
+        )?;
+        self.memory_pools[memory_type_index as usize]
+            .allocate(memory_requirements.size, memory_requirements.alignment)
     }
 }

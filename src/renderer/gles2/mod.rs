@@ -453,11 +453,13 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
         unimplemented!()
     }
     fn copy_vertex_buffer_to_device(
+        &mut self,
         staging_vertex_buffer: GLES2StagingVertexBuffer,
     ) -> Result<GLES2DeviceVertexBuffer> {
         unimplemented!()
     }
     fn copy_index_buffer_to_device(
+        &mut self,
         staging_index_buffer: GLES2StagingIndexBuffer,
     ) -> Result<GLES2DeviceIndexBuffer> {
         unimplemented!()

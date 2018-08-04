@@ -65,6 +65,10 @@ pub struct DeviceWrapper {
     pub vkFreeMemory: api::PFN_vkFreeMemory,
     pub vkMapMemory: api::PFN_vkMapMemory,
     pub vkUnmapMemory: api::PFN_vkUnmapMemory,
+    pub vkGetBufferMemoryRequirements: api::PFN_vkGetBufferMemoryRequirements,
+    pub vkBindBufferMemory: api::PFN_vkBindBufferMemory,
+    pub vkCmdPipelineBarrier: api::PFN_vkCmdPipelineBarrier,
+    pub vkCmdCopyBuffer: api::PFN_vkCmdCopyBuffer,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -230,6 +234,26 @@ impl DeviceWrapper {
                     vkFreeMemory: get_device_fn!(vk_get_device_proc_addr, device, vkFreeMemory),
                     vkMapMemory: get_device_fn!(vk_get_device_proc_addr, device, vkMapMemory),
                     vkUnmapMemory: get_device_fn!(vk_get_device_proc_addr, device, vkUnmapMemory),
+                    vkGetBufferMemoryRequirements: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkGetBufferMemoryRequirements
+                    ),
+                    vkBindBufferMemory: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkBindBufferMemory
+                    ),
+                    vkCmdPipelineBarrier: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdPipelineBarrier
+                    ),
+                    vkCmdCopyBuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdCopyBuffer
+                    ),
                 })
             }
             result => Err(VulkanError::VulkanError(result)),

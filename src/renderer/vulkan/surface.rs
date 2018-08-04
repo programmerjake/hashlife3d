@@ -53,4 +53,5 @@ pub struct SurfaceState {
     pub swapchain_desired_image_count: u32,
     pub swapchain_pre_transform: api::VkSurfaceTransformFlagBitsKHR,
     pub swapchain_composite_alpha: api::VkCompositeAlphaFlagBitsKHR,
+    pub physical_device_memory_properties: api::VkPhysicalDeviceMemoryProperties,
 }

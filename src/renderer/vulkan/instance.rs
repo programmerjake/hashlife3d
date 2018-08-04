@@ -20,6 +20,7 @@ pub struct InstanceWrapper {
     pub vkGetPhysicalDeviceFormatProperties: api::PFN_vkGetPhysicalDeviceFormatProperties,
     pub vkGetPhysicalDeviceSurfacePresentModesKHR:
         api::PFN_vkGetPhysicalDeviceSurfacePresentModesKHR,
+    pub vkGetPhysicalDeviceMemoryProperties: api::PFN_vkGetPhysicalDeviceMemoryProperties,
 }
 
 unsafe impl Send for InstanceWrapper {}
@@ -112,6 +113,11 @@ impl InstanceWrapper {
                         vk_get_instance_proc_addr,
                         instance,
                         vkGetPhysicalDeviceSurfacePresentModesKHR
+                    ),
+                    vkGetPhysicalDeviceMemoryProperties: get_instance_fn!(
+                        vk_get_instance_proc_addr,
+                        instance,
+                        vkGetPhysicalDeviceMemoryProperties
                     ),
                 })
             }

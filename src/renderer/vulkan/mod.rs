@@ -76,6 +76,7 @@ fn vk_make_version(major: u32, minor: u32, patch: u32) -> u32 {
 pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
     render_queue_index: u32,
+    device_memory_pools: Arc<DeviceMemoryPools>,
 }
 
 pub struct VulkanPausedDevice {
@@ -286,10 +287,12 @@ impl DeviceReference for VulkanDeviceReference {
         unimplemented!()
     }
     fn create_staging_vertex_buffer(&self, len: usize) -> Result<VulkanStagingVertexBuffer> {
-        unimplemented!()
+        unsafe {
+            create_staging_vertex_buffer(self.device.clone(), &*self.device_memory_pools, len)
+        }
     }
     fn create_staging_index_buffer(&self, len: usize) -> Result<VulkanStagingIndexBuffer> {
-        unimplemented!()
+        unsafe { create_staging_index_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
 }
 
@@ -822,6 +825,7 @@ impl Device for VulkanDevice {
             swapchain_desired_image_count,
             swapchain_pre_transform,
             swapchain_composite_alpha,
+            physical_device_memory_properties,
         } = paused_device.surface_state;
         let device_queue_create_infos = [
             api::VkDeviceQueueCreateInfo {
@@ -880,10 +884,14 @@ impl Device for VulkanDevice {
         let render_queue = VulkanQueue {
             queue: render_queue,
         };
+        let device = Arc::new(device);
         let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
-                device: Arc::new(device),
+                device: device.clone(),
                 render_queue_index: render_queue_index,
+                device_memory_pools: Arc::new(unsafe {
+                    DeviceMemoryPools::new(device, physical_device_memory_properties)
+                }),
             },
             surface_state: SurfaceState {
                 surface: surface,
@@ -896,6 +904,7 @@ impl Device for VulkanDevice {
                 swapchain_desired_image_count: swapchain_desired_image_count,
                 swapchain_pre_transform: swapchain_pre_transform,
                 swapchain_composite_alpha: swapchain_composite_alpha,
+                physical_device_memory_properties: physical_device_memory_properties,
             },
             render_queue: render_queue,
             present_queue: present_queue,
@@ -1302,6 +1311,13 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             {
                 swapchain_desired_image_count = surface_capabilities.maxImageCount;
             }
+            let mut physical_device_memory_properties = unsafe { mem::zeroed() };
+            unsafe {
+                instance.vkGetPhysicalDeviceMemoryProperties.unwrap()(
+                    physical_device,
+                    &mut physical_device_memory_properties,
+                );
+            }
             match (
                 present_queue_index,
                 render_queue_index,
@@ -1326,6 +1342,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                             swapchain_desired_image_count: swapchain_desired_image_count,
                             swapchain_pre_transform: swapchain_pre_transform,
                             swapchain_composite_alpha: swapchain_composite_alpha,
+                            physical_device_memory_properties: physical_device_memory_properties,
                         },
                     });
                 }

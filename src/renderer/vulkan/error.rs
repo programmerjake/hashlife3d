@@ -1,4 +1,4 @@
-use super::api;
+use super::{api, NoMatchingMemoryType};
 use sdl;
 use std::error::Error;
 use std::fmt;
@@ -8,11 +8,18 @@ pub enum VulkanError {
     VulkanError(api::VkResult),
     SDLError(sdl::SDLError),
     NoMatchingPhysicalDevice,
+    NoMatchingMemoryType,
 }
 
 impl From<sdl::SDLError> for VulkanError {
     fn from(v: sdl::SDLError) -> Self {
         VulkanError::SDLError(v)
+    }
+}
+
+impl From<NoMatchingMemoryType> for VulkanError {
+    fn from(_: NoMatchingMemoryType) -> Self {
+        VulkanError::NoMatchingMemoryType
     }
 }
 
@@ -57,6 +64,7 @@ impl fmt::Display for VulkanError {
             }
             VulkanError::SDLError(error) => (error as &fmt::Display).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("no matching physical device"),
+            VulkanError::NoMatchingMemoryType => f.write_str("no matching memory type"),
         }
     }
 }
@@ -67,6 +75,7 @@ impl fmt::Debug for VulkanError {
             VulkanError::SDLError(error) => (error as &fmt::Debug).fmt(f),
             VulkanError::VulkanError(_) => (self as &fmt::Display).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("NoMatchingPhysicalDevice"),
+            VulkanError::NoMatchingMemoryType => f.write_str("NoMatchingMemoryType"),
         }
     }
 }
