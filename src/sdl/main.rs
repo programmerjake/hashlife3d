@@ -24,20 +24,22 @@ impl<F: FnOnce()> Drop for CallOnDrop<F> {
     }
 }
 
+unsafe fn run_main() {
+    if cfg!(debug_assertions) {
+        env::set_var("RUST_BACKTRACE", "1");
+    }
+    if api::SDL_Init(api::SDL_INIT_VIDEO) != 0 {
+        panic!("SDL_Init failed: {}", super::get_error());
+    }
+    let sdl = CallOnDrop::new(|| api::SDL_Quit());
+    let retval = ::rust_main(&super::event::make_event_source());
+    drop(sdl);
+    retval
+}
+
 #[cfg(not(test))]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
-    catch_unwind(|| unsafe {
-        if cfg!(debug_assertions) {
-            env::set_var("RUST_BACKTRACE", "1");
-        }
-        if api::SDL_Init(api::SDL_INIT_VIDEO) != 0 {
-            panic!("SDL_Init failed: {}", super::get_error());
-        }
-        let sdl = CallOnDrop::new(|| api::SDL_Quit());
-        let retval = ::rust_main(&super::event::make_event_source());
-        drop(sdl);
-        retval
-    }).report()
+    catch_unwind(|| unsafe { run_main() }).report()
 }

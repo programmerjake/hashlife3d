@@ -466,6 +466,19 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
     type CommandBuffer = GLES2RenderCommandBuffer;
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    fn set_buffers(
+        &mut self,
+        vertex_buffer: GLES2DeviceVertexBuffer,
+        index_buffer: GLES2DeviceIndexBuffer,
+    ) {
+        unimplemented!()
+    }
+    fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
+        unimplemented!()
+    }
+    fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
+        unimplemented!()
+    }
     fn finish(self) -> Result<GLES2RenderCommandBuffer> {
         unimplemented!()
     }
@@ -560,7 +573,7 @@ impl Device for GLES2Device {
         &mut self,
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
-        render_command_buffers: &[GLES2RenderCommandBuffer],
+        render_command_buffer_groups: &[RenderCommandBufferGroup<GLES2RenderCommandBuffer>],
     ) -> Result<()> {
         unimplemented!()
     }

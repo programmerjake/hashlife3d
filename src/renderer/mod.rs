@@ -68,6 +68,13 @@ pub trait RenderCommandBufferBuilder: Sized {
     type CommandBuffer: CommandBuffer + Clone;
     type DeviceVertexBuffer: DeviceVertexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
+    fn set_buffers(
+        &mut self,
+        vertex_buffer: Self::DeviceVertexBuffer,
+        index_buffer: Self::DeviceIndexBuffer,
+    );
+    fn set_initial_transform(&mut self, transform: math::Mat4<f32>);
+    fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32);
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
 }
 
@@ -116,6 +123,11 @@ pub trait PausedDevice: Sized {
     fn get_window(&self) -> &sdl::window::Window;
 }
 
+pub struct RenderCommandBufferGroup<'a, RCB: CommandBuffer> {
+    pub render_command_buffers: &'a [RCB],
+    pub final_transform: math::Mat4<f32>,
+}
+
 pub trait Device: Sized {
     type Error: error::Error + 'static;
     type Reference: DeviceReference<
@@ -162,7 +174,7 @@ pub trait Device: Sized {
         &mut self,
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<Self::LoaderCommandBuffer>,
-        render_command_buffers: &[Self::RenderCommandBuffer],
+        render_command_buffer_groups: &[RenderCommandBufferGroup<Self::RenderCommandBuffer>],
     ) -> Result<(), Self::Error>;
     fn create_render_command_buffer_builder(
         &self,

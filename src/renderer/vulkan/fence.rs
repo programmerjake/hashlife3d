@@ -7,6 +7,7 @@ pub struct FenceWrapper {
     pub fence: api::VkFence,
 }
 
+#[allow(dead_code)]
 pub enum FenceState {
     Unsignaled,
     Signaled,

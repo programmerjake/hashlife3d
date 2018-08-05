@@ -50,10 +50,16 @@ fn render_main_loop<PD: renderer::PausedDevice>(
 ) {
     struct Running<D: renderer::Device> {
         device: D,
+        render_command_buffer: D::RenderCommandBuffer,
     }
     impl<D: renderer::Device> Running<D> {
         fn new(device: D) -> Result<Self, D::Error> {
-            Ok(Self { device: device })
+            let render_command_buffer_builder = device.create_render_command_buffer_builder()?;
+            let render_command_buffer = render_command_buffer_builder.finish()?;
+            Ok(Self {
+                device: device,
+                render_command_buffer: render_command_buffer,
+            })
         }
     }
     struct Paused<PD: renderer::PausedDevice> {
@@ -87,8 +93,14 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                 } else {
                     state
                         .device
-                        .render_frame(math::Vec4::new(1.0, 0.0, 0.0, 1.0), &mut Vec::new(), &[])
-                        .unwrap();
+                        .render_frame(
+                            math::Vec4::new(1.0, 0.0, 0.0, 1.0),
+                            &mut Vec::new(),
+                            &[RenderCommandBufferGroup {
+                                render_command_buffers: &[state.render_command_buffer.clone()],
+                                final_transform: math::Mat4::identity(),
+                            }],
+                        ).unwrap();
                 }
                 state_enum = State::Running(state);
             }

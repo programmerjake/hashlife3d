@@ -89,6 +89,8 @@ pub struct DeviceWrapper {
     pub vkQueuePresentKHR: api::PFN_vkQueuePresentKHR,
     pub vkCmdSetViewport: api::PFN_vkCmdSetViewport,
     pub vkCmdSetScissor: api::PFN_vkCmdSetScissor,
+    pub vkCmdBindPipeline: api::PFN_vkCmdBindPipeline,
+    pub vkCmdPushConstants: api::PFN_vkCmdPushConstants,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -361,6 +363,16 @@ impl DeviceWrapper {
                         vk_get_device_proc_addr,
                         device,
                         vkCmdSetScissor
+                    ),
+                    vkCmdBindPipeline: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdBindPipeline
+                    ),
+                    vkCmdPushConstants: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdPushConstants
                     ),
                 })
             }

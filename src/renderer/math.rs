@@ -184,6 +184,18 @@ macro_rules! make_vec {
             }
         }
 
+        impl<'a, T: Clone> Into<[T; $size]> for &'a $name<T> {
+            fn into(self) -> [T; $size] {
+                [$(self.$members.clone(),)* self.$last_member.clone()]
+            }
+        }
+
+        impl<'a, T: Clone> Into<[T; $size]> for &'a mut $name<T> {
+            fn into(self) -> [T; $size] {
+                [$(self.$members.clone(),)* self.$last_member.clone()]
+            }
+        }
+
         impl VecSizeTrait for $name<()> {
             fn len(&self) -> usize {
                 $size
@@ -425,6 +437,50 @@ impl<T> Into<[[T; 4]; 4]> for Mat4<T> {
             self.c1.into(),
             self.c2.into(),
             self.c3.into(),
+        ]
+    }
+}
+
+impl<'a, T: Clone> Into<[Vec4<T>; 4]> for &'a Mat4<T> {
+    fn into(self) -> [Vec4<T>; 4] {
+        [
+            self.c0.clone(),
+            self.c1.clone(),
+            self.c2.clone(),
+            self.c3.clone(),
+        ]
+    }
+}
+
+impl<'a, T: Clone> Into<[[T; 4]; 4]> for &'a Mat4<T> {
+    fn into(self) -> [[T; 4]; 4] {
+        [
+            (&self.c0).into(),
+            (&self.c1).into(),
+            (&self.c2).into(),
+            (&self.c3).into(),
+        ]
+    }
+}
+
+impl<'a, T: Clone> Into<[Vec4<T>; 4]> for &'a mut Mat4<T> {
+    fn into(self) -> [Vec4<T>; 4] {
+        [
+            self.c0.clone(),
+            self.c1.clone(),
+            self.c2.clone(),
+            self.c3.clone(),
+        ]
+    }
+}
+
+impl<'a, T: Clone> Into<[[T; 4]; 4]> for &'a mut Mat4<T> {
+    fn into(self) -> [[T; 4]; 4] {
+        [
+            (&mut self.c0).into(),
+            (&mut self.c1).into(),
+            (&mut self.c2).into(),
+            (&mut self.c3).into(),
         ]
     }
 }

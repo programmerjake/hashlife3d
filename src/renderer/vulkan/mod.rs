@@ -27,10 +27,10 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::mem;
+use std::os::raw::c_void;
 use std::ptr::*;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 use std::u32;
 
 trait NullOrZero {
@@ -78,7 +78,9 @@ fn vk_make_version(major: u32, minor: u32, patch: u32) -> u32 {
 pub struct VulkanDeviceReference {
     device: Arc<DeviceWrapper>,
     render_queue_index: u32,
+    render_pass: Arc<RenderPassWrapper>,
     device_memory_pools: Arc<DeviceMemoryPools>,
+    pipeline_layout: Arc<PipelineLayoutWrapper>,
 }
 
 pub struct VulkanPausedDevice {
@@ -116,14 +118,6 @@ pub struct VulkanDevice {
     in_progress_present_semaphores: VecDeque<SemaphoreWrapper>,
 }
 
-fn get_wait_timeout(duration: Duration) -> u64 {
-    if duration > Duration::from_nanos(u64::MAX) {
-        u64::MAX
-    } else {
-        1000_000_000 * duration.as_secs() + duration.subsec_nanos() as u64
-    }
-}
-
 struct ShaderModuleWrapper {
     device: Arc<DeviceWrapper>,
     shader_module: api::VkShaderModule,
@@ -157,10 +151,10 @@ impl Drop for RenderPassWrapper {
 struct GraphicsPipelineWrapper {
     device: Arc<DeviceWrapper>,
     pipeline: api::VkPipeline,
-    _pipeline_layout: PipelineLayoutWrapper,
+    pipeline_layout: Arc<PipelineLayoutWrapper>,
     _vertex_shader: ShaderModuleWrapper,
     _fragment_shader: ShaderModuleWrapper,
-    render_pass: RenderPassWrapper,
+    render_pass: Arc<RenderPassWrapper>,
 }
 
 impl Drop for GraphicsPipelineWrapper {
@@ -169,44 +163,54 @@ impl Drop for GraphicsPipelineWrapper {
     }
 }
 
-struct DescriptorSetLayoutWrapper {
-    device: Arc<DeviceWrapper>,
-    descriptor_set_layout: api::VkDescriptorSetLayout,
-}
+mod descriptor_set_layout {
+    use super::*;
+    pub struct DescriptorSetLayoutWrapper {
+        pub device: Arc<DeviceWrapper>,
+        pub descriptor_set_layout: api::VkDescriptorSetLayout,
+    }
 
-impl Drop for DescriptorSetLayoutWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.vkDestroyDescriptorSetLayout.unwrap()(
-                self.device.device,
-                self.descriptor_set_layout,
-                null(),
-            )
+    impl Drop for DescriptorSetLayoutWrapper {
+        fn drop(&mut self) {
+            unsafe {
+                self.device.vkDestroyDescriptorSetLayout.unwrap()(
+                    self.device.device,
+                    self.descriptor_set_layout,
+                    null(),
+                )
+            }
         }
     }
 }
 
-struct PipelineLayoutWrapper {
-    device: Arc<DeviceWrapper>,
-    pipeline_layout: api::VkPipelineLayout,
-    _descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
-}
+use self::descriptor_set_layout::DescriptorSetLayoutWrapper;
 
-impl Drop for PipelineLayoutWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.vkDestroyPipelineLayout.unwrap()(
-                self.device.device,
-                self.pipeline_layout,
-                null(),
-            )
+mod pipeline_layout {
+    use super::*;
+    pub struct PipelineLayoutWrapper {
+        pub device: Arc<DeviceWrapper>,
+        pub pipeline_layout: api::VkPipelineLayout,
+        pub _descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
+    }
+
+    impl Drop for PipelineLayoutWrapper {
+        fn drop(&mut self) {
+            unsafe {
+                self.device.vkDestroyPipelineLayout.unwrap()(
+                    self.device.device,
+                    self.pipeline_layout,
+                    null(),
+                )
+            }
         }
     }
 }
+
+use self::pipeline_layout::PipelineLayoutWrapper;
 
 struct FramebufferWrapper {
     device: Arc<DeviceWrapper>,
-    image_views: Vec<Arc<ImageViewWrapper>>,
+    _image_views: Vec<Arc<ImageViewWrapper>>,
     framebuffer: api::VkFramebuffer,
 }
 
@@ -282,7 +286,14 @@ impl DeviceReference for VulkanDeviceReference {
         unsafe { VulkanLoaderCommandBufferBuilder::new(&self.device, self.render_queue_index) }
     }
     fn create_render_command_buffer_builder(&self) -> Result<VulkanRenderCommandBufferBuilder> {
-        unimplemented!()
+        unsafe {
+            VulkanRenderCommandBufferBuilder::new(
+                &self.device,
+                self.render_queue_index,
+                self.render_pass.render_pass,
+                self.pipeline_layout.clone(),
+            )
+        }
     }
     fn create_staging_vertex_buffer(&self, len: usize) -> Result<VulkanStagingVertexBuffer> {
         unsafe {
@@ -314,10 +325,61 @@ impl From<math::Mat4> for AlignedMat4 {
     }
 }
 
+impl<'a> From<&'a math::Mat4> for AlignedMat4 {
+    fn from(v: &'a math::Mat4) -> AlignedMat4 {
+        AlignedMat4(v.into())
+    }
+}
+
+impl<'a> From<&'a mut math::Mat4> for AlignedMat4 {
+    fn from(v: &'a mut math::Mat4) -> AlignedMat4 {
+        AlignedMat4(v.into())
+    }
+}
+
 /// must match PushConstants in shaders/vulkan_main.vert
 #[repr(C)]
 struct PushConstants {
-    transform: AlignedMat4,
+    initial_transform: AlignedMat4,
+    final_transform: AlignedMat4,
+}
+
+unsafe fn set_push_constants(
+    device: &Arc<DeviceWrapper>,
+    command_buffer: api::VkCommandBuffer,
+    layout: api::VkPipelineLayout,
+    stage_flags: api::VkShaderStageFlags,
+    push_constants: PushConstants,
+) {
+    device.vkCmdPushConstants.unwrap()(
+        command_buffer,
+        layout,
+        stage_flags,
+        0,
+        mem::size_of::<PushConstants>() as u32,
+        &push_constants as *const PushConstants as *const c_void,
+    );
+}
+
+unsafe fn set_push_constants_initial_transform(
+    device: &Arc<DeviceWrapper>,
+    command_buffer: api::VkCommandBuffer,
+    layout: api::VkPipelineLayout,
+    stage_flags: api::VkShaderStageFlags,
+    push_constants_initial_transform: AlignedMat4,
+) {
+    let push_constants: PushConstants = mem::uninitialized();
+    let offset = &push_constants.initial_transform as *const AlignedMat4 as usize
+        - &push_constants as *const PushConstants as usize;
+    mem::forget(push_constants);
+    device.vkCmdPushConstants.unwrap()(
+        command_buffer,
+        layout,
+        stage_flags,
+        offset as u32,
+        mem::size_of::<AlignedMat4>() as u32,
+        &push_constants_initial_transform as *const AlignedMat4 as *const c_void,
+    );
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -415,158 +477,158 @@ macro_rules! get_vertex_input_attribute_description {
 const DEPTH_ATTACHEMENT_INDEX: usize = 0;
 const COLOR_ATTACHEMENT_INDEX: usize = 1;
 
+fn create_render_pass(
+    device: Arc<DeviceWrapper>,
+    surface_state: &SurfaceState,
+) -> Result<RenderPassWrapper> {
+    let mut render_pass = null_or_zero();
+    let mut attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
+    attachments[COLOR_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
+        flags: 0,
+        format: surface_state.surface_format.format,
+        samples: api::VK_SAMPLE_COUNT_1_BIT,
+        loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
+        storeOp: api::VK_ATTACHMENT_STORE_OP_STORE,
+        stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+        finalLayout: api::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+    attachments[DEPTH_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
+        flags: 0,
+        format: surface_state.depth_format,
+        samples: api::VK_SAMPLE_COUNT_1_BIT,
+        loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
+        storeOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+        finalLayout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    let color_attachments = [api::VkAttachmentReference {
+        attachment: COLOR_ATTACHEMENT_INDEX as u32,
+        layout: api::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    }];
+    let subpasses = [api::VkSubpassDescription {
+        flags: 0,
+        pipelineBindPoint: api::VK_PIPELINE_BIND_POINT_GRAPHICS,
+        inputAttachmentCount: 0,
+        pInputAttachments: null(),
+        colorAttachmentCount: color_attachments.len() as u32,
+        pColorAttachments: color_attachments.as_ptr(),
+        pResolveAttachments: null(),
+        pDepthStencilAttachment: &api::VkAttachmentReference {
+            attachment: DEPTH_ATTACHEMENT_INDEX as u32,
+            layout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        },
+        preserveAttachmentCount: 0,
+        pPreserveAttachments: null(),
+    }];
+    let dependencies = [];
+    match unsafe {
+        device.vkCreateRenderPass.unwrap()(
+            device.device,
+            &api::VkRenderPassCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                attachmentCount: attachments.len() as u32,
+                pAttachments: attachments.as_ptr(),
+                subpassCount: subpasses.len() as u32,
+                pSubpasses: subpasses.as_ptr(),
+                dependencyCount: dependencies.len() as u32,
+                pDependencies: dependencies.as_ptr(),
+            },
+            null(),
+            &mut render_pass,
+        )
+    } {
+        api::VK_SUCCESS => Ok(RenderPassWrapper {
+            device: device,
+            render_pass: render_pass,
+        }),
+        result => Err(VulkanError::VulkanError(result)),
+    }
+}
+
+fn create_descriptor_set_layout(device: Arc<DeviceWrapper>) -> Result<DescriptorSetLayoutWrapper> {
+    let bindings = [api::VkDescriptorSetLayoutBinding {
+        binding: FRAGMENT_TEXTURES_BINDING,
+        descriptorType: api::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descriptorCount: FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT,
+        stageFlags: api::VK_SHADER_STAGE_FRAGMENT_BIT,
+        pImmutableSamplers: null(),
+    }];
+    let mut descriptor_set_layout = null_or_zero();
+    match unsafe {
+        device.vkCreateDescriptorSetLayout.unwrap()(
+            device.device,
+            &api::VkDescriptorSetLayoutCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                bindingCount: bindings.len() as u32,
+                pBindings: bindings.as_ptr(),
+            },
+            null(),
+            &mut descriptor_set_layout,
+        )
+    } {
+        api::VK_SUCCESS => Ok(DescriptorSetLayoutWrapper {
+            device: device,
+            descriptor_set_layout: descriptor_set_layout,
+        }),
+        result => Err(VulkanError::VulkanError(result)),
+    }
+}
+
+fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWrapper> {
+    let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
+    let mut pipeline_layout = null_or_zero();
+    let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
+        .iter()
+        .map(|v| v.descriptor_set_layout)
+        .collect();
+    let push_constant_ranges = [api::VkPushConstantRange {
+        stageFlags: api::VK_SHADER_STAGE_VERTEX_BIT,
+        offset: 0,
+        size: mem::size_of::<PushConstants>() as u32,
+    }];
+    match unsafe {
+        device.vkCreatePipelineLayout.unwrap()(
+            device.device,
+            &api::VkPipelineLayoutCreateInfo {
+                sType: api::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                pNext: null(),
+                flags: 0,
+                setLayoutCount: vk_descriptor_set_layouts.len() as u32,
+                pSetLayouts: vk_descriptor_set_layouts.as_ptr(),
+                pushConstantRangeCount: push_constant_ranges.len() as u32,
+                pPushConstantRanges: push_constant_ranges.as_ptr(),
+            },
+            null(),
+            &mut pipeline_layout,
+        )
+    } {
+        api::VK_SUCCESS => Ok(PipelineLayoutWrapper {
+            device: device,
+            pipeline_layout: pipeline_layout,
+            _descriptor_set_layouts: descriptor_set_layouts,
+        }),
+        result => Err(VulkanError::VulkanError(result)),
+    }
+}
+
 impl VulkanDevice {
     fn get_shader(&self, shader_source: ShaderSource) -> Result<ShaderModuleWrapper> {
         self.get_device_ref().get_shader(shader_source)
     }
-    fn create_render_pass(&self) -> Result<RenderPassWrapper> {
-        let device = self.device_reference.device.clone();
-        let mut render_pass = null_or_zero();
-        let mut attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
-        attachments[COLOR_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
-            flags: 0,
-            format: self.surface_state.as_ref().unwrap().surface_format.format,
-            samples: api::VK_SAMPLE_COUNT_1_BIT,
-            loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: api::VK_ATTACHMENT_STORE_OP_STORE,
-            stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout: api::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-        attachments[DEPTH_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
-            flags: 0,
-            format: self.surface_state.as_ref().unwrap().depth_format,
-            samples: api::VK_SAMPLE_COUNT_1_BIT,
-            loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            stencilLoadOp: api::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            stencilStoreOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-        let color_attachments = [api::VkAttachmentReference {
-            attachment: COLOR_ATTACHEMENT_INDEX as u32,
-            layout: api::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        }];
-        let subpasses = [api::VkSubpassDescription {
-            flags: 0,
-            pipelineBindPoint: api::VK_PIPELINE_BIND_POINT_GRAPHICS,
-            inputAttachmentCount: 0,
-            pInputAttachments: null(),
-            colorAttachmentCount: color_attachments.len() as u32,
-            pColorAttachments: color_attachments.as_ptr(),
-            pResolveAttachments: null(),
-            pDepthStencilAttachment: &api::VkAttachmentReference {
-                attachment: DEPTH_ATTACHEMENT_INDEX as u32,
-                layout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            },
-            preserveAttachmentCount: 0,
-            pPreserveAttachments: null(),
-        }];
-        let dependencies = [];
-        match unsafe {
-            device.vkCreateRenderPass.unwrap()(
-                device.device,
-                &api::VkRenderPassCreateInfo {
-                    sType: api::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                    pNext: null(),
-                    flags: 0,
-                    attachmentCount: attachments.len() as u32,
-                    pAttachments: attachments.as_ptr(),
-                    subpassCount: subpasses.len() as u32,
-                    pSubpasses: subpasses.as_ptr(),
-                    dependencyCount: dependencies.len() as u32,
-                    pDependencies: dependencies.as_ptr(),
-                },
-                null(),
-                &mut render_pass,
-            )
-        } {
-            api::VK_SUCCESS => Ok(RenderPassWrapper {
-                device: device,
-                render_pass: render_pass,
-            }),
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
-    fn create_descriptor_set_layout(&self) -> Result<DescriptorSetLayoutWrapper> {
-        let device = self.device_reference.device.clone();
-        let bindings = [api::VkDescriptorSetLayoutBinding {
-            binding: FRAGMENT_TEXTURES_BINDING,
-            descriptorType: api::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            descriptorCount: FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT,
-            stageFlags: api::VK_SHADER_STAGE_FRAGMENT_BIT,
-            pImmutableSamplers: null(),
-        }];
-        let mut descriptor_set_layout = null_or_zero();
-        match unsafe {
-            device.vkCreateDescriptorSetLayout.unwrap()(
-                device.device,
-                &api::VkDescriptorSetLayoutCreateInfo {
-                    sType: api::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                    pNext: null(),
-                    flags: 0,
-                    bindingCount: bindings.len() as u32,
-                    pBindings: bindings.as_ptr(),
-                },
-                null(),
-                &mut descriptor_set_layout,
-            )
-        } {
-            api::VK_SUCCESS => Ok(DescriptorSetLayoutWrapper {
-                device: device,
-                descriptor_set_layout: descriptor_set_layout,
-            }),
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
-    fn create_pipeline_layout(
-        &self,
-        descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
-    ) -> Result<PipelineLayoutWrapper> {
-        let device = self.device_reference.device.clone();
-        let mut pipeline_layout = null_or_zero();
-        let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
-            .iter()
-            .map(|v| v.descriptor_set_layout)
-            .collect();
-        let push_constant_ranges = [api::VkPushConstantRange {
-            stageFlags: api::VK_SHADER_STAGE_VERTEX_BIT,
-            offset: 0,
-            size: mem::size_of::<PushConstants>() as u32,
-        }];
-        match unsafe {
-            device.vkCreatePipelineLayout.unwrap()(
-                device.device,
-                &api::VkPipelineLayoutCreateInfo {
-                    sType: api::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                    pNext: null(),
-                    flags: 0,
-                    setLayoutCount: vk_descriptor_set_layouts.len() as u32,
-                    pSetLayouts: vk_descriptor_set_layouts.as_ptr(),
-                    pushConstantRangeCount: push_constant_ranges.len() as u32,
-                    pPushConstantRanges: push_constant_ranges.as_ptr(),
-                },
-                null(),
-                &mut pipeline_layout,
-            )
-        } {
-            api::VK_SUCCESS => Ok(PipelineLayoutWrapper {
-                device: device,
-                pipeline_layout: pipeline_layout,
-                _descriptor_set_layouts: descriptor_set_layouts,
-            }),
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
     fn create_graphics_pipeline(&self) -> Result<GraphicsPipelineWrapper> {
+        let render_pass = self.device_reference.render_pass.clone();
         let device = self.device_reference.device.clone();
         let vertex_shader = self.get_shader(ShaderSource::MainVertex)?;
         let fragment_shader = self.get_shader(ShaderSource::MainFragment)?;
-        let pipeline_layout =
-            self.create_pipeline_layout(vec![self.create_descriptor_set_layout()?])?;
-        let render_pass = self.create_render_pass()?;
+        let pipeline_layout = self.device_reference.pipeline_layout.clone();
         let mut pipeline = null_or_zero();
         let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
         let stages = [
@@ -723,7 +785,7 @@ impl VulkanDevice {
             api::VK_SUCCESS => Ok(GraphicsPipelineWrapper {
                 device: device,
                 pipeline: pipeline,
-                _pipeline_layout: pipeline_layout,
+                pipeline_layout: pipeline_layout,
                 _vertex_shader: vertex_shader,
                 _fragment_shader: fragment_shader,
                 render_pass: render_pass,
@@ -957,7 +1019,7 @@ impl VulkanDevice {
             } {
                 api::VK_SUCCESS => FramebufferWrapper {
                     device: device.clone(),
-                    image_views: image_views,
+                    _image_views: image_views,
                     framebuffer: framebuffer,
                 },
                 result => return Err(VulkanError::VulkanError(result)),
@@ -1083,27 +1145,30 @@ impl Device for VulkanDevice {
             )
         };
         let device = Arc::new(device);
+        let surface_state = SurfaceState {
+            surface: surface,
+            physical_device: physical_device,
+            present_queue_index: present_queue_index,
+            render_queue_index: render_queue_index,
+            surface_format: surface_format,
+            depth_format: depth_format,
+            present_mode: present_mode,
+            swapchain_desired_image_count: swapchain_desired_image_count,
+            swapchain_pre_transform: swapchain_pre_transform,
+            swapchain_composite_alpha: swapchain_composite_alpha,
+            physical_device_memory_properties: physical_device_memory_properties,
+        };
         let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
                 device: device.clone(),
                 render_queue_index: render_queue_index,
                 device_memory_pools: Arc::new(unsafe {
-                    DeviceMemoryPools::new(device, physical_device_memory_properties)
+                    DeviceMemoryPools::new(device.clone(), physical_device_memory_properties)
                 }),
+                render_pass: Arc::new(create_render_pass(device.clone(), &surface_state)?),
+                pipeline_layout: Arc::new(create_pipeline_layout(device)?),
             },
-            surface_state: Some(SurfaceState {
-                surface: surface,
-                physical_device: physical_device,
-                present_queue_index: present_queue_index,
-                render_queue_index: render_queue_index,
-                surface_format: surface_format,
-                depth_format: depth_format,
-                present_mode: present_mode,
-                swapchain_desired_image_count: swapchain_desired_image_count,
-                swapchain_pre_transform: swapchain_pre_transform,
-                swapchain_composite_alpha: swapchain_composite_alpha,
-                physical_device_memory_properties: physical_device_memory_properties,
-            }),
+            surface_state: Some(surface_state),
             render_queue: render_queue,
             present_queue: present_queue,
             graphics_pipeline: None,
@@ -1131,14 +1196,14 @@ impl Device for VulkanDevice {
         &mut self,
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-        render_command_buffers: &[VulkanRenderCommandBuffer],
+        render_command_buffer_groups: &[RenderCommandBufferGroup<VulkanRenderCommandBuffer>],
     ) -> Result<()> {
         unsafe {
             render_frame(
                 self,
                 clear_color,
                 loader_command_buffers,
-                render_command_buffers,
+                render_command_buffer_groups,
             )
         }
     }

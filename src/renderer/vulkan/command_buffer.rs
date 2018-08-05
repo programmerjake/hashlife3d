@@ -2,15 +2,16 @@ use super::{
     api, get_mut_vulkan_device_index_buffer_implementation,
     get_mut_vulkan_device_vertex_buffer_implementation,
     into_vulkan_staging_index_buffer_implementation,
-    into_vulkan_staging_vertex_buffer_implementation, null_or_zero, BufferWrapper,
-    DeviceMemoryPoolAllocation, DeviceWrapper, FenceState, FenceWrapper, Result, SemaphoreWrapper,
+    into_vulkan_staging_vertex_buffer_implementation, null_or_zero, set_push_constants,
+    set_push_constants_initial_transform, BufferWrapper, DeviceMemoryPoolAllocation, DeviceWrapper,
+    FenceState, FenceWrapper, PipelineLayoutWrapper, PushConstants, Result, SemaphoreWrapper,
     VulkanDevice, VulkanDeviceIndexBuffer, VulkanDeviceVertexBuffer, VulkanError,
     VulkanStagingIndexBuffer, VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
     VulkanStagingVertexBufferImplementation, COLOR_ATTACHEMENT_INDEX, DEPTH_ATTACHEMENT_INDEX,
 };
 use renderer::{
     math, CommandBuffer, IndexBufferElement, LoaderCommandBufferBuilder,
-    RenderCommandBufferBuilder, VertexBufferElement,
+    RenderCommandBufferBuilder, RenderCommandBufferGroup, VertexBufferElement,
 };
 use std::any::Any;
 use std::cmp;
@@ -385,13 +386,21 @@ unsafe impl Send for VulkanRenderCommandBuffer {}
 
 impl CommandBuffer for VulkanRenderCommandBuffer {}
 
-pub struct VulkanRenderCommandBufferBuilder(VulkanRenderCommandBufferState);
+pub struct VulkanRenderCommandBufferBuilder {
+    state: VulkanRenderCommandBufferState,
+    did_set_initial_transform: bool,
+    pipeline_layout: Arc<PipelineLayoutWrapper>,
+}
 
 impl VulkanRenderCommandBufferBuilder {
-    #[allow(unreachable_code)]
-    pub unsafe fn new(device: &Arc<DeviceWrapper>, queue_family_index: u32) -> Result<Self> {
-        let retval = Self {
-            0: VulkanRenderCommandBufferState {
+    pub unsafe fn new(
+        device: &Arc<DeviceWrapper>,
+        queue_family_index: u32,
+        render_pass: api::VkRenderPass,
+        pipeline_layout: Arc<PipelineLayoutWrapper>,
+    ) -> Result<Self> {
+        Ok(Self {
+            state: VulkanRenderCommandBufferState {
                 command_buffer: CommandBufferWrapper::new(
                     device,
                     queue_family_index,
@@ -399,13 +408,23 @@ impl VulkanRenderCommandBufferBuilder {
                 )?.begin(
                     api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
                         | api::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
-                    unimplemented!(),
+                    Some(&api::VkCommandBufferInheritanceInfo {
+                        sType: api::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                        pNext: null(),
+                        renderPass: render_pass,
+                        subpass: 0,
+                        framebuffer: null_or_zero(),
+                        occlusionQueryEnable: api::VK_FALSE,
+                        queryFlags: 0,
+                        pipelineStatistics: 0,
+                    }),
                 )?,
                 submit_tracker: CommandBufferSubmitTracker::new(),
                 referenced_objects: Default::default(),
             },
-        };
-        unimplemented!()
+            did_set_initial_transform: false,
+            pipeline_layout: pipeline_layout,
+        })
     }
 }
 
@@ -414,10 +433,32 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
     type CommandBuffer = VulkanRenderCommandBuffer;
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
-    fn finish(self) -> Result<VulkanRenderCommandBuffer> {
-        let mut retval = self.0;
-        retval.command_buffer = unsafe { retval.command_buffer.finish() }?;
+    fn set_buffers(
+        &mut self,
+        vertex_buffer: VulkanDeviceVertexBuffer,
+        index_buffer: VulkanDeviceIndexBuffer,
+    ) {
         unimplemented!()
+    }
+    fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
+        self.did_set_initial_transform = true;
+        unsafe {
+            set_push_constants_initial_transform(
+                &self.state.command_buffer.command_pool.device,
+                self.state.command_buffer.command_buffer,
+                self.pipeline_layout.pipeline_layout,
+                api::VK_SHADER_STAGE_VERTEX_BIT,
+                transform.into(),
+            );
+        }
+    }
+    fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
+        unimplemented!()
+    }
+    fn finish(self) -> Result<VulkanRenderCommandBuffer> {
+        let mut retval = self.state;
+        retval.command_buffer = unsafe { retval.command_buffer.finish() }?;
+        Ok(VulkanRenderCommandBuffer(Arc::new(retval)))
     }
 }
 
@@ -487,7 +528,7 @@ pub unsafe fn render_frame(
     vulkan_device: &mut VulkanDevice,
     clear_color: math::Vec4<f32>,
     loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-    render_command_buffers: &[VulkanRenderCommandBuffer],
+    render_command_buffer_groups: &[RenderCommandBufferGroup<VulkanRenderCommandBuffer>],
 ) -> Result<()> {
     vulkan_device.free_finished_objects()?;
     let swapchain = match vulkan_device.swapchain.clone() {
@@ -554,6 +595,11 @@ pub unsafe fn render_frame(
             },
         },
     );
+    device.vkCmdBindPipeline.unwrap()(
+        render_command_buffer.command_buffer,
+        api::VK_PIPELINE_BIND_POINT_GRAPHICS,
+        graphics_pipeline.pipeline,
+    );
     let mut clear_values: [api::VkClearValue; 2] = mem::zeroed();
     clear_values[DEPTH_ATTACHEMENT_INDEX] = api::VkClearValue {
         depthStencil: api::VkClearDepthStencilValue {
@@ -566,13 +612,14 @@ pub unsafe fn render_frame(
             float32: [clear_color.x, clear_color.y, clear_color.z, clear_color.w],
         },
     };
+    let framebuffer = &swapchain.framebuffers[image_index];
     device.vkCmdBeginRenderPass.unwrap()(
         render_command_buffer.command_buffer,
         &api::VkRenderPassBeginInfo {
             sType: api::VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             pNext: null(),
             renderPass: graphics_pipeline.render_pass.render_pass,
-            framebuffer: swapchain.framebuffers[image_index].framebuffer,
+            framebuffer: framebuffer.framebuffer,
             renderArea: api::VkRect2D {
                 offset: api::VkOffset2D { x: 0, y: 0 },
                 extent: api::VkExtent2D {
@@ -585,15 +632,65 @@ pub unsafe fn render_frame(
         },
         api::VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS,
     );
-    let mut render_pass_command_buffers = Vec::with_capacity(render_command_buffers.len());
-    for command_buffer in render_command_buffers {
-        for required_command_buffer in &command_buffer.0.referenced_objects.required_command_buffers
-        {
-            required_command_buffer.assert_submitted();
+    let render_pass_command_buffer_count = render_command_buffer_groups
+        .iter()
+        .map(
+            |RenderCommandBufferGroup {
+                 render_command_buffers,
+                 ..
+             }| render_command_buffers.len() + 1,
+        ).sum();
+    let mut render_pass_command_buffers = Vec::with_capacity(render_pass_command_buffer_count);
+    for RenderCommandBufferGroup {
+        render_command_buffers,
+        final_transform,
+    } in render_command_buffer_groups
+    {
+        let group_command_buffer = CommandBufferWrapper::new(
+            device,
+            vulkan_device
+                .surface_state
+                .as_ref()
+                .unwrap()
+                .render_queue_index,
+            api::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+        )?.begin(
+            api::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+                | api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+            Some(&api::VkCommandBufferInheritanceInfo {
+                sType: api::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                pNext: null(),
+                renderPass: graphics_pipeline.render_pass.render_pass,
+                subpass: 0,
+                framebuffer: framebuffer.framebuffer,
+                occlusionQueryEnable: api::VK_FALSE,
+                queryFlags: 0,
+                pipelineStatistics: 0,
+            }),
+        )?;
+        set_push_constants(
+            device,
+            group_command_buffer.command_buffer,
+            graphics_pipeline.pipeline_layout.pipeline_layout,
+            api::VK_SHADER_STAGE_VERTEX_BIT,
+            PushConstants {
+                initial_transform: math::Mat4::identity().into(),
+                final_transform: final_transform.into(),
+            },
+        );
+        let group_command_buffer = group_command_buffer.finish()?;
+        render_pass_command_buffers.push(group_command_buffer.command_buffer);
+        referenced_objects.push(Box::new(group_command_buffer));
+        for command_buffer in render_command_buffers.iter() {
+            for required_command_buffer in
+                &command_buffer.0.referenced_objects.required_command_buffers
+            {
+                required_command_buffer.assert_submitted();
+            }
+            render_pass_command_buffers.push(command_buffer.0.command_buffer.command_buffer);
+            command_buffer.0.submit_tracker.set_submitted();
+            referenced_objects.push(Box::new(command_buffer.clone()));
         }
-        render_pass_command_buffers.push(command_buffer.0.command_buffer.command_buffer);
-        command_buffer.0.submit_tracker.set_submitted();
-        referenced_objects.push(Box::new(command_buffer.clone()));
     }
     if !render_pass_command_buffers.is_empty() {
         device.vkCmdExecuteCommands.unwrap()(

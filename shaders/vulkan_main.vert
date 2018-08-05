@@ -7,7 +7,8 @@ layout (location = 3) in uint input_texture_index;
 
 layout(push_constant) uniform PushConstants
 {
-    mat4 transform;
+    mat4 initial_transform;
+    mat4 final_transform;
 } push_constants;
 
 out gl_PerVertex
@@ -21,7 +22,7 @@ layout (location = 2) out uint texture_index;
 
 void main()
 {
-    gl_Position = push_constants.transform * vec4(input_position, 1.0);
+    gl_Position = push_constants.final_transform * (push_constants.initial_transform * vec4(input_position, 1.0));
     color = input_color;
     texture_coord = input_texture_coord;
 }
