@@ -389,18 +389,6 @@ impl fmt::Display for GLES2Error {
 
 impl error::Error for GLES2Error {}
 
-pub struct GLES2Semaphore {}
-
-impl Semaphore for GLES2Semaphore {}
-
-pub struct GLES2Fence {}
-
-impl Fence for GLES2Fence {}
-
-pub struct GLES2Queue {}
-
-impl Queue for GLES2Queue {}
-
 pub struct GLES2StagingVertexBuffer {}
 
 impl StagingVertexBuffer for GLES2StagingVertexBuffer {
@@ -484,8 +472,6 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
 }
 
 impl DeviceReference for GLES2DeviceReference {
-    type Semaphore = GLES2Semaphore;
-    type Fence = GLES2Fence;
     type Error = GLES2Error;
     type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
     type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
@@ -495,9 +481,6 @@ impl DeviceReference for GLES2DeviceReference {
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
-    fn create_fence(&self, initial_state: FenceState) -> Result<GLES2Fence> {
-        unimplemented!()
-    }
     fn create_loader_command_buffer_builder(&self) -> Result<GLES2LoaderCommandBufferBuilder> {
         Ok(GLES2LoaderCommandBufferBuilder {})
     }
@@ -523,7 +506,6 @@ pub struct GLES2PausedDevice {
 pub struct GLES2Device {
     device_reference: GLES2DeviceReference,
     surface_state: SurfaceState,
-    render_queue: GLES2Queue,
 }
 
 pub type Result<T> = result::Result<T, GLES2Error>;
@@ -536,11 +518,8 @@ impl PausedDevice for GLES2PausedDevice {
 }
 
 impl Device for GLES2Device {
-    type Semaphore = GLES2Semaphore;
-    type Fence = GLES2Fence;
     type Error = GLES2Error;
     type Reference = GLES2DeviceReference;
-    type Queue = GLES2Queue;
     type PausedDevice = GLES2PausedDevice;
     type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
     type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
@@ -563,7 +542,6 @@ impl Device for GLES2Device {
         Ok(GLES2Device {
             device_reference: GLES2DeviceReference {},
             surface_state: SurfaceState { window: window },
-            render_queue: GLES2Queue {},
         })
     }
     fn get_device_ref(&self) -> &GLES2DeviceReference {
@@ -572,16 +550,19 @@ impl Device for GLES2Device {
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.window
     }
-    fn get_queue(&self) -> &GLES2Queue {
-        &self.render_queue
+    fn submit_loader_command_buffers(
+        &mut self,
+        loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
+    ) -> Result<()> {
+        unimplemented!()
     }
-    fn wait_for_fences_with_timeout(
-        &self,
-        _fences: &[&GLES2Fence],
-        _wait_for_all: bool,
-        _timeout: Duration,
-    ) -> Result<WaitResult> {
-        Ok(WaitResult::Success)
+    fn render_frame(
+        &mut self,
+        clear_color: math::Vec4<f32>,
+        loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
+        render_command_buffers: &[GLES2RenderCommandBuffer],
+    ) -> Result<()> {
+        unimplemented!()
     }
 }
 

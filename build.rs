@@ -15,7 +15,6 @@ fn get_out_path() -> PathBuf {
 
 fn main() -> Result<(), String> {
     let target = env::var("TARGET").unwrap();
-    let host = env::var("HOST").unwrap();
     let mut include_paths = Vec::new();
     if let Ok(include_path) = env::var("SDL2_INCLUDE_PATH") {
         include_paths.push(include_path);

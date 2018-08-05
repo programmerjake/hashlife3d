@@ -58,19 +58,17 @@ impl DeviceMemoryWrapper {
         memory_type_index: u32,
     ) -> Result<Self> {
         let mut device_memory = null_or_zero();
-        match unsafe {
-            device.vkAllocateMemory.unwrap()(
-                device.device,
-                &api::VkMemoryAllocateInfo {
-                    sType: api::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                    pNext: null(),
-                    allocationSize: size,
-                    memoryTypeIndex: memory_type_index,
-                },
-                null(),
-                &mut device_memory,
-            )
-        } {
+        match device.vkAllocateMemory.unwrap()(
+            device.device,
+            &api::VkMemoryAllocateInfo {
+                sType: api::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                pNext: null(),
+                allocationSize: size,
+                memoryTypeIndex: memory_type_index,
+            },
+            null(),
+            &mut device_memory,
+        ) {
             api::VK_SUCCESS => Ok(Self {
                 device: device,
                 device_memory: device_memory,
@@ -86,16 +84,14 @@ impl DeviceMemoryWrapper {
     pub unsafe fn map_memory(&mut self) -> Result<NonNull<[u8]>> {
         assert!(self.mapped_memory.is_none());
         let mut mapped_memory = null_mut();
-        match unsafe {
-            self.device.vkMapMemory.unwrap()(
-                self.device.device,
-                self.device_memory,
-                0,
-                api::VK_WHOLE_SIZE as api::VkDeviceSize,
-                0,
-                &mut mapped_memory,
-            )
-        } {
+        match self.device.vkMapMemory.unwrap()(
+            self.device.device,
+            self.device_memory,
+            0,
+            api::VK_WHOLE_SIZE as api::VkDeviceSize,
+            0,
+            &mut mapped_memory,
+        ) {
             api::VK_SUCCESS => {
                 let retval =
                     slice::from_raw_parts_mut(mapped_memory as *mut u8, self.size as usize).into();

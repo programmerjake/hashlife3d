@@ -6,8 +6,8 @@ mod device;
 mod device_memory;
 mod error;
 mod fence;
+mod image;
 mod instance;
-mod queue;
 mod semaphore;
 mod surface;
 use self::buffer::*;
@@ -16,13 +16,15 @@ use self::device::*;
 use self::device_memory::*;
 use self::error::*;
 use self::fence::*;
+use self::image::*;
 use self::instance::*;
 use self::instance_functions::*;
-use self::queue::*;
 use self::semaphore::*;
 use self::surface::*;
 use super::*;
 use sdl;
+use std::any::Any;
+use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::mem;
 use std::ptr::*;
@@ -97,13 +99,21 @@ impl Drop for SwapchainWrapper {
     }
 }
 
+struct SwapchainState {
+    swapchain: SwapchainWrapper,
+    dimensions: (u32, u32),
+    framebuffers: Vec<FramebufferWrapper>,
+}
+
 pub struct VulkanDevice {
     device_reference: VulkanDeviceReference,
-    surface_state: SurfaceState,
-    render_queue: VulkanQueue,
+    surface_state: Option<SurfaceState>,
+    render_queue: api::VkQueue,
     present_queue: api::VkQueue,
     graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
-    swapchain: Option<Arc<SwapchainWrapper>>,
+    swapchain: Option<Arc<SwapchainState>>,
+    in_progress_operations: VecDeque<(FenceWrapper, Vec<Box<Any>>)>,
+    in_progress_present_semaphores: VecDeque<SemaphoreWrapper>,
 }
 
 fn get_wait_timeout(duration: Duration) -> u64 {
@@ -150,7 +160,7 @@ struct GraphicsPipelineWrapper {
     _pipeline_layout: PipelineLayoutWrapper,
     _vertex_shader: ShaderModuleWrapper,
     _fragment_shader: ShaderModuleWrapper,
-    _render_pass: RenderPassWrapper,
+    render_pass: RenderPassWrapper,
 }
 
 impl Drop for GraphicsPipelineWrapper {
@@ -190,6 +200,20 @@ impl Drop for PipelineLayoutWrapper {
                 self.pipeline_layout,
                 null(),
             )
+        }
+    }
+}
+
+struct FramebufferWrapper {
+    device: Arc<DeviceWrapper>,
+    image_views: Vec<Arc<ImageViewWrapper>>,
+    framebuffer: api::VkFramebuffer,
+}
+
+impl Drop for FramebufferWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.vkDestroyFramebuffer.unwrap()(self.device.device, self.framebuffer, null());
         }
     }
 }
@@ -245,8 +269,6 @@ impl VulkanDeviceReference {
 }
 
 impl DeviceReference for VulkanDeviceReference {
-    type Semaphore = VulkanSemaphore;
-    type Fence = VulkanFence;
     type Error = VulkanError;
     type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
     type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
@@ -256,30 +278,6 @@ impl DeviceReference for VulkanDeviceReference {
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type StagingIndexBuffer = VulkanStagingIndexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
-    fn create_fence(&self, initial_state: FenceState) -> Result<VulkanFence> {
-        let mut fence = null_or_zero();
-        match unsafe {
-            self.device.vkCreateFence.unwrap()(
-                self.device.device,
-                &api::VkFenceCreateInfo {
-                    sType: api::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                    pNext: null(),
-                    flags: match initial_state {
-                        FenceState::Unsignaled => 0,
-                        FenceState::Signaled => api::VK_FENCE_CREATE_SIGNALED_BIT,
-                    },
-                },
-                null(),
-                &mut fence,
-            )
-        } {
-            api::VK_SUCCESS => Ok(VulkanFence {
-                fence: fence,
-                device: self.device.clone(),
-            }),
-            result => Err(VulkanError::VulkanError(result)),
-        }
-    }
     fn create_loader_command_buffer_builder(&self) -> Result<VulkanLoaderCommandBufferBuilder> {
         unsafe { VulkanLoaderCommandBufferBuilder::new(&self.device, self.render_queue_index) }
     }
@@ -414,6 +412,9 @@ macro_rules! get_vertex_input_attribute_description {
     }};
 }
 
+const DEPTH_ATTACHEMENT_INDEX: usize = 0;
+const COLOR_ATTACHEMENT_INDEX: usize = 1;
+
 impl VulkanDevice {
     fn get_shader(&self, shader_source: ShaderSource) -> Result<ShaderModuleWrapper> {
         self.get_device_ref().get_shader(shader_source)
@@ -421,12 +422,10 @@ impl VulkanDevice {
     fn create_render_pass(&self) -> Result<RenderPassWrapper> {
         let device = self.device_reference.device.clone();
         let mut render_pass = null_or_zero();
-        let depth_attachement_index = 0;
-        let color_attachement_index = 1;
         let mut attachments: [api::VkAttachmentDescription; 2] = unsafe { mem::uninitialized() };
-        attachments[color_attachement_index as usize] = api::VkAttachmentDescription {
+        attachments[COLOR_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
             flags: 0,
-            format: self.surface_state.surface_format.format,
+            format: self.surface_state.as_ref().unwrap().surface_format.format,
             samples: api::VK_SAMPLE_COUNT_1_BIT,
             loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
             storeOp: api::VK_ATTACHMENT_STORE_OP_STORE,
@@ -435,9 +434,9 @@ impl VulkanDevice {
             initialLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
             finalLayout: api::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         };
-        attachments[depth_attachement_index as usize] = api::VkAttachmentDescription {
+        attachments[DEPTH_ATTACHEMENT_INDEX] = api::VkAttachmentDescription {
             flags: 0,
-            format: self.surface_state.depth_format,
+            format: self.surface_state.as_ref().unwrap().depth_format,
             samples: api::VK_SAMPLE_COUNT_1_BIT,
             loadOp: api::VK_ATTACHMENT_LOAD_OP_CLEAR,
             storeOp: api::VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -447,7 +446,7 @@ impl VulkanDevice {
             finalLayout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
         let color_attachments = [api::VkAttachmentReference {
-            attachment: color_attachement_index,
+            attachment: COLOR_ATTACHEMENT_INDEX as u32,
             layout: api::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         }];
         let subpasses = [api::VkSubpassDescription {
@@ -459,7 +458,7 @@ impl VulkanDevice {
             pColorAttachments: color_attachments.as_ptr(),
             pResolveAttachments: null(),
             pDepthStencilAttachment: &api::VkAttachmentReference {
-                attachment: depth_attachement_index,
+                attachment: DEPTH_ATTACHEMENT_INDEX as u32,
                 layout: api::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             },
             preserveAttachmentCount: 0,
@@ -727,15 +726,15 @@ impl VulkanDevice {
                 _pipeline_layout: pipeline_layout,
                 _vertex_shader: vertex_shader,
                 _fragment_shader: fragment_shader,
-                _render_pass: render_pass,
+                render_pass: render_pass,
             }),
             result => Err(VulkanError::VulkanError(result)),
         }
     }
     fn create_swapchain(
         &self,
-        previous_swapchain: Option<Arc<SwapchainWrapper>>,
-    ) -> Result<Option<SwapchainWrapper>> {
+        previous_swapchain: Option<Arc<SwapchainState>>,
+    ) -> Result<Option<SwapchainState>> {
         let mut dimensions = (0, 0);
         unsafe {
             sdl::api::SDL_Vulkan_GetDrawableSize(
@@ -744,38 +743,51 @@ impl VulkanDevice {
                 &mut dimensions.1,
             );
         }
-        match dimensions {
+        let dimensions = match dimensions {
             (0, _) | (_, 0) => return Ok(None),
-            _ => {}
-        }
+            dimensions => (dimensions.0 as u32, dimensions.1 as u32),
+        };
         let device = self.device_reference.device.clone();
         let mut swapchain = null_or_zero();
-        match unsafe {
+        let swapchain = match unsafe {
             device.vkCreateSwapchainKHR.unwrap()(
                 device.device,
                 &api::VkSwapchainCreateInfoKHR {
                     sType: api::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                     pNext: null(),
                     flags: 0,
-                    surface: self.surface_state.surface.surface,
-                    minImageCount: self.surface_state.swapchain_desired_image_count,
-                    imageFormat: self.surface_state.surface_format.format,
-                    imageColorSpace: self.surface_state.surface_format.colorSpace,
+                    surface: self.surface_state.as_ref().unwrap().surface.surface,
+                    minImageCount: self
+                        .surface_state
+                        .as_ref()
+                        .unwrap()
+                        .swapchain_desired_image_count,
+                    imageFormat: self.surface_state.as_ref().unwrap().surface_format.format,
+                    imageColorSpace: self
+                        .surface_state
+                        .as_ref()
+                        .unwrap()
+                        .surface_format
+                        .colorSpace,
                     imageExtent: api::VkExtent2D {
-                        width: dimensions.0 as u32,
-                        height: dimensions.1 as u32,
+                        width: dimensions.0,
+                        height: dimensions.1,
                     },
                     imageArrayLayers: 1,
                     imageUsage: api::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                     imageSharingMode: api::VK_SHARING_MODE_EXCLUSIVE,
                     queueFamilyIndexCount: 0,
                     pQueueFamilyIndices: null(),
-                    preTransform: self.surface_state.swapchain_pre_transform,
-                    compositeAlpha: self.surface_state.swapchain_composite_alpha,
-                    presentMode: self.surface_state.present_mode,
+                    preTransform: self.surface_state.as_ref().unwrap().swapchain_pre_transform,
+                    compositeAlpha: self
+                        .surface_state
+                        .as_ref()
+                        .unwrap()
+                        .swapchain_composite_alpha,
+                    presentMode: self.surface_state.as_ref().unwrap().present_mode,
                     clipped: api::VK_TRUE,
                     oldSwapchain: match previous_swapchain {
-                        Some(v) => v.swapchain,
+                        Some(v) => v.swapchain.swapchain,
                         None => null_or_zero(),
                     },
                 },
@@ -783,22 +795,211 @@ impl VulkanDevice {
                 &mut swapchain,
             )
         } {
-            api::VK_SUCCESS => Ok(Some(SwapchainWrapper {
-                device: device,
-                _surface: self.surface_state.surface.clone(),
+            api::VK_SUCCESS => SwapchainWrapper {
+                device: device.clone(),
+                _surface: self.surface_state.as_ref().unwrap().surface.clone(),
                 swapchain: swapchain,
-            })),
-            result => Err(VulkanError::VulkanError(result)),
+            },
+            result => return Err(VulkanError::VulkanError(result)),
+        };
+        let mut images = Vec::new();
+        {
+            let mut image_count = 0;
+            match unsafe {
+                device.vkGetSwapchainImagesKHR.unwrap()(
+                    device.device,
+                    swapchain.swapchain,
+                    &mut image_count,
+                    null_mut(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+            images.resize(image_count as usize, null_or_zero());
+            match unsafe {
+                device.vkGetSwapchainImagesKHR.unwrap()(
+                    device.device,
+                    swapchain.swapchain,
+                    &mut image_count,
+                    images.as_mut_ptr(),
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
+        }
+        let images: Vec<_> = images
+            .into_iter()
+            .map(|image| {
+                Arc::new(ImageWrapper {
+                    device: device.clone(),
+                    image: image,
+                    destroy_on_drop: false,
+                    device_memory: None,
+                })
+            }).collect();
+        let mut framebuffers = Vec::with_capacity(images.len());
+        for color_image in &images {
+            let depth_image = Arc::new(unsafe {
+                ImageWrapper::new_depth(
+                    device.clone(),
+                    self.surface_state.as_ref().unwrap().depth_format,
+                    dimensions.0,
+                    dimensions.1,
+                )?.allocate_and_bind_memory(
+                    &*self.device_reference.device_memory_pools,
+                    None,
+                    api::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                )
+            }?);
+            let mut color_image_view = null_or_zero();
+            let color_image_view = match unsafe {
+                device.vkCreateImageView.unwrap()(
+                    device.device,
+                    &api::VkImageViewCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        image: color_image.image,
+                        viewType: api::VK_IMAGE_VIEW_TYPE_2D,
+                        format: self.surface_state.as_ref().unwrap().surface_format.format,
+                        components: api::VkComponentMapping {
+                            r: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            g: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            b: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            a: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                        },
+                        subresourceRange: api::VkImageSubresourceRange {
+                            aspectMask: api::VK_IMAGE_ASPECT_COLOR_BIT,
+                            baseMipLevel: 0,
+                            levelCount: 1,
+                            baseArrayLayer: 0,
+                            layerCount: 1,
+                        },
+                    },
+                    null(),
+                    &mut color_image_view,
+                )
+            } {
+                api::VK_SUCCESS => Arc::new(ImageViewWrapper {
+                    image: color_image.clone(),
+                    image_view: color_image_view,
+                }),
+                result => return Err(VulkanError::VulkanError(result)),
+            };
+            let mut depth_image_view = null_or_zero();
+            let depth_image_view = match unsafe {
+                device.vkCreateImageView.unwrap()(
+                    device.device,
+                    &api::VkImageViewCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        image: depth_image.image,
+                        viewType: api::VK_IMAGE_VIEW_TYPE_2D,
+                        format: self.surface_state.as_ref().unwrap().depth_format,
+                        components: api::VkComponentMapping {
+                            r: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            g: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            b: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                            a: api::VK_COMPONENT_SWIZZLE_IDENTITY,
+                        },
+                        subresourceRange: api::VkImageSubresourceRange {
+                            aspectMask: api::VK_IMAGE_ASPECT_DEPTH_BIT,
+                            baseMipLevel: 0,
+                            levelCount: 1,
+                            baseArrayLayer: 0,
+                            layerCount: 1,
+                        },
+                    },
+                    null(),
+                    &mut depth_image_view,
+                )
+            } {
+                api::VK_SUCCESS => Arc::new(ImageViewWrapper {
+                    image: depth_image.clone(),
+                    image_view: depth_image_view,
+                }),
+                result => return Err(VulkanError::VulkanError(result)),
+            };
+            let mut image_views = [None, None];
+            image_views[COLOR_ATTACHEMENT_INDEX] = Some(color_image_view);
+            image_views[DEPTH_ATTACHEMENT_INDEX] = Some(depth_image_view);
+            let image_views: Vec<_> = image_views
+                .into_iter()
+                .map(|v| v.clone().unwrap())
+                .collect();
+            let image_view_handles: Vec<_> = image_views.iter().map(|v| v.image_view).collect();
+            let mut framebuffer = null_or_zero();
+            let framebuffer = match unsafe {
+                device.vkCreateFramebuffer.unwrap()(
+                    device.device,
+                    &api::VkFramebufferCreateInfo {
+                        sType: api::VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                        pNext: null(),
+                        flags: 0,
+                        renderPass: self
+                            .graphics_pipeline
+                            .as_ref()
+                            .unwrap()
+                            .render_pass
+                            .render_pass,
+                        attachmentCount: image_views.len() as u32,
+                        pAttachments: image_view_handles.as_ptr(),
+                        width: dimensions.0,
+                        height: dimensions.1,
+                        layers: 1,
+                    },
+                    null(),
+                    &mut framebuffer,
+                )
+            } {
+                api::VK_SUCCESS => FramebufferWrapper {
+                    device: device.clone(),
+                    image_views: image_views,
+                    framebuffer: framebuffer,
+                },
+                result => return Err(VulkanError::VulkanError(result)),
+            };
+            framebuffers.push(framebuffer);
+        }
+        Ok(Some(SwapchainState {
+            swapchain: swapchain,
+            framebuffers: framebuffers,
+            dimensions: dimensions,
+        }))
+    }
+    fn free_finished_objects(&mut self) -> Result<()> {
+        let device = &self.device_reference.device;
+        loop {
+            if let Some(front) = self.in_progress_operations.front() {
+                match unsafe { device.vkGetFenceStatus.unwrap()(device.device, front.0.fence) } {
+                    api::VK_SUCCESS => (),
+                    api::VK_NOT_READY => break,
+                    result => return Err(VulkanError::VulkanError(result)),
+                }
+            } else {
+                break;
+            }
+            self.in_progress_operations.pop_front();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VulkanDevice {
+    fn drop(&mut self) {
+        let device = &self.device_reference.device;
+        unsafe {
+            device.vkDeviceWaitIdle.unwrap()(device.device);
         }
     }
 }
 
 impl Device for VulkanDevice {
-    type Semaphore = VulkanSemaphore;
-    type Fence = VulkanFence;
     type Error = VulkanError;
     type Reference = VulkanDeviceReference;
-    type Queue = VulkanQueue;
     type PausedDevice = VulkanPausedDevice;
     type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
     type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
@@ -808,9 +1009,9 @@ impl Device for VulkanDevice {
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type StagingIndexBuffer = VulkanStagingIndexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
-    fn pause(self) -> VulkanPausedDevice {
+    fn pause(mut self) -> VulkanPausedDevice {
         VulkanPausedDevice {
-            surface_state: self.surface_state,
+            surface_state: self.surface_state.take().unwrap(),
         }
     }
     fn resume(paused_device: VulkanPausedDevice) -> Result<Self> {
@@ -881,9 +1082,6 @@ impl Device for VulkanDevice {
                 &mut render_queue,
             )
         };
-        let render_queue = VulkanQueue {
-            queue: render_queue,
-        };
         let device = Arc::new(device);
         let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
@@ -893,7 +1091,7 @@ impl Device for VulkanDevice {
                     DeviceMemoryPools::new(device, physical_device_memory_properties)
                 }),
             },
-            surface_state: SurfaceState {
+            surface_state: Some(SurfaceState {
                 surface: surface,
                 physical_device: physical_device,
                 present_queue_index: present_queue_index,
@@ -905,48 +1103,43 @@ impl Device for VulkanDevice {
                 swapchain_pre_transform: swapchain_pre_transform,
                 swapchain_composite_alpha: swapchain_composite_alpha,
                 physical_device_memory_properties: physical_device_memory_properties,
-            },
+            }),
             render_queue: render_queue,
             present_queue: present_queue,
             graphics_pipeline: None,
             swapchain: None,
+            in_progress_operations: VecDeque::new(),
+            in_progress_present_semaphores: VecDeque::new(),
         };
         retval.graphics_pipeline = Some(Arc::new(retval.create_graphics_pipeline()?));
         retval.swapchain = retval.create_swapchain(None)?.map(|v| Arc::new(v));
         return Ok(retval);
     }
     fn get_window(&self) -> &sdl::window::Window {
-        &self.surface_state.surface.window
+        &self.surface_state.as_ref().unwrap().surface.window
     }
     fn get_device_ref(&self) -> &VulkanDeviceReference {
         &self.device_reference
     }
-    fn get_queue(&self) -> &VulkanQueue {
-        &self.render_queue
+    fn submit_loader_command_buffers(
+        &mut self,
+        loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+    ) -> Result<()> {
+        submit_loader_command_buffers(self, loader_command_buffers)
     }
-    fn wait_for_fences_with_timeout(
-        &self,
-        fences: &[&VulkanFence],
-        wait_for_all: bool,
-        timeout: Duration,
-    ) -> Result<WaitResult> {
-        let mut final_fences = Vec::with_capacity(fences.len());
-        for fence in fences {
-            final_fences.push(fence.get());
-        }
-        assert_eq!(final_fences.len() as u32 as usize, final_fences.len());
+    fn render_frame(
+        &mut self,
+        clear_color: math::Vec4<f32>,
+        loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+        render_command_buffers: &[VulkanRenderCommandBuffer],
+    ) -> Result<()> {
         unsafe {
-            match self.device_reference.device.vkWaitForFences.unwrap()(
-                self.device_reference.device.device,
-                final_fences.len() as u32,
-                final_fences.as_ptr(),
-                wait_for_all as api::VkBool32,
-                get_wait_timeout(timeout),
-            ) {
-                api::VK_SUCCESS => Ok(WaitResult::Success),
-                api::VK_TIMEOUT => Ok(WaitResult::Timeout),
-                result => Err(VulkanError::VulkanError(result)),
-            }
+            render_frame(
+                self,
+                clear_color,
+                loader_command_buffers,
+                render_command_buffers,
+            )
         }
     }
 }

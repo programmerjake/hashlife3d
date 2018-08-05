@@ -69,6 +69,26 @@ pub struct DeviceWrapper {
     pub vkBindBufferMemory: api::PFN_vkBindBufferMemory,
     pub vkCmdPipelineBarrier: api::PFN_vkCmdPipelineBarrier,
     pub vkCmdCopyBuffer: api::PFN_vkCmdCopyBuffer,
+    pub vkQueueSubmit: api::PFN_vkQueueSubmit,
+    pub vkGetFenceStatus: api::PFN_vkGetFenceStatus,
+    pub vkCreateSemaphore: api::PFN_vkCreateSemaphore,
+    pub vkDestroySemaphore: api::PFN_vkDestroySemaphore,
+    pub vkCreateFramebuffer: api::PFN_vkCreateFramebuffer,
+    pub vkDestroyFramebuffer: api::PFN_vkDestroyFramebuffer,
+    pub vkGetSwapchainImagesKHR: api::PFN_vkGetSwapchainImagesKHR,
+    pub vkCreateImage: api::PFN_vkCreateImage,
+    pub vkDestroyImage: api::PFN_vkDestroyImage,
+    pub vkCreateImageView: api::PFN_vkCreateImageView,
+    pub vkDestroyImageView: api::PFN_vkDestroyImageView,
+    pub vkAcquireNextImageKHR: api::PFN_vkAcquireNextImageKHR,
+    pub vkCmdBeginRenderPass: api::PFN_vkCmdBeginRenderPass,
+    pub vkGetImageMemoryRequirements: api::PFN_vkGetImageMemoryRequirements,
+    pub vkBindImageMemory: api::PFN_vkBindImageMemory,
+    pub vkCmdEndRenderPass: api::PFN_vkCmdEndRenderPass,
+    pub vkCmdExecuteCommands: api::PFN_vkCmdExecuteCommands,
+    pub vkQueuePresentKHR: api::PFN_vkQueuePresentKHR,
+    pub vkCmdSetViewport: api::PFN_vkCmdSetViewport,
+    pub vkCmdSetScissor: api::PFN_vkCmdSetScissor,
 }
 
 unsafe impl Sync for DeviceWrapper {}
@@ -253,6 +273,94 @@ impl DeviceWrapper {
                         vk_get_device_proc_addr,
                         device,
                         vkCmdCopyBuffer
+                    ),
+                    vkQueueSubmit: get_device_fn!(vk_get_device_proc_addr, device, vkQueueSubmit),
+                    vkGetFenceStatus: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkGetFenceStatus
+                    ),
+                    vkDestroySemaphore: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroySemaphore
+                    ),
+                    vkCreateSemaphore: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateSemaphore
+                    ),
+                    vkDestroyFramebuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroyFramebuffer
+                    ),
+                    vkCreateFramebuffer: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateFramebuffer
+                    ),
+                    vkGetSwapchainImagesKHR: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkGetSwapchainImagesKHR
+                    ),
+                    vkCreateImage: get_device_fn!(vk_get_device_proc_addr, device, vkCreateImage),
+                    vkDestroyImage: get_device_fn!(vk_get_device_proc_addr, device, vkDestroyImage),
+                    vkCreateImageView: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCreateImageView
+                    ),
+                    vkDestroyImageView: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkDestroyImageView
+                    ),
+                    vkAcquireNextImageKHR: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkAcquireNextImageKHR
+                    ),
+                    vkCmdBeginRenderPass: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdBeginRenderPass
+                    ),
+                    vkGetImageMemoryRequirements: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkGetImageMemoryRequirements
+                    ),
+                    vkBindImageMemory: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkBindImageMemory
+                    ),
+                    vkCmdEndRenderPass: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdEndRenderPass
+                    ),
+                    vkCmdExecuteCommands: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdExecuteCommands
+                    ),
+                    vkQueuePresentKHR: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkQueuePresentKHR
+                    ),
+                    vkCmdSetViewport: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdSetViewport
+                    ),
+                    vkCmdSetScissor: get_device_fn!(
+                        vk_get_device_proc_addr,
+                        device,
+                        vkCmdSetScissor
                     ),
                 })
             }

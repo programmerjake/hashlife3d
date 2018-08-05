@@ -3,7 +3,6 @@ pub mod math;
 mod vulkan;
 use super::sdl;
 use std::error;
-use std::time::Duration;
 use std::u64;
 
 #[repr(C)]
@@ -74,25 +73,7 @@ pub trait RenderCommandBufferBuilder: Sized {
 
 pub trait CommandBuffer: Sized + 'static + Send {}
 
-pub trait Semaphore: Send {}
-
-pub trait Fence: Send {}
-
-pub trait Queue {}
-
-pub enum WaitResult {
-    Success,
-    Timeout,
-}
-
-pub enum FenceState {
-    Signaled,
-    Unsignaled,
-}
-
 pub trait DeviceReference: Send + Sync + Clone + 'static {
-    type Semaphore: Semaphore;
-    type Fence: Fence;
     type Error: error::Error + 'static;
     type StagingVertexBuffer: StagingVertexBuffer;
     type DeviceVertexBuffer: DeviceVertexBuffer;
@@ -114,7 +95,6 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
     >;
-    fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error>;
     fn create_render_command_buffer_builder(
         &self,
     ) -> Result<Self::RenderCommandBufferBuilder, Self::Error>;
@@ -137,12 +117,8 @@ pub trait PausedDevice: Sized {
 }
 
 pub trait Device: Sized {
-    type Semaphore: Semaphore;
-    type Fence: Fence;
     type Error: error::Error + 'static;
     type Reference: DeviceReference<
-        Semaphore = Self::Semaphore,
-        Fence = Self::Fence,
         Error = Self::Error,
         RenderCommandBuffer = Self::RenderCommandBuffer,
         RenderCommandBufferBuilder = Self::RenderCommandBufferBuilder,
@@ -153,7 +129,6 @@ pub trait Device: Sized {
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
     >;
-    type Queue: Queue;
     type PausedDevice: PausedDevice<Device = Self>;
     type RenderCommandBuffer: CommandBuffer + Clone;
     type RenderCommandBufferBuilder: RenderCommandBufferBuilder<
@@ -179,54 +154,16 @@ pub trait Device: Sized {
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
     fn get_device_ref(&self) -> &Self::Reference;
-    fn get_queue(&self) -> &Self::Queue;
-    fn wait_for_fences_with_timeout(
-        &self,
-        fences: &[&Self::Fence],
-        wait_for_all: bool,
-        timeout: Duration,
-    ) -> Result<WaitResult, Self::Error>;
-    fn wait_for_fences(
-        &self,
-        fences: &[&Self::Fence],
-        wait_for_all: bool,
-    ) -> Result<(), Self::Error> {
-        self.wait_for_fences_with_timeout(fences, wait_for_all, Duration::new(u64::MAX, 0))
-            .map(|_| ())
-    }
-    fn wait_for_all_fences(&self, fences: &[&Self::Fence]) -> Result<(), Self::Error> {
-        self.wait_for_fences(fences, true)
-    }
-    fn wait_for_any_fence(&self, fences: &[&Self::Fence]) -> Result<(), Self::Error> {
-        self.wait_for_fences(fences, false)
-    }
-    fn wait_for_fence(&self, fence: &Self::Fence) -> Result<(), Self::Error> {
-        self.wait_for_fences(&[fence], false)
-    }
-    fn wait_for_all_fences_with_timeout(
-        &self,
-        fences: &[&Self::Fence],
-        timeout: Duration,
-    ) -> Result<WaitResult, Self::Error> {
-        self.wait_for_fences_with_timeout(fences, true, timeout)
-    }
-    fn wait_for_any_fence_with_timeout(
-        &self,
-        fences: &[&Self::Fence],
-        timeout: Duration,
-    ) -> Result<WaitResult, Self::Error> {
-        self.wait_for_fences_with_timeout(fences, false, timeout)
-    }
-    fn wait_for_fence_with_timeout(
-        &self,
-        fence: &Self::Fence,
-        timeout: Duration,
-    ) -> Result<WaitResult, Self::Error> {
-        self.wait_for_fences_with_timeout(&[fence], false, timeout)
-    }
-    fn create_fence(&self, initial_state: FenceState) -> Result<Self::Fence, Self::Error> {
-        self.get_device_ref().create_fence(initial_state)
-    }
+    fn submit_loader_command_buffers(
+        &mut self,
+        loader_command_buffers: &mut Vec<Self::LoaderCommandBuffer>,
+    ) -> Result<(), Self::Error>;
+    fn render_frame(
+        &mut self,
+        clear_color: math::Vec4<f32>,
+        loader_command_buffers: &mut Vec<Self::LoaderCommandBuffer>,
+        render_command_buffers: &[Self::RenderCommandBuffer],
+    ) -> Result<(), Self::Error>;
     fn create_render_command_buffer_builder(
         &self,
     ) -> Result<Self::RenderCommandBufferBuilder, Self::Error> {

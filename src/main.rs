@@ -44,7 +44,6 @@ fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
     }
 }
 
-#[cfg(not(test))]
 fn render_main_loop<PD: renderer::PausedDevice>(
     paused_device: PD,
     event_source: &sdl::event::EventSource,
@@ -69,20 +68,27 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     });
     loop {
         match state_enum {
-            State::Running(state) => {
-                match event_source.next() {
-                    event @ Event::WindowHidden { .. } => {
-                        println!("event: {:?}", event);
-                        state_enum = State::Paused(Paused {
-                            device: state.device.pause(),
-                        });
-                        continue;
+            State::Running(mut state) => {
+                if let Some(event) = event_source.poll() {
+                    match event {
+                        event @ Event::WindowHidden { .. } => {
+                            println!("event: {:?}", event);
+                            state_enum = State::Paused(Paused {
+                                device: state.device.pause(),
+                            });
+                            continue;
+                        }
+                        event @ Event::Quit { .. } => {
+                            println!("event: {:?}", event);
+                            return;
+                        }
+                        event => println!("unhandled event: {:?}", event),
                     }
-                    event @ Event::Quit { .. } => {
-                        println!("event: {:?}", event);
-                        return;
-                    }
-                    event => println!("unhandled event: {:?}", event),
+                } else {
+                    state
+                        .device
+                        .render_frame(math::Vec4::new(1.0, 0.0, 0.0, 1.0), &mut Vec::new(), &[])
+                        .unwrap();
                 }
                 state_enum = State::Running(state);
             }
@@ -107,7 +113,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     }
 }
 
-#[cfg(not(test))]
+#[allow(dead_code)]
 fn rust_main(event_source: &sdl::event::EventSource) {
     let world_thread = std::thread::spawn(|| {
         if false {

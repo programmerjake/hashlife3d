@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
 use super::api;
 use libc::c_char;
 use libc::c_int;

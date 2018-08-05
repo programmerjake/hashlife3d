@@ -3,19 +3,22 @@ use super::{
     get_mut_vulkan_device_vertex_buffer_implementation,
     into_vulkan_staging_index_buffer_implementation,
     into_vulkan_staging_vertex_buffer_implementation, null_or_zero, BufferWrapper,
-    DeviceMemoryPoolAllocation, DeviceWrapper, Result, VulkanDeviceIndexBuffer,
-    VulkanDeviceVertexBuffer, VulkanError, VulkanStagingIndexBuffer,
-    VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
-    VulkanStagingVertexBufferImplementation,
+    DeviceMemoryPoolAllocation, DeviceWrapper, FenceState, FenceWrapper, Result, SemaphoreWrapper,
+    VulkanDevice, VulkanDeviceIndexBuffer, VulkanDeviceVertexBuffer, VulkanError,
+    VulkanStagingIndexBuffer, VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
+    VulkanStagingVertexBufferImplementation, COLOR_ATTACHEMENT_INDEX, DEPTH_ATTACHEMENT_INDEX,
 };
 use renderer::{
-    CommandBuffer, IndexBufferElement, LoaderCommandBufferBuilder, RenderCommandBufferBuilder,
-    VertexBufferElement,
+    math, CommandBuffer, IndexBufferElement, LoaderCommandBufferBuilder,
+    RenderCommandBufferBuilder, VertexBufferElement,
 };
+use std::any::Any;
+use std::cmp;
 use std::mem;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::*;
 use std::sync::Arc;
+use std::u64;
 
 pub struct CommandPoolWrapper {
     pub device: Arc<DeviceWrapper>,
@@ -149,7 +152,7 @@ impl CommandBufferSubmitTracker {
     }
 }
 
-struct CommandBufferReferencedObjects {
+pub struct CommandBufferReferencedObjects {
     required_command_buffers: Vec<CommandBufferSubmitTracker>,
     device_memory_allocations: Vec<DeviceMemoryPoolAllocation>,
     shared_device_memory_allocations: Vec<Arc<DeviceMemoryPoolAllocation>>,
@@ -169,10 +172,28 @@ impl Default for CommandBufferReferencedObjects {
     }
 }
 
+trait GenericCommandBuffer {
+    fn get_command_buffer(&self) -> &CommandBufferWrapper;
+    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker;
+    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects;
+}
+
 pub struct VulkanLoaderCommandBuffer {
     command_buffer: CommandBufferWrapper,
     submit_tracker: CommandBufferSubmitTracker,
     referenced_objects: CommandBufferReferencedObjects,
+}
+
+impl GenericCommandBuffer for VulkanLoaderCommandBuffer {
+    fn get_command_buffer(&self) -> &CommandBufferWrapper {
+        &self.command_buffer
+    }
+    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker {
+        &self.submit_tracker
+    }
+    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects {
+        &self.referenced_objects
+    }
 }
 
 impl CommandBuffer for VulkanLoaderCommandBuffer {}
@@ -342,10 +363,23 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
 struct VulkanRenderCommandBufferState {
     command_buffer: CommandBufferWrapper,
     referenced_objects: CommandBufferReferencedObjects,
+    submit_tracker: CommandBufferSubmitTracker,
 }
 
 #[derive(Clone)]
 pub struct VulkanRenderCommandBuffer(Arc<VulkanRenderCommandBufferState>);
+
+impl GenericCommandBuffer for VulkanRenderCommandBuffer {
+    fn get_command_buffer(&self) -> &CommandBufferWrapper {
+        &self.0.command_buffer
+    }
+    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker {
+        &self.0.submit_tracker
+    }
+    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects {
+        &self.0.referenced_objects
+    }
+}
 
 unsafe impl Send for VulkanRenderCommandBuffer {}
 
@@ -362,7 +396,12 @@ impl VulkanRenderCommandBufferBuilder {
                     device,
                     queue_family_index,
                     api::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
-                )?.begin(unimplemented!(), unimplemented!())?,
+                )?.begin(
+                    api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
+                        | api::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+                    unimplemented!(),
+                )?,
+                submit_tracker: CommandBufferSubmitTracker::new(),
                 referenced_objects: Default::default(),
             },
         };
@@ -379,5 +418,260 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
         let mut retval = self.0;
         retval.command_buffer = unsafe { retval.command_buffer.finish() }?;
         unimplemented!()
+    }
+}
+
+fn submit_loader_command_buffers_with_semaphores(
+    vulkan_device: &mut VulkanDevice,
+    wait_semaphores: &[(SemaphoreWrapper, api::VkPipelineStageFlags)],
+    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+    signal_semaphores: &[SemaphoreWrapper],
+) -> Result<()> {
+    let device = &vulkan_device.device_reference.device;
+    let mut command_buffers = Vec::with_capacity(loader_command_buffers.len());
+    let mut referenced_objects: Vec<Box<Any>> = Vec::new();
+    for command_buffer in loader_command_buffers.drain(..) {
+        for required_command_buffer in &command_buffer.referenced_objects.required_command_buffers {
+            required_command_buffer.assert_submitted();
+        }
+        command_buffers.push(command_buffer.command_buffer.command_buffer);
+        unsafe {
+            command_buffer.submit_tracker.set_submitted();
+        }
+        referenced_objects.push(Box::new(command_buffer));
+    }
+    let fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
+    let wait_destination_stage_masks: Vec<_> = wait_semaphores.iter().map(|v| v.1).collect();
+    let wait_semaphores: Vec<_> = wait_semaphores.iter().map(|v| v.0.semaphore).collect();
+    let signal_semaphores: Vec<_> = signal_semaphores.iter().map(|v| v.semaphore).collect();
+    match unsafe {
+        device.vkQueueSubmit.unwrap()(
+            vulkan_device.render_queue,
+            1,
+            &api::VkSubmitInfo {
+                sType: api::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                pNext: null(),
+                waitSemaphoreCount: wait_semaphores.len() as u32,
+                pWaitSemaphores: wait_semaphores.as_ptr(),
+                pWaitDstStageMask: wait_destination_stage_masks.as_ptr(),
+                commandBufferCount: command_buffers.len() as u32,
+                pCommandBuffers: command_buffers.as_ptr(),
+                signalSemaphoreCount: signal_semaphores.len() as u32,
+                pSignalSemaphores: signal_semaphores.as_ptr(),
+            },
+            fence.fence,
+        )
+    } {
+        api::VK_SUCCESS => {
+            vulkan_device
+                .in_progress_operations
+                .push_back((fence, referenced_objects));
+            Ok(())
+        }
+        result => Err(VulkanError::VulkanError(result)),
+    }
+}
+
+pub fn submit_loader_command_buffers(
+    vulkan_device: &mut VulkanDevice,
+    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+) -> Result<()> {
+    vulkan_device.free_finished_objects()?;
+    if loader_command_buffers.is_empty() {
+        return Ok(());
+    }
+    submit_loader_command_buffers_with_semaphores(vulkan_device, &[], loader_command_buffers, &[])
+}
+
+pub unsafe fn render_frame(
+    vulkan_device: &mut VulkanDevice,
+    clear_color: math::Vec4<f32>,
+    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+    render_command_buffers: &[VulkanRenderCommandBuffer],
+) -> Result<()> {
+    vulkan_device.free_finished_objects()?;
+    let swapchain = match vulkan_device.swapchain.clone() {
+        Some(swapchain) => swapchain,
+        None => return submit_loader_command_buffers(vulkan_device, loader_command_buffers),
+    };
+    let graphics_pipeline = vulkan_device.graphics_pipeline.as_ref().unwrap();
+    let device = &vulkan_device.device_reference.device;
+    let image_acquired_semaphore = SemaphoreWrapper::new(device.clone())?;
+    let image_acquired_fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
+    let mut image_index = 0;
+    let image_index = match device.vkAcquireNextImageKHR.unwrap()(
+        device.device,
+        swapchain.swapchain.swapchain,
+        u64::MAX,
+        image_acquired_semaphore.semaphore,
+        image_acquired_fence.fence,
+        &mut image_index,
+    ) {
+        api::VK_SUCCESS => Ok(image_index as usize),
+        result => Err(VulkanError::VulkanError(result)),
+    }?;
+    let mut command_buffers = Vec::with_capacity(loader_command_buffers.len() + 1);
+    let mut referenced_objects: Vec<Box<Any>> = Vec::new();
+    for command_buffer in loader_command_buffers.drain(..) {
+        for required_command_buffer in &command_buffer.referenced_objects.required_command_buffers {
+            required_command_buffer.assert_submitted();
+        }
+        command_buffers.push(command_buffer.command_buffer.command_buffer);
+        command_buffer.submit_tracker.set_submitted();
+        referenced_objects.push(Box::new(command_buffer));
+    }
+    let render_command_buffer = CommandBufferWrapper::new(
+        device,
+        vulkan_device
+            .surface_state
+            .as_ref()
+            .unwrap()
+            .render_queue_index,
+        api::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    )?.begin(api::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, None)?;
+    device.vkCmdSetViewport.unwrap()(
+        render_command_buffer.command_buffer,
+        0,
+        1,
+        &api::VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: swapchain.dimensions.0 as f32,
+            height: swapchain.dimensions.1 as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
+        },
+    );
+    device.vkCmdSetScissor.unwrap()(
+        render_command_buffer.command_buffer,
+        0,
+        1,
+        &api::VkRect2D {
+            offset: api::VkOffset2D { x: 0, y: 0 },
+            extent: api::VkExtent2D {
+                width: swapchain.dimensions.0,
+                height: swapchain.dimensions.1,
+            },
+        },
+    );
+    let mut clear_values: [api::VkClearValue; 2] = mem::zeroed();
+    clear_values[DEPTH_ATTACHEMENT_INDEX] = api::VkClearValue {
+        depthStencil: api::VkClearDepthStencilValue {
+            depth: 1.0,
+            stencil: 0,
+        },
+    };
+    clear_values[COLOR_ATTACHEMENT_INDEX] = api::VkClearValue {
+        color: api::VkClearColorValue {
+            float32: [clear_color.x, clear_color.y, clear_color.z, clear_color.w],
+        },
+    };
+    device.vkCmdBeginRenderPass.unwrap()(
+        render_command_buffer.command_buffer,
+        &api::VkRenderPassBeginInfo {
+            sType: api::VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            pNext: null(),
+            renderPass: graphics_pipeline.render_pass.render_pass,
+            framebuffer: swapchain.framebuffers[image_index].framebuffer,
+            renderArea: api::VkRect2D {
+                offset: api::VkOffset2D { x: 0, y: 0 },
+                extent: api::VkExtent2D {
+                    width: swapchain.dimensions.0,
+                    height: swapchain.dimensions.1,
+                },
+            },
+            clearValueCount: clear_values.len() as u32,
+            pClearValues: clear_values.as_ptr(),
+        },
+        api::VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS,
+    );
+    let mut render_pass_command_buffers = Vec::with_capacity(render_command_buffers.len());
+    for command_buffer in render_command_buffers {
+        for required_command_buffer in &command_buffer.0.referenced_objects.required_command_buffers
+        {
+            required_command_buffer.assert_submitted();
+        }
+        render_pass_command_buffers.push(command_buffer.0.command_buffer.command_buffer);
+        command_buffer.0.submit_tracker.set_submitted();
+        referenced_objects.push(Box::new(command_buffer.clone()));
+    }
+    if !render_pass_command_buffers.is_empty() {
+        device.vkCmdExecuteCommands.unwrap()(
+            render_command_buffer.command_buffer,
+            render_pass_command_buffers.len() as u32,
+            render_pass_command_buffers.as_ptr(),
+        );
+    }
+    device.vkCmdEndRenderPass.unwrap()(render_command_buffer.command_buffer);
+    let render_command_buffer = render_command_buffer.finish()?;
+    command_buffers.push(render_command_buffer.command_buffer);
+    referenced_objects.push(Box::new(render_command_buffer));
+    let render_completed_semaphore = if vulkan_device.in_progress_present_semaphores.len()
+        >= cmp::max(16, 2 * swapchain.framebuffers.len())
+    {
+        vulkan_device
+            .in_progress_present_semaphores
+            .pop_front()
+            .unwrap()
+    } else {
+        SemaphoreWrapper::new(device.clone())?
+    };
+    let fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
+    match device.vkQueueSubmit.unwrap()(
+        vulkan_device.render_queue,
+        1,
+        &api::VkSubmitInfo {
+            sType: api::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            pNext: null(),
+            waitSemaphoreCount: 1,
+            pWaitSemaphores: &image_acquired_semaphore.semaphore,
+            pWaitDstStageMask: &api::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            commandBufferCount: command_buffers.len() as u32,
+            pCommandBuffers: command_buffers.as_ptr(),
+            signalSemaphoreCount: 1,
+            pSignalSemaphores: &render_completed_semaphore.semaphore,
+        },
+        fence.fence,
+    ) {
+        api::VK_SUCCESS => {}
+        result => return Err(VulkanError::VulkanError(result)),
+    }
+    referenced_objects.push(Box::new(image_acquired_semaphore));
+    vulkan_device
+        .in_progress_operations
+        .push_back((fence, referenced_objects));
+    let mut present_result = api::VK_SUCCESS;
+    match device.vkQueuePresentKHR.unwrap()(
+        vulkan_device.present_queue,
+        &api::VkPresentInfoKHR {
+            sType: api::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            pNext: null(),
+            waitSemaphoreCount: 1,
+            pWaitSemaphores: &render_completed_semaphore.semaphore,
+            swapchainCount: 1,
+            pSwapchains: &swapchain.swapchain.swapchain,
+            pImageIndices: &(image_index as u32),
+            pResults: &mut present_result,
+        },
+    ) {
+        api::VK_SUCCESS => {}
+        result => return Err(VulkanError::VulkanError(result)),
+    }
+    match present_result {
+        api::VK_SUCCESS => {}
+        result => return Err(VulkanError::VulkanError(result)),
+    }
+    vulkan_device
+        .in_progress_present_semaphores
+        .push_back(render_completed_semaphore);
+    match device.vkWaitForFences.unwrap()(
+        device.device,
+        1,
+        &image_acquired_fence.fence,
+        api::VK_FALSE,
+        u64::MAX,
+    ) {
+        api::VK_SUCCESS => Ok(()),
+        result => return Err(VulkanError::VulkanError(result)),
     }
 }
