@@ -92,7 +92,6 @@ pub struct VulkanStagingVertexBufferImplementation {
     pub staging_buffer: BufferWrapper,
     pub staging_device_memory: DeviceMemoryPoolAllocation,
     pub device_buffer: VulkanDeviceVertexBuffer,
-    pub element_count: usize,
 }
 
 pub struct VulkanStagingVertexBuffer(VulkanStagingVertexBufferImplementation);
@@ -129,14 +128,13 @@ pub unsafe fn create_staging_vertex_buffer(
             staging_buffer: buffer,
             staging_device_memory: device_memory,
             device_buffer: create_device_vertex_buffer(device, device_memory_pools, element_count)?,
-            element_count: element_count,
         },
     ))
 }
 
 impl StagingVertexBuffer for VulkanStagingVertexBuffer {
     fn len(&self) -> usize {
-        self.0.element_count
+        self.0.device_buffer.0.element_count
     }
     fn write(&mut self, index: usize, value: VertexBufferElement) {
         let memory_slice = self
@@ -145,14 +143,14 @@ impl StagingVertexBuffer for VulkanStagingVertexBuffer {
             .get_mapped_memory()
             .unwrap()
             .as_ptr();
-        assert_eq!(
-            unsafe { &*memory_slice }.len(),
-            self.0.element_count * mem::size_of::<VertexBufferElement>()
+        assert!(
+            unsafe { &*memory_slice }.len()
+                >= self.0.device_buffer.0.element_count * mem::size_of::<VertexBufferElement>()
         );
         let memory_slice = unsafe {
             slice::from_raw_parts_mut(
                 memory_slice as *mut u8 as *mut VertexBufferElement,
-                self.0.element_count,
+                self.0.device_buffer.0.element_count,
             )
         };
         memory_slice[index] = value;
@@ -164,6 +162,7 @@ pub struct VulkanDeviceVertexBufferImplementation {
     pub buffer: Arc<BufferWrapper>,
     pub device_memory: Arc<DeviceMemoryPoolAllocation>,
     pub submit_tracker: Option<CommandBufferSubmitTracker>,
+    pub element_count: usize,
 }
 
 #[derive(Clone)]
@@ -173,6 +172,12 @@ pub fn get_mut_vulkan_device_vertex_buffer_implementation(
     v: &mut VulkanDeviceVertexBuffer,
 ) -> &mut VulkanDeviceVertexBufferImplementation {
     &mut v.0
+}
+
+pub fn into_vulkan_device_vertex_buffer_implementation(
+    v: VulkanDeviceVertexBuffer,
+) -> VulkanDeviceVertexBufferImplementation {
+    v.0
 }
 
 const DEVICE_VERTEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
@@ -201,17 +206,21 @@ pub unsafe fn create_device_vertex_buffer(
             buffer: Arc::new(buffer),
             device_memory: Arc::new(device_memory),
             submit_tracker: None,
+            element_count: element_count,
         },
     ))
 }
 
-impl DeviceVertexBuffer for VulkanDeviceVertexBuffer {}
+impl DeviceVertexBuffer for VulkanDeviceVertexBuffer {
+    fn len(&self) -> usize {
+        self.0.element_count
+    }
+}
 
 pub struct VulkanStagingIndexBufferImplementation {
     pub staging_buffer: BufferWrapper,
     pub staging_device_memory: DeviceMemoryPoolAllocation,
     pub device_buffer: VulkanDeviceIndexBuffer,
-    pub element_count: usize,
 }
 
 pub struct VulkanStagingIndexBuffer(VulkanStagingIndexBufferImplementation);
@@ -248,14 +257,13 @@ pub unsafe fn create_staging_index_buffer(
             staging_buffer: buffer,
             staging_device_memory: device_memory,
             device_buffer: create_device_index_buffer(device, device_memory_pools, element_count)?,
-            element_count: element_count,
         },
     ))
 }
 
 impl StagingIndexBuffer for VulkanStagingIndexBuffer {
     fn len(&self) -> usize {
-        self.0.element_count
+        self.0.device_buffer.0.element_count
     }
     fn write(&mut self, index: usize, value: IndexBufferElement) {
         let memory_slice = self
@@ -264,14 +272,14 @@ impl StagingIndexBuffer for VulkanStagingIndexBuffer {
             .get_mapped_memory()
             .unwrap()
             .as_ptr();
-        assert_eq!(
-            unsafe { &*memory_slice }.len(),
-            self.0.element_count * mem::size_of::<IndexBufferElement>()
+        assert!(
+            unsafe { &*memory_slice }.len()
+                >= self.0.device_buffer.0.element_count * mem::size_of::<IndexBufferElement>()
         );
         let memory_slice = unsafe {
             slice::from_raw_parts_mut(
                 memory_slice as *mut u8 as *mut IndexBufferElement,
-                self.0.element_count,
+                self.0.device_buffer.0.element_count,
             )
         };
         memory_slice[index] = value;
@@ -283,6 +291,7 @@ pub struct VulkanDeviceIndexBufferImplementation {
     pub buffer: Arc<BufferWrapper>,
     pub device_memory: Arc<DeviceMemoryPoolAllocation>,
     pub submit_tracker: Option<CommandBufferSubmitTracker>,
+    pub element_count: usize,
 }
 
 #[derive(Clone)]
@@ -292,6 +301,12 @@ pub fn get_mut_vulkan_device_index_buffer_implementation(
     v: &mut VulkanDeviceIndexBuffer,
 ) -> &mut VulkanDeviceIndexBufferImplementation {
     &mut v.0
+}
+
+pub fn into_vulkan_device_index_buffer_implementation(
+    v: VulkanDeviceIndexBuffer,
+) -> VulkanDeviceIndexBufferImplementation {
+    v.0
 }
 
 const DEVICE_INDEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
@@ -320,8 +335,13 @@ pub unsafe fn create_device_index_buffer(
             buffer: Arc::new(buffer),
             device_memory: Arc::new(device_memory),
             submit_tracker: None,
+            element_count: element_count,
         },
     ))
 }
 
-impl DeviceIndexBuffer for VulkanDeviceIndexBuffer {}
+impl DeviceIndexBuffer for VulkanDeviceIndexBuffer {
+    fn len(&self) -> usize {
+        self.0.element_count
+    }
+}

@@ -6,6 +6,7 @@ use std::error;
 use std::u64;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct VertexBufferElement {
     pub position: [f32; 3],
     pub color: [u8; 4],
@@ -36,14 +37,18 @@ pub trait StagingVertexBuffer: Sized + Send {
     fn write(&mut self, index: usize, value: VertexBufferElement);
 }
 
-pub trait DeviceVertexBuffer: Sized + Send + Clone {}
+pub trait DeviceVertexBuffer: Sized + Send + Clone {
+    fn len(&self) -> usize;
+}
 
 pub trait StagingIndexBuffer: Sized + Send {
     fn len(&self) -> usize;
     fn write(&mut self, index: usize, value: IndexBufferElement);
 }
 
-pub trait DeviceIndexBuffer: Sized + Send + Clone {}
+pub trait DeviceIndexBuffer: Sized + Send + Clone {
+    fn len(&self) -> usize;
+}
 
 pub trait LoaderCommandBufferBuilder: Sized {
     type Error: error::Error + 'static;

@@ -1,24 +1,29 @@
 use super::{
     api, get_mut_vulkan_device_index_buffer_implementation,
     get_mut_vulkan_device_vertex_buffer_implementation,
+    into_vulkan_device_index_buffer_implementation,
+    into_vulkan_device_vertex_buffer_implementation,
     into_vulkan_staging_index_buffer_implementation,
     into_vulkan_staging_vertex_buffer_implementation, null_or_zero, set_push_constants,
     set_push_constants_initial_transform, BufferWrapper, DeviceMemoryPoolAllocation, DeviceWrapper,
-    FenceState, FenceWrapper, PipelineLayoutWrapper, PushConstants, Result, SemaphoreWrapper,
-    VulkanDevice, VulkanDeviceIndexBuffer, VulkanDeviceVertexBuffer, VulkanError,
-    VulkanStagingIndexBuffer, VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
+    FenceState, FenceWrapper, GraphicsPipelineWrapper, PipelineLayoutWrapper, PushConstants,
+    RenderPassWrapper, Result, SemaphoreWrapper, VulkanDevice, VulkanDeviceIndexBuffer,
+    VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
+    VulkanDeviceVertexBufferImplementation, VulkanError, VulkanStagingIndexBuffer,
+    VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
     VulkanStagingVertexBufferImplementation, COLOR_ATTACHEMENT_INDEX, DEPTH_ATTACHEMENT_INDEX,
 };
 use renderer::{
-    math, CommandBuffer, IndexBufferElement, LoaderCommandBufferBuilder,
-    RenderCommandBufferBuilder, RenderCommandBufferGroup, VertexBufferElement,
+    math, CommandBuffer, DeviceIndexBuffer, DeviceVertexBuffer, IndexBufferElement,
+    LoaderCommandBufferBuilder, RenderCommandBufferBuilder, RenderCommandBufferGroup,
+    VertexBufferElement,
 };
 use std::any::Any;
 use std::cmp;
 use std::mem;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::u64;
 
 pub struct CommandPoolWrapper {
@@ -173,28 +178,10 @@ impl Default for CommandBufferReferencedObjects {
     }
 }
 
-trait GenericCommandBuffer {
-    fn get_command_buffer(&self) -> &CommandBufferWrapper;
-    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker;
-    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects;
-}
-
 pub struct VulkanLoaderCommandBuffer {
     command_buffer: CommandBufferWrapper,
     submit_tracker: CommandBufferSubmitTracker,
     referenced_objects: CommandBufferReferencedObjects,
-}
-
-impl GenericCommandBuffer for VulkanLoaderCommandBuffer {
-    fn get_command_buffer(&self) -> &CommandBufferWrapper {
-        &self.command_buffer
-    }
-    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker {
-        &self.submit_tracker
-    }
-    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects {
-        &self.referenced_objects
-    }
 }
 
 impl CommandBuffer for VulkanLoaderCommandBuffer {}
@@ -234,7 +221,6 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
             staging_buffer,
             staging_device_memory,
             mut device_buffer,
-            element_count,
         } = into_vulkan_staging_vertex_buffer_implementation(staging_vertex_buffer);
         unsafe {
             let device_buffer_implementation =
@@ -248,7 +234,8 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
                 &api::VkBufferCopy {
                     srcOffset: 0,
                     dstOffset: 0,
-                    size: element_count as u64 * mem::size_of::<VertexBufferElement>() as u64,
+                    size: device_buffer_implementation.element_count as u64
+                        * mem::size_of::<VertexBufferElement>() as u64,
                 },
             );
             self.0.referenced_objects.buffers.push(staging_buffer);
@@ -299,7 +286,6 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
             staging_buffer,
             staging_device_memory,
             mut device_buffer,
-            element_count,
         } = into_vulkan_staging_index_buffer_implementation(staging_index_buffer);
         unsafe {
             let device_buffer_implementation =
@@ -313,7 +299,8 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
                 &api::VkBufferCopy {
                     srcOffset: 0,
                     dstOffset: 0,
-                    size: element_count as u64 * mem::size_of::<IndexBufferElement>() as u64,
+                    size: device_buffer_implementation.element_count as u64
+                        * mem::size_of::<IndexBufferElement>() as u64,
                 },
             );
             self.0.referenced_objects.buffers.push(staging_buffer);
@@ -361,70 +348,265 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
     }
 }
 
-struct VulkanRenderCommandBufferState {
+#[derive(Clone)]
+enum RenderCommand {
+    SetBuffers {
+        vertex_buffer: VulkanDeviceVertexBuffer,
+        index_buffer: VulkanDeviceIndexBuffer,
+    },
+    SetInitialTransform {
+        transform: math::Mat4<f32>,
+    },
+    Draw {
+        index_count: u32,
+        first_index: u32,
+        vertex_offset: u32,
+    },
+}
+
+#[derive(Copy, Clone)]
+struct VulkanRenderCommandBufferGeneratedStateKey {
+    dimensions: (u32, u32),
+    final_transform: math::Mat4<f32>,
+}
+
+impl Eq for VulkanRenderCommandBufferGeneratedStateKey {}
+
+impl PartialEq for VulkanRenderCommandBufferGeneratedStateKey {
+    fn eq(&self, rhs: &Self) -> bool {
+        use self::math::Mappable;
+        let into_compare_key = |v: &Self| (v.dimensions, v.final_transform.map(|v| v.to_bits()));
+        into_compare_key(self) == into_compare_key(rhs)
+    }
+}
+
+struct VulkanRenderCommandBufferGeneratedState {
+    key: VulkanRenderCommandBufferGeneratedStateKey,
     command_buffer: CommandBufferWrapper,
     referenced_objects: CommandBufferReferencedObjects,
     submit_tracker: CommandBufferSubmitTracker,
 }
 
-#[derive(Clone)]
-pub struct VulkanRenderCommandBuffer(Arc<VulkanRenderCommandBufferState>);
+struct VulkanRenderCommandBufferState {
+    render_commands: Vec<RenderCommand>,
+    device: Arc<DeviceWrapper>,
+    queue_family_index: u32,
+    render_pass: Arc<RenderPassWrapper>,
+    pipeline_layout: Arc<PipelineLayoutWrapper>,
+    graphics_pipeline: Arc<GraphicsPipelineWrapper>,
+    generated_state: Option<Arc<VulkanRenderCommandBufferGeneratedState>>,
+}
 
-impl GenericCommandBuffer for VulkanRenderCommandBuffer {
-    fn get_command_buffer(&self) -> &CommandBufferWrapper {
-        &self.0.command_buffer
+impl VulkanRenderCommandBufferState {
+    fn new(
+        render_commands: Vec<RenderCommand>,
+        device: Arc<DeviceWrapper>,
+        queue_family_index: u32,
+        render_pass: Arc<RenderPassWrapper>,
+        pipeline_layout: Arc<PipelineLayoutWrapper>,
+        graphics_pipeline: Arc<GraphicsPipelineWrapper>,
+    ) -> Self {
+        Self {
+            render_commands: render_commands,
+            device: device,
+            queue_family_index: queue_family_index,
+            render_pass: render_pass,
+            pipeline_layout: pipeline_layout,
+            graphics_pipeline: graphics_pipeline,
+            generated_state: None,
+        }
     }
-    fn get_submit_tracker(&self) -> &CommandBufferSubmitTracker {
-        &self.0.submit_tracker
-    }
-    fn get_referenced_objects(&self) -> &CommandBufferReferencedObjects {
-        &self.0.referenced_objects
+    unsafe fn generate_state(
+        &mut self,
+        key: VulkanRenderCommandBufferGeneratedStateKey,
+    ) -> Result<Arc<VulkanRenderCommandBufferGeneratedState>> {
+        if let Some(generated_state) = &self.generated_state {
+            if generated_state.key == key {
+                return Ok(generated_state.clone());
+            }
+        }
+        self.generated_state.take();
+        let command_buffer = CommandBufferWrapper::new(
+            &self.device,
+            self.queue_family_index,
+            api::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+        )?.begin(
+            api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
+                | api::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+            Some(&api::VkCommandBufferInheritanceInfo {
+                sType: api::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                pNext: null(),
+                renderPass: self.render_pass.render_pass,
+                subpass: 0,
+                framebuffer: null_or_zero(),
+                occlusionQueryEnable: api::VK_FALSE,
+                queryFlags: 0,
+                pipelineStatistics: 0,
+            }),
+        )?;
+        self.device.vkCmdSetViewport.unwrap()(
+            command_buffer.command_buffer,
+            0,
+            1,
+            &api::VkViewport {
+                x: 0.0,
+                y: 0.0,
+                width: key.dimensions.0 as f32,
+                height: key.dimensions.1 as f32,
+                minDepth: 0.0,
+                maxDepth: 1.0,
+            },
+        );
+        self.device.vkCmdSetScissor.unwrap()(
+            command_buffer.command_buffer,
+            0,
+            1,
+            &api::VkRect2D {
+                offset: api::VkOffset2D { x: 0, y: 0 },
+                extent: api::VkExtent2D {
+                    width: key.dimensions.0,
+                    height: key.dimensions.1,
+                },
+            },
+        );
+        self.device.vkCmdBindPipeline.unwrap()(
+            command_buffer.command_buffer,
+            api::VK_PIPELINE_BIND_POINT_GRAPHICS,
+            self.graphics_pipeline.pipeline,
+        );
+        set_push_constants(
+            &self.device,
+            command_buffer.command_buffer,
+            self.pipeline_layout.pipeline_layout,
+            api::VK_SHADER_STAGE_VERTEX_BIT,
+            PushConstants {
+                initial_transform: math::Mat4::identity().into(),
+                final_transform: key.final_transform.into(),
+            },
+        );
+        let submit_tracker = CommandBufferSubmitTracker::new();
+        let mut referenced_objects: CommandBufferReferencedObjects = Default::default();
+        for render_command in &self.render_commands {
+            match render_command.clone() {
+                RenderCommand::SetBuffers {
+                    vertex_buffer,
+                    index_buffer,
+                } => {
+                    let VulkanDeviceVertexBufferImplementation {
+                        buffer: vertex_buffer,
+                        device_memory: vertex_device_memory,
+                        submit_tracker: vertex_submit_tracker,
+                        element_count: _,
+                    } = into_vulkan_device_vertex_buffer_implementation(vertex_buffer);
+                    self.device.vkCmdBindVertexBuffers.unwrap()(
+                        command_buffer.command_buffer,
+                        0,
+                        1,
+                        &vertex_buffer.buffer,
+                        &0,
+                    );
+                    referenced_objects.shared_buffers.push(vertex_buffer);
+                    referenced_objects
+                        .shared_device_memory_allocations
+                        .push(vertex_device_memory);
+                    referenced_objects
+                        .required_command_buffers
+                        .push(vertex_submit_tracker.unwrap());
+                    let VulkanDeviceIndexBufferImplementation {
+                        buffer: index_buffer,
+                        device_memory: index_device_memory,
+                        submit_tracker: index_submit_tracker,
+                        element_count: _,
+                    } = into_vulkan_device_index_buffer_implementation(index_buffer);
+                    self.device.vkCmdBindIndexBuffer.unwrap()(
+                        command_buffer.command_buffer,
+                        index_buffer.buffer,
+                        0,
+                        api::VK_INDEX_TYPE_UINT16,
+                    );
+                    referenced_objects.shared_buffers.push(index_buffer);
+                    referenced_objects
+                        .shared_device_memory_allocations
+                        .push(index_device_memory);
+                    referenced_objects
+                        .required_command_buffers
+                        .push(index_submit_tracker.unwrap());
+                }
+                RenderCommand::SetInitialTransform { transform } => {
+                    set_push_constants_initial_transform(
+                        &self.device,
+                        command_buffer.command_buffer,
+                        self.pipeline_layout.pipeline_layout,
+                        api::VK_SHADER_STAGE_VERTEX_BIT,
+                        transform.into(),
+                    );
+                }
+                RenderCommand::Draw {
+                    index_count,
+                    first_index,
+                    vertex_offset,
+                } => {
+                    self.device.vkCmdDrawIndexed.unwrap()(
+                        command_buffer.command_buffer,
+                        index_count,
+                        1,
+                        first_index,
+                        vertex_offset as i32,
+                        0,
+                    );
+                }
+            }
+        }
+        let command_buffer = command_buffer.finish()?;
+        let retval = Arc::new(VulkanRenderCommandBufferGeneratedState {
+            key: key,
+            command_buffer: command_buffer,
+            referenced_objects: referenced_objects,
+            submit_tracker: submit_tracker,
+        });
+        self.generated_state = Some(retval.clone());
+        Ok(retval)
     }
 }
+
+#[derive(Clone)]
+pub struct VulkanRenderCommandBuffer(Arc<Mutex<VulkanRenderCommandBufferState>>);
 
 unsafe impl Send for VulkanRenderCommandBuffer {}
 
 impl CommandBuffer for VulkanRenderCommandBuffer {}
 
 pub struct VulkanRenderCommandBufferBuilder {
-    state: VulkanRenderCommandBufferState,
-    did_set_initial_transform: bool,
+    render_commands: Vec<RenderCommand>,
+    device: Arc<DeviceWrapper>,
+    queue_family_index: u32,
+    render_pass: Arc<RenderPassWrapper>,
     pipeline_layout: Arc<PipelineLayoutWrapper>,
+    graphics_pipeline: Arc<GraphicsPipelineWrapper>,
+    did_set_initial_transform: bool,
+    index_buffer_length: usize,
+    vertex_buffer_length: usize,
 }
 
 impl VulkanRenderCommandBufferBuilder {
     pub unsafe fn new(
-        device: &Arc<DeviceWrapper>,
+        device: Arc<DeviceWrapper>,
         queue_family_index: u32,
-        render_pass: api::VkRenderPass,
+        render_pass: Arc<RenderPassWrapper>,
         pipeline_layout: Arc<PipelineLayoutWrapper>,
-    ) -> Result<Self> {
-        Ok(Self {
-            state: VulkanRenderCommandBufferState {
-                command_buffer: CommandBufferWrapper::new(
-                    device,
-                    queue_family_index,
-                    api::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
-                )?.begin(
-                    api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
-                        | api::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
-                    Some(&api::VkCommandBufferInheritanceInfo {
-                        sType: api::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
-                        pNext: null(),
-                        renderPass: render_pass,
-                        subpass: 0,
-                        framebuffer: null_or_zero(),
-                        occlusionQueryEnable: api::VK_FALSE,
-                        queryFlags: 0,
-                        pipelineStatistics: 0,
-                    }),
-                )?,
-                submit_tracker: CommandBufferSubmitTracker::new(),
-                referenced_objects: Default::default(),
-            },
-            did_set_initial_transform: false,
+        graphics_pipeline: Arc<GraphicsPipelineWrapper>,
+    ) -> Self {
+        Self {
+            render_commands: Vec::new(),
+            device: device,
+            queue_family_index: queue_family_index,
+            render_pass: render_pass,
             pipeline_layout: pipeline_layout,
-        })
+            graphics_pipeline: graphics_pipeline,
+            did_set_initial_transform: false,
+            index_buffer_length: 0,
+            vertex_buffer_length: 0,
+        }
     }
 }
 
@@ -438,27 +620,48 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
         vertex_buffer: VulkanDeviceVertexBuffer,
         index_buffer: VulkanDeviceIndexBuffer,
     ) {
-        unimplemented!()
+        self.vertex_buffer_length = vertex_buffer.len();
+        self.index_buffer_length = index_buffer.len();
+        self.render_commands.push(RenderCommand::SetBuffers {
+            vertex_buffer: vertex_buffer,
+            index_buffer: index_buffer,
+        });
     }
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
         self.did_set_initial_transform = true;
-        unsafe {
-            set_push_constants_initial_transform(
-                &self.state.command_buffer.command_pool.device,
-                self.state.command_buffer.command_buffer,
-                self.pipeline_layout.pipeline_layout,
-                api::VK_SHADER_STAGE_VERTEX_BIT,
-                transform.into(),
-            );
-        }
+        self.render_commands
+            .push(RenderCommand::SetInitialTransform {
+                transform: transform,
+            });
     }
     fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
-        unimplemented!()
+        assert!(index_count as usize <= self.index_buffer_length);
+        assert!(index_count as usize + first_index as usize <= self.index_buffer_length);
+        assert!((vertex_offset as usize) < self.vertex_buffer_length);
+        assert!(index_count % 3 == 0, "must be whole number of triangles");
+        if index_count > 0 {
+            if !self.did_set_initial_transform {
+                self.did_set_initial_transform = true;
+                self.set_initial_transform(math::Mat4::identity());
+            }
+            self.render_commands.push(RenderCommand::Draw {
+                index_count: index_count,
+                first_index: first_index,
+                vertex_offset: vertex_offset,
+            });
+        }
     }
     fn finish(self) -> Result<VulkanRenderCommandBuffer> {
-        let mut retval = self.state;
-        retval.command_buffer = unsafe { retval.command_buffer.finish() }?;
-        Ok(VulkanRenderCommandBuffer(Arc::new(retval)))
+        Ok(VulkanRenderCommandBuffer(Arc::new(Mutex::new(
+            VulkanRenderCommandBufferState::new(
+                self.render_commands,
+                self.device,
+                self.queue_family_index,
+                self.render_pass,
+                self.pipeline_layout,
+                self.graphics_pipeline,
+            ),
+        ))))
     }
 }
 
@@ -535,7 +738,11 @@ pub unsafe fn render_frame(
         Some(swapchain) => swapchain,
         None => return submit_loader_command_buffers(vulkan_device, loader_command_buffers),
     };
-    let graphics_pipeline = vulkan_device.graphics_pipeline.as_ref().unwrap();
+    let graphics_pipeline = vulkan_device
+        .device_reference
+        .graphics_pipeline
+        .as_ref()
+        .unwrap();
     let device = &vulkan_device.device_reference.device;
     let image_acquired_semaphore = SemaphoreWrapper::new(device.clone())?;
     let image_acquired_fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
@@ -570,40 +777,10 @@ pub unsafe fn render_frame(
             .render_queue_index,
         api::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
     )?.begin(api::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, None)?;
-    device.vkCmdSetViewport.unwrap()(
-        render_command_buffer.command_buffer,
-        0,
-        1,
-        &api::VkViewport {
-            x: 0.0,
-            y: 0.0,
-            width: swapchain.dimensions.0 as f32,
-            height: swapchain.dimensions.1 as f32,
-            minDepth: 0.0,
-            maxDepth: 1.0,
-        },
-    );
-    device.vkCmdSetScissor.unwrap()(
-        render_command_buffer.command_buffer,
-        0,
-        1,
-        &api::VkRect2D {
-            offset: api::VkOffset2D { x: 0, y: 0 },
-            extent: api::VkExtent2D {
-                width: swapchain.dimensions.0,
-                height: swapchain.dimensions.1,
-            },
-        },
-    );
-    device.vkCmdBindPipeline.unwrap()(
-        render_command_buffer.command_buffer,
-        api::VK_PIPELINE_BIND_POINT_GRAPHICS,
-        graphics_pipeline.pipeline,
-    );
     let mut clear_values: [api::VkClearValue; 2] = mem::zeroed();
     clear_values[DEPTH_ATTACHEMENT_INDEX] = api::VkClearValue {
         depthStencil: api::VkClearDepthStencilValue {
-            depth: 1.0,
+            depth: 0.0, // FIXME: change back
             stencil: 0,
         },
     };
@@ -668,28 +845,24 @@ pub unsafe fn render_frame(
                 pipelineStatistics: 0,
             }),
         )?;
-        set_push_constants(
-            device,
-            group_command_buffer.command_buffer,
-            graphics_pipeline.pipeline_layout.pipeline_layout,
-            api::VK_SHADER_STAGE_VERTEX_BIT,
-            PushConstants {
-                initial_transform: math::Mat4::identity().into(),
-                final_transform: final_transform.into(),
-            },
-        );
         let group_command_buffer = group_command_buffer.finish()?;
         render_pass_command_buffers.push(group_command_buffer.command_buffer);
         referenced_objects.push(Box::new(group_command_buffer));
         for command_buffer in render_command_buffers.iter() {
+            let generated_state = command_buffer.0.lock().unwrap().generate_state(
+                VulkanRenderCommandBufferGeneratedStateKey {
+                    dimensions: swapchain.dimensions,
+                    final_transform: *final_transform,
+                },
+            )?;
             for required_command_buffer in
-                &command_buffer.0.referenced_objects.required_command_buffers
+                &generated_state.referenced_objects.required_command_buffers
             {
                 required_command_buffer.assert_submitted();
             }
-            render_pass_command_buffers.push(command_buffer.0.command_buffer.command_buffer);
-            command_buffer.0.submit_tracker.set_submitted();
-            referenced_objects.push(Box::new(command_buffer.clone()));
+            render_pass_command_buffers.push(generated_state.command_buffer.command_buffer);
+            generated_state.submit_tracker.set_submitted();
+            referenced_objects.push(Box::new(generated_state));
         }
     }
     if !render_pass_command_buffers.is_empty() {

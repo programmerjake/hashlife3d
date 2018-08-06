@@ -403,7 +403,11 @@ impl StagingVertexBuffer for GLES2StagingVertexBuffer {
 #[derive(Clone)]
 pub struct GLES2DeviceVertexBuffer {}
 
-impl DeviceVertexBuffer for GLES2DeviceVertexBuffer {}
+impl DeviceVertexBuffer for GLES2DeviceVertexBuffer {
+    fn len(&self) -> usize {
+        unimplemented!()
+    }
+}
 
 pub struct GLES2StagingIndexBuffer {}
 
@@ -419,7 +423,11 @@ impl StagingIndexBuffer for GLES2StagingIndexBuffer {
 #[derive(Clone)]
 pub struct GLES2DeviceIndexBuffer {}
 
-impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {}
+impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {
+    fn len(&self) -> usize {
+        unimplemented!()
+    }
+}
 
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}

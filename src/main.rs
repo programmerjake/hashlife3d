@@ -53,9 +53,49 @@ fn render_main_loop<PD: renderer::PausedDevice>(
         render_command_buffer: D::RenderCommandBuffer,
     }
     impl<D: renderer::Device> Running<D> {
-        fn new(device: D) -> Result<Self, D::Error> {
-            let render_command_buffer_builder = device.create_render_command_buffer_builder()?;
+        fn new(mut device: D) -> Result<Self, D::Error> {
+            let index_array: &[IndexBufferElement] = &[0, 1, 2];
+            let vertex_array: &[VertexBufferElement] = &[
+                VertexBufferElement::new(
+                    math::Vec3::new(-0.5, -0.5, 0.5),
+                    math::Vec4::new(255, 255, 255, 255),
+                    math::Vec2::new(0.0, 0.0),
+                    0,
+                ),
+                VertexBufferElement::new(
+                    math::Vec3::new(0.5, -0.5, 0.5),
+                    math::Vec4::new(255, 255, 255, 255),
+                    math::Vec2::new(0.0, 0.0),
+                    0,
+                ),
+                VertexBufferElement::new(
+                    math::Vec3::new(0.5, 0.5, 0.5),
+                    math::Vec4::new(255, 255, 255, 255),
+                    math::Vec2::new(0.0, 0.0),
+                    0,
+                ),
+            ];
+            let mut loader_command_buffer_builder =
+                device.create_loader_command_buffer_builder()?;
+            let mut render_command_buffer_builder =
+                device.create_render_command_buffer_builder()?;
+            let mut index_buffer = device.create_staging_index_buffer(index_array.len())?;
+            for (index, element) in index_array.iter().enumerate() {
+                index_buffer.write(index, *element);
+            }
+            let index_buffer =
+                loader_command_buffer_builder.copy_index_buffer_to_device(index_buffer)?;
+            let mut vertex_buffer = device.create_staging_vertex_buffer(vertex_array.len())?;
+            for (index, element) in vertex_array.iter().enumerate() {
+                vertex_buffer.write(index, *element);
+            }
+            let vertex_buffer =
+                loader_command_buffer_builder.copy_vertex_buffer_to_device(vertex_buffer)?;
+            render_command_buffer_builder.set_buffers(vertex_buffer, index_buffer);
+            render_command_buffer_builder.draw(index_array.len() as u32, 0, 0);
+            let loader_command_buffer = loader_command_buffer_builder.finish()?;
             let render_command_buffer = render_command_buffer_builder.finish()?;
+            device.submit_loader_command_buffers(&mut vec![loader_command_buffer])?;
             Ok(Self {
                 device: device,
                 render_command_buffer: render_command_buffer,

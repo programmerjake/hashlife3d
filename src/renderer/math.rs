@@ -634,3 +634,15 @@ where
         )
     }
 }
+
+impl<I, O, F: FnMut(I) -> O> Mappable<I, O, F> for Mat4<I> {
+    type Output = Mat4<O>;
+    fn map(self, mut f: F) -> Mat4<O> {
+        Mat4::new(
+            self.c0.map(&mut f),
+            self.c1.map(&mut f),
+            self.c2.map(&mut f),
+            self.c3.map(f),
+        )
+    }
+}

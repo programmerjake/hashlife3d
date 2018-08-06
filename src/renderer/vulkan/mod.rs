@@ -81,6 +81,7 @@ pub struct VulkanDeviceReference {
     render_pass: Arc<RenderPassWrapper>,
     device_memory_pools: Arc<DeviceMemoryPools>,
     pipeline_layout: Arc<PipelineLayoutWrapper>,
+    graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
 }
 
 pub struct VulkanPausedDevice {
@@ -112,56 +113,79 @@ pub struct VulkanDevice {
     surface_state: Option<SurfaceState>,
     render_queue: api::VkQueue,
     present_queue: api::VkQueue,
-    graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
     swapchain: Option<Arc<SwapchainState>>,
     in_progress_operations: VecDeque<(FenceWrapper, Vec<Box<Any>>)>,
     in_progress_present_semaphores: VecDeque<SemaphoreWrapper>,
 }
 
-struct ShaderModuleWrapper {
-    device: Arc<DeviceWrapper>,
-    shader_module: api::VkShaderModule,
-}
+mod shader_module {
+    use super::*;
 
-impl Drop for ShaderModuleWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.vkDestroyShaderModule.unwrap()(
-                self.device.device,
-                self.shader_module,
-                null(),
-            );
+    pub struct ShaderModuleWrapper {
+        pub device: Arc<DeviceWrapper>,
+        pub shader_module: api::VkShaderModule,
+    }
+
+    impl Drop for ShaderModuleWrapper {
+        fn drop(&mut self) {
+            unsafe {
+                self.device.vkDestroyShaderModule.unwrap()(
+                    self.device.device,
+                    self.shader_module,
+                    null(),
+                );
+            }
         }
     }
 }
 
-struct RenderPassWrapper {
-    device: Arc<DeviceWrapper>,
-    render_pass: api::VkRenderPass,
-}
+use self::shader_module::ShaderModuleWrapper;
 
-impl Drop for RenderPassWrapper {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.vkDestroyRenderPass.unwrap()(self.device.device, self.render_pass, null());
+mod render_pass {
+    use super::*;
+
+    pub struct RenderPassWrapper {
+        pub device: Arc<DeviceWrapper>,
+        pub render_pass: api::VkRenderPass,
+    }
+
+    impl Drop for RenderPassWrapper {
+        fn drop(&mut self) {
+            unsafe {
+                self.device.vkDestroyRenderPass.unwrap()(
+                    self.device.device,
+                    self.render_pass,
+                    null(),
+                );
+            }
         }
     }
 }
 
-struct GraphicsPipelineWrapper {
-    device: Arc<DeviceWrapper>,
-    pipeline: api::VkPipeline,
-    pipeline_layout: Arc<PipelineLayoutWrapper>,
-    _vertex_shader: ShaderModuleWrapper,
-    _fragment_shader: ShaderModuleWrapper,
-    render_pass: Arc<RenderPassWrapper>,
-}
+use self::render_pass::RenderPassWrapper;
 
-impl Drop for GraphicsPipelineWrapper {
-    fn drop(&mut self) {
-        unsafe { self.device.vkDestroyPipeline.unwrap()(self.device.device, self.pipeline, null()) }
+mod graphics_pipeline {
+    use super::*;
+
+    pub struct GraphicsPipelineWrapper {
+        pub device: Arc<DeviceWrapper>,
+        pub pipeline: api::VkPipeline,
+        pub pipeline_layout: Arc<PipelineLayoutWrapper>,
+        pub _vertex_shader: ShaderModuleWrapper,
+        pub _fragment_shader: ShaderModuleWrapper,
+        pub render_pass: Arc<RenderPassWrapper>,
+    }
+
+    impl Drop for GraphicsPipelineWrapper {
+        fn drop(&mut self) {
+            unsafe {
+                self.device.vkDestroyPipeline.unwrap()(self.device.device, self.pipeline, null())
+            }
+        }
     }
 }
+
+use self::graphics_pipeline::GraphicsPipelineWrapper;
 
 mod descriptor_set_layout {
     use super::*;
@@ -287,12 +311,13 @@ impl DeviceReference for VulkanDeviceReference {
     }
     fn create_render_command_buffer_builder(&self) -> Result<VulkanRenderCommandBufferBuilder> {
         unsafe {
-            VulkanRenderCommandBufferBuilder::new(
-                &self.device,
+            Ok(VulkanRenderCommandBufferBuilder::new(
+                self.device.clone(),
                 self.render_queue_index,
-                self.render_pass.render_pass,
+                self.render_pass.clone(),
                 self.pipeline_layout.clone(),
-            )
+                self.graphics_pipeline.clone().unwrap(),
+            ))
         }
     }
     fn create_staging_vertex_buffer(&self, len: usize) -> Result<VulkanStagingVertexBuffer> {
@@ -583,7 +608,9 @@ fn create_descriptor_set_layout(device: Arc<DeviceWrapper>) -> Result<Descriptor
 }
 
 fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWrapper> {
-    let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
+    // FIXME: change back to having 1 descriptor set layout
+    //let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
+    let descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper> = vec![];
     let mut pipeline_layout = null_or_zero();
     let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
         .iter()
@@ -658,7 +685,7 @@ impl VulkanDevice {
             get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_index),
         ];
         let attachments = [api::VkPipelineColorBlendAttachmentState {
-            blendEnable: api::VK_TRUE,
+            blendEnable: api::VK_FALSE, // FIXME: change back to true
             srcColorBlendFactor: api::VK_BLEND_FACTOR_SRC_ALPHA,
             dstColorBlendFactor: api::VK_BLEND_FACTOR_DST_ALPHA,
             colorBlendOp: api::VK_BLEND_OP_ADD,
@@ -722,7 +749,7 @@ impl VulkanDevice {
                         depthClampEnable: api::VK_FALSE,
                         rasterizerDiscardEnable: api::VK_FALSE,
                         polygonMode: api::VK_POLYGON_MODE_FILL,
-                        cullMode: api::VK_CULL_MODE_BACK_BIT,
+                        cullMode: api::VK_CULL_MODE_NONE, // FIXME: change back to back
                         frontFace: api::VK_FRONT_FACE_CLOCKWISE,
                         depthBiasEnable: api::VK_FALSE,
                         depthBiasConstantFactor: 0.0,
@@ -745,9 +772,9 @@ impl VulkanDevice {
                         sType: api::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                         pNext: null(),
                         flags: 0,
-                        depthTestEnable: api::VK_TRUE,
+                        depthTestEnable: api::VK_FALSE, // FIXME: change back to true
                         depthWriteEnable: api::VK_TRUE,
-                        depthCompareOp: api::VK_COMPARE_OP_LESS,
+                        depthCompareOp: api::VK_COMPARE_OP_ALWAYS, // FIXME: change back to less
                         depthBoundsTestEnable: api::VK_FALSE,
                         stencilTestEnable: api::VK_FALSE,
                         front: mem::zeroed(),
@@ -1002,6 +1029,7 @@ impl VulkanDevice {
                         pNext: null(),
                         flags: 0,
                         renderPass: self
+                            .device_reference
                             .graphics_pipeline
                             .as_ref()
                             .unwrap()
@@ -1167,16 +1195,17 @@ impl Device for VulkanDevice {
                 }),
                 render_pass: Arc::new(create_render_pass(device.clone(), &surface_state)?),
                 pipeline_layout: Arc::new(create_pipeline_layout(device)?),
+                graphics_pipeline: None,
             },
             surface_state: Some(surface_state),
             render_queue: render_queue,
             present_queue: present_queue,
-            graphics_pipeline: None,
             swapchain: None,
             in_progress_operations: VecDeque::new(),
             in_progress_present_semaphores: VecDeque::new(),
         };
-        retval.graphics_pipeline = Some(Arc::new(retval.create_graphics_pipeline()?));
+        retval.device_reference.graphics_pipeline =
+            Some(Arc::new(retval.create_graphics_pipeline()?));
         retval.swapchain = retval.create_swapchain(None)?.map(|v| Arc::new(v));
         return Ok(retval);
     }
@@ -1273,6 +1302,10 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         };
         #[cfg(debug_assertions)]
         let layers = [
+            // FIXME: remove api dump layer
+            CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0")
+                .unwrap()
+                .as_ptr(),
             CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_standard_validation\0")
                 .unwrap()
                 .as_ptr(),
