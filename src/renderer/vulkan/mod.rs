@@ -376,6 +376,7 @@ unsafe fn set_push_constants(
     stage_flags: api::VkShaderStageFlags,
     push_constants: PushConstants,
 ) {
+    return; // FIXME: change back
     device.vkCmdPushConstants.unwrap()(
         command_buffer,
         layout,
@@ -393,6 +394,7 @@ unsafe fn set_push_constants_initial_transform(
     stage_flags: api::VkShaderStageFlags,
     push_constants_initial_transform: AlignedMat4,
 ) {
+    return; // FIXME: change back
     let push_constants: PushConstants = mem::uninitialized();
     let offset = &push_constants.initial_transform as *const AlignedMat4 as usize
         - &push_constants as *const PushConstants as usize;
@@ -499,8 +501,8 @@ macro_rules! get_vertex_input_attribute_description {
     }};
 }
 
-const DEPTH_ATTACHEMENT_INDEX: usize = 0;
-const COLOR_ATTACHEMENT_INDEX: usize = 1;
+const COLOR_ATTACHEMENT_INDEX: usize = 0;
+const DEPTH_ATTACHEMENT_INDEX: usize = 1;
 
 fn create_render_pass(
     device: Arc<DeviceWrapper>,
@@ -621,6 +623,7 @@ fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWr
         offset: 0,
         size: mem::size_of::<PushConstants>() as u32,
     }];
+    let push_constant_ranges = []; // FIXME: change back
     match unsafe {
         device.vkCreatePipelineLayout.unwrap()(
             device.device,
@@ -684,6 +687,7 @@ impl VulkanDevice {
             get_vertex_input_attribute_description!(2, 0, FormatKind::FullRange, texture_coord),
             get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_index),
         ];
+        let vertex_attribute_descriptions = []; // FIXME: change back
         let attachments = [api::VkPipelineColorBlendAttachmentState {
             blendEnable: api::VK_FALSE, // FIXME: change back to true
             srcColorBlendFactor: api::VK_BLEND_FACTOR_SRC_ALPHA,
@@ -1303,9 +1307,9 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         #[cfg(debug_assertions)]
         let layers = [
             // FIXME: remove api dump layer
-            CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0")
+            /*CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0")
                 .unwrap()
-                .as_ptr(),
+                .as_ptr(),*/
             CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_standard_validation\0")
                 .unwrap()
                 .as_ptr(),

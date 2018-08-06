@@ -215,7 +215,7 @@ impl DeviceMemoryPoolRef {
                 *next_chunk = 0;
             }
             let chunk = &chunks[*next_chunk];
-            if chunk.device_memory.get_size() < size {
+            if chunk.device_memory.get_size() >= size {
                 match chunk
                     .suballocation_algorithm
                     .lock()
@@ -242,8 +242,8 @@ impl DeviceMemoryPoolRef {
             .last()
             .map(|chunk| chunk.device_memory.get_size() * 2)
             .unwrap_or(ALLOCATION_MIN_CHUNK_SIZE);
-        new_chunk_size = cmp::max(new_chunk_size, ALLOCATION_MAX_NONDEDICATED_CHUNK_SIZE);
-        new_chunk_size = cmp::min(new_chunk_size, size);
+        new_chunk_size = cmp::min(new_chunk_size, ALLOCATION_MAX_NONDEDICATED_CHUNK_SIZE);
+        new_chunk_size = cmp::max(new_chunk_size, size);
         let mut device_memory = unsafe {
             DeviceMemoryWrapper::new(
                 self.0.device.clone(),

@@ -1,5 +1,7 @@
 #version 450
 
+#if 0 // FIXME: change back
+
 layout (location = 0) in vec3 input_position;
 layout (location = 1) in vec4 input_color;
 layout (location = 2) in vec2 input_texture_coord;
@@ -36,3 +38,16 @@ void main()
 #endif
 #endif
 }
+#else
+
+out gl_PerVertex
+{
+    vec4 gl_Position;
+};
+
+void main()
+{
+    gl_Position = vec4(vec2[](vec2(0.0, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5))[gl_VertexIndex], 0.0, 1.0);
+}
+
+#endif
