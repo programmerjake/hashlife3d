@@ -1,6 +1,6 @@
 use super::{
     api, null_or_zero, CommandBufferSubmitTracker, DeviceMemoryPoolAllocation, DeviceMemoryPools,
-    DeviceWrapper, Result, VulkanError,
+    DeviceWrapper, Result, SemaphoreWrapper, VulkanError,
 };
 use renderer::{
     DeviceIndexBuffer, DeviceVertexBuffer, IndexBufferElement, StagingIndexBuffer,
@@ -10,7 +10,7 @@ use std::cmp;
 use std::mem;
 use std::ptr::null;
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct BufferWrapper {
     pub device: Arc<DeviceWrapper>,

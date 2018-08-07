@@ -665,12 +665,14 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
     }
 }
 
-fn submit_loader_command_buffers_with_semaphores(
+pub fn submit_loader_command_buffers(
     vulkan_device: &mut VulkanDevice,
-    wait_semaphores: &[(SemaphoreWrapper, api::VkPipelineStageFlags)],
     loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-    signal_semaphores: &[SemaphoreWrapper],
 ) -> Result<()> {
+    vulkan_device.free_finished_objects()?;
+    if loader_command_buffers.is_empty() {
+        return Ok(());
+    }
     let device = &vulkan_device.device_reference.device;
     let mut command_buffers = Vec::with_capacity(loader_command_buffers.len());
     let mut referenced_objects: Vec<Box<Any>> = Vec::new();
@@ -685,9 +687,6 @@ fn submit_loader_command_buffers_with_semaphores(
         referenced_objects.push(Box::new(command_buffer));
     }
     let fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
-    let wait_destination_stage_masks: Vec<_> = wait_semaphores.iter().map(|v| v.1).collect();
-    let wait_semaphores: Vec<_> = wait_semaphores.iter().map(|v| v.0.semaphore).collect();
-    let signal_semaphores: Vec<_> = signal_semaphores.iter().map(|v| v.semaphore).collect();
     match unsafe {
         device.vkQueueSubmit.unwrap()(
             vulkan_device.render_queue,
@@ -695,13 +694,13 @@ fn submit_loader_command_buffers_with_semaphores(
             &api::VkSubmitInfo {
                 sType: api::VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 pNext: null(),
-                waitSemaphoreCount: wait_semaphores.len() as u32,
-                pWaitSemaphores: wait_semaphores.as_ptr(),
-                pWaitDstStageMask: wait_destination_stage_masks.as_ptr(),
+                waitSemaphoreCount: 0,
+                pWaitSemaphores: null(),
+                pWaitDstStageMask: null(),
                 commandBufferCount: command_buffers.len() as u32,
                 pCommandBuffers: command_buffers.as_ptr(),
-                signalSemaphoreCount: signal_semaphores.len() as u32,
-                pSignalSemaphores: signal_semaphores.as_ptr(),
+                signalSemaphoreCount: 0,
+                pSignalSemaphores: null(),
             },
             fence.fence,
         )
@@ -714,17 +713,6 @@ fn submit_loader_command_buffers_with_semaphores(
         }
         result => Err(VulkanError::VulkanError(result)),
     }
-}
-
-pub fn submit_loader_command_buffers(
-    vulkan_device: &mut VulkanDevice,
-    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-) -> Result<()> {
-    vulkan_device.free_finished_objects()?;
-    if loader_command_buffers.is_empty() {
-        return Ok(());
-    }
-    submit_loader_command_buffers_with_semaphores(vulkan_device, &[], loader_command_buffers, &[])
 }
 
 pub unsafe fn render_frame(
@@ -780,7 +768,7 @@ pub unsafe fn render_frame(
     let mut clear_values: [api::VkClearValue; 2] = mem::zeroed();
     clear_values[DEPTH_ATTACHEMENT_INDEX] = api::VkClearValue {
         depthStencil: api::VkClearDepthStencilValue {
-            depth: 0.0, // FIXME: change back
+            depth: 1.0,
             stencil: 0,
         },
     };

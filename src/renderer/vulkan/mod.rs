@@ -376,7 +376,6 @@ unsafe fn set_push_constants(
     stage_flags: api::VkShaderStageFlags,
     push_constants: PushConstants,
 ) {
-    return; // FIXME: change back
     device.vkCmdPushConstants.unwrap()(
         command_buffer,
         layout,
@@ -394,7 +393,6 @@ unsafe fn set_push_constants_initial_transform(
     stage_flags: api::VkShaderStageFlags,
     push_constants_initial_transform: AlignedMat4,
 ) {
-    return; // FIXME: change back
     let push_constants: PushConstants = mem::uninitialized();
     let offset = &push_constants.initial_transform as *const AlignedMat4 as usize
         - &push_constants as *const PushConstants as usize;
@@ -610,9 +608,8 @@ fn create_descriptor_set_layout(device: Arc<DeviceWrapper>) -> Result<Descriptor
 }
 
 fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWrapper> {
-    // FIXME: change back to having 1 descriptor set layout
-    //let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
-    let descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper> = vec![];
+    let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
+    //let descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper> = vec![];
     let mut pipeline_layout = null_or_zero();
     let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
         .iter()
@@ -623,7 +620,6 @@ fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWr
         offset: 0,
         size: mem::size_of::<PushConstants>() as u32,
     }];
-    let push_constant_ranges = []; // FIXME: change back
     match unsafe {
         device.vkCreatePipelineLayout.unwrap()(
             device.device,
@@ -687,9 +683,8 @@ impl VulkanDevice {
             get_vertex_input_attribute_description!(2, 0, FormatKind::FullRange, texture_coord),
             get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_index),
         ];
-        let vertex_attribute_descriptions = []; // FIXME: change back
         let attachments = [api::VkPipelineColorBlendAttachmentState {
-            blendEnable: api::VK_FALSE, // FIXME: change back to true
+            blendEnable: api::VK_TRUE,
             srcColorBlendFactor: api::VK_BLEND_FACTOR_SRC_ALPHA,
             dstColorBlendFactor: api::VK_BLEND_FACTOR_DST_ALPHA,
             colorBlendOp: api::VK_BLEND_OP_ADD,
@@ -753,7 +748,7 @@ impl VulkanDevice {
                         depthClampEnable: api::VK_FALSE,
                         rasterizerDiscardEnable: api::VK_FALSE,
                         polygonMode: api::VK_POLYGON_MODE_FILL,
-                        cullMode: api::VK_CULL_MODE_NONE, // FIXME: change back to back
+                        cullMode: api::VK_CULL_MODE_BACK_BIT,
                         frontFace: api::VK_FRONT_FACE_CLOCKWISE,
                         depthBiasEnable: api::VK_FALSE,
                         depthBiasConstantFactor: 0.0,
@@ -776,9 +771,9 @@ impl VulkanDevice {
                         sType: api::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                         pNext: null(),
                         flags: 0,
-                        depthTestEnable: api::VK_FALSE, // FIXME: change back to true
+                        depthTestEnable: api::VK_TRUE,
                         depthWriteEnable: api::VK_TRUE,
-                        depthCompareOp: api::VK_COMPARE_OP_ALWAYS, // FIXME: change back to less
+                        depthCompareOp: api::VK_COMPARE_OP_LESS,
                         depthBoundsTestEnable: api::VK_FALSE,
                         stencilTestEnable: api::VK_FALSE,
                         front: mem::zeroed(),
@@ -1306,10 +1301,6 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
         };
         #[cfg(debug_assertions)]
         let layers = [
-            // FIXME: remove api dump layer
-            /*CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0")
-                .unwrap()
-                .as_ptr(),*/
             CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_standard_validation\0")
                 .unwrap()
                 .as_ptr(),
