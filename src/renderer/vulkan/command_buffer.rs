@@ -803,7 +803,7 @@ pub unsafe fn render_frame(
             |RenderCommandBufferGroup {
                  render_command_buffers,
                  ..
-             }| render_command_buffers.len() + 1,
+             }| render_command_buffers.len(),
         ).sum();
     let mut render_pass_command_buffers = Vec::with_capacity(render_pass_command_buffer_count);
     for RenderCommandBufferGroup {
@@ -811,36 +811,17 @@ pub unsafe fn render_frame(
         final_transform,
     } in render_command_buffer_groups
     {
-        let group_command_buffer = CommandBufferWrapper::new(
-            device,
-            vulkan_device
-                .surface_state
-                .as_ref()
-                .unwrap()
-                .render_queue_index,
-            api::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
-        )?.begin(
-            api::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-                | api::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
-            Some(&api::VkCommandBufferInheritanceInfo {
-                sType: api::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
-                pNext: null(),
-                renderPass: graphics_pipeline.render_pass.render_pass,
-                subpass: 0,
-                framebuffer: framebuffer.framebuffer,
-                occlusionQueryEnable: api::VK_FALSE,
-                queryFlags: 0,
-                pipelineStatistics: 0,
-            }),
-        )?;
-        let group_command_buffer = group_command_buffer.finish()?;
-        render_pass_command_buffers.push(group_command_buffer.command_buffer);
-        referenced_objects.push(Box::new(group_command_buffer));
+        let gl_to_vulkan_coordinates = math::Mat4::new(
+            math::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            math::Vec4::new(0.0, -1.0, 0.0, 0.0),
+            math::Vec4::new(0.0, 0.0, 0.5, 0.0),
+            math::Vec4::new(0.0, 0.0, 0.5, 1.0),
+        );
         for command_buffer in render_command_buffers.iter() {
             let generated_state = command_buffer.0.lock().unwrap().generate_state(
                 VulkanRenderCommandBufferGeneratedStateKey {
                     dimensions: swapchain.dimensions,
-                    final_transform: *final_transform,
+                    final_transform: gl_to_vulkan_coordinates * *final_transform,
                 },
             )?;
             for required_command_buffer in

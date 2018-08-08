@@ -368,6 +368,34 @@ macro_rules! make_vec {
                 self.mul(rhs).reduce(|a, b| a.add(b))
             }
         }
+
+        impl $name<f32> {
+            pub fn abs(self) -> f32 {
+                self.dot(self).sqrt()
+            }
+            pub fn normalize(self) -> Option<Self> {
+                let abs = self.abs();
+                if abs == 0.0 {
+                    None
+                } else {
+                    Some(self / Self::splat(abs))
+                }
+            }
+        }
+
+        impl $name<f64> {
+            pub fn abs(self) -> f64 {
+                self.dot(self).sqrt()
+            }
+            pub fn normalize(self) -> Option<Self> {
+                let abs = self.abs();
+                if abs == 0.0 {
+                    None
+                } else {
+                    Some(self / Self::splat(abs))
+                }
+            }
+        }
     };
 }
 
@@ -496,11 +524,11 @@ impl<T: Clone> Mat4<T> {
     }
 }
 
-pub trait Zero: Add + Sized {
+pub trait Zero: Add<Output = Self> + Sized {
     fn zero() -> Self;
 }
 
-pub trait One: Mul + Sized {
+pub trait One: Mul<Output = Self> + Sized {
     fn one() -> Self;
 }
 
@@ -547,7 +575,156 @@ impl<T: Zero + One> Mat4<T> {
             Vec4::new(zero(), zero(), zero(), one()),
         )
     }
+    pub fn translation(amount: Vec3<T>) -> Self {
+        let zero = || Zero::zero();
+        let one = || One::one();
+        Self::new(
+            Vec4::new(one(), zero(), zero(), zero()),
+            Vec4::new(zero(), one(), zero(), zero()),
+            Vec4::new(zero(), zero(), one(), zero()),
+            Vec4::new(amount.x, amount.y, amount.z, one()),
+        )
+    }
+    pub fn scaling(amount: Vec3<T>) -> Self {
+        let zero = || Zero::zero();
+        let one = || One::one();
+        Self::new(
+            Vec4::new(amount.x, zero(), zero(), zero()),
+            Vec4::new(zero(), amount.y, zero(), zero()),
+            Vec4::new(zero(), zero(), amount.z, zero()),
+            Vec4::new(zero(), zero(), zero(), one()),
+        )
+    }
 }
+
+impl<T: Zero + One + Clone> Mat4<T> {
+    pub fn translate(self, amount: Vec3<T>) -> Self {
+        self * Mat4::translation(amount)
+    }
+    pub fn scale(self, amount: Vec3<T>) -> Self {
+        self * Mat4::scaling(amount)
+    }
+}
+
+impl<T: Zero + One + Clone + Sub<Output = T>> Mat4<T> {
+    pub fn rotation_sin_cos(sin: T, cos: T, axis_normalized: Vec3<T>) -> Self {
+        let zero = || Zero::zero();
+        let one = || One::one();
+        let x_x = axis_normalized.x.clone() * axis_normalized.x.clone();
+        let x_y = axis_normalized.x.clone() * axis_normalized.y.clone();
+        let x_z = axis_normalized.x.clone() * axis_normalized.z.clone();
+        let y_y = axis_normalized.y.clone() * axis_normalized.y.clone();
+        let y_z = axis_normalized.y.clone() * axis_normalized.z.clone();
+        let z_z = axis_normalized.z.clone() * axis_normalized.z.clone();
+        let versine: T = one() - cos.clone();
+        Mat4::new(
+            Vec4::new(
+                x_x * versine.clone() + cos.clone(),
+                x_y.clone() * versine.clone() + axis_normalized.z.clone() * sin.clone(),
+                x_z.clone() * versine.clone() - axis_normalized.y.clone() * sin.clone(),
+                zero(),
+            ),
+            Vec4::new(
+                x_y.clone() * versine.clone() - axis_normalized.z * sin.clone(),
+                y_y * versine.clone() + cos.clone(),
+                y_z.clone() * versine.clone() + axis_normalized.x.clone() * sin.clone(),
+                zero(),
+            ),
+            Vec4::new(
+                x_z.clone() * versine.clone() + axis_normalized.y * sin.clone(),
+                y_z.clone() * versine.clone() - axis_normalized.x * sin,
+                z_z * versine + cos,
+                zero(),
+            ),
+            Vec4::new(zero(), zero(), zero(), one()),
+        )
+    }
+    pub fn rotate_sin_cos(self, sin: T, cos: T, axis_normalized: Vec3<T>) -> Self {
+        self * Self::rotation_sin_cos(sin, cos, axis_normalized)
+    }
+}
+
+macro_rules! float_mat4_methods {
+    ($T:ty) => {
+        impl Mat4<$T> {
+            pub fn rotation(angle_in_radians: $T, axis: Vec3<$T>) -> Self {
+                Mat4::rotation_sin_cos(
+                    angle_in_radians.sin(),
+                    angle_in_radians.cos(),
+                    axis.normalize().unwrap(),
+                )
+            }
+            pub fn rotate(self, angle_in_radians: $T, axis: Vec3<$T>) -> Self {
+                self * Self::rotation(angle_in_radians, axis)
+            }
+            pub fn orthographic_projection(
+                left: $T,
+                right: $T,
+                bottom: $T,
+                top: $T,
+                near: $T,
+                far: $T,
+            ) -> Self {
+                Mat4::new(
+                    Vec4::new(2.0 / (right - left), 0.0, 0.0, 0.0),
+                    Vec4::new(0.0, 2.0 / (top - bottom), 0.0, 0.0),
+                    Vec4::new(0.0, 0.0, -2.0 / (far - near), 0.0),
+                    Vec4::new(
+                        -(right + left) / (right - left),
+                        -(top + bottom) / (top - bottom),
+                        -(far + near) / (far - near),
+                        1.0,
+                    ),
+                )
+            }
+            pub fn orthographic_project(
+                self,
+                left: $T,
+                right: $T,
+                bottom: $T,
+                top: $T,
+                near: $T,
+                far: $T,
+            ) -> Self {
+                self * Self::orthographic_projection(left, right, bottom, top, near, far)
+            }
+            pub fn perspective_projection(
+                left: $T,
+                right: $T,
+                bottom: $T,
+                top: $T,
+                near: $T,
+                far: $T,
+            ) -> Self {
+                Mat4::new(
+                    Vec4::new(2.0 * near / (right - left), 0.0, 0.0, 0.0),
+                    Vec4::new(0.0, 2.0 * near / (top - bottom), 0.0, 0.0),
+                    Vec4::new(
+                        (right + left) / (right - left),
+                        (top + bottom) / (top - bottom),
+                        -(far + near) / (far - near),
+                        -1.0,
+                    ),
+                    Vec4::new(0.0, 0.0, -2.0 * far * near / (far - near), 0.0),
+                )
+            }
+            pub fn perspective_project(
+                self,
+                left: $T,
+                right: $T,
+                bottom: $T,
+                top: $T,
+                near: $T,
+                far: $T,
+            ) -> Self {
+                self * Self::perspective_projection(left, right, bottom, top, near, far)
+            }
+        }
+    };
+}
+
+float_mat4_methods!(f32);
+float_mat4_methods!(f64);
 
 impl<T> Index<usize> for Mat4<T> {
     type Output = Vec4<T>;

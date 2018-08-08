@@ -7,11 +7,15 @@ mod hashtable;
 mod renderer;
 mod sdl;
 mod world3d;
+use self::math::Dot;
+use self::math::Mappable;
 #[cfg(not(test))]
 pub use self::sdl::SDL_main;
+use renderer::math;
 use renderer::*;
 use sdl::event::Event;
 use std::error;
+use std::time;
 use world3d::{State, World};
 
 #[no_mangle]
@@ -54,45 +58,135 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     }
     impl<D: renderer::Device> Running<D> {
         fn new(mut device: D) -> Result<Self, D::Error> {
-            let index_array: &[IndexBufferElement] = &[0, 1, 2];
-            let vertex_array: &[VertexBufferElement] = &[
-                VertexBufferElement::new(
-                    math::Vec3::new(-0.5, -0.5, 0.5),
-                    math::Vec4::new(255, 255, 255, 255),
-                    math::Vec2::new(0.0, 0.0),
-                    0,
-                ),
-                VertexBufferElement::new(
-                    math::Vec3::new(0.5, -0.5, 0.5),
-                    math::Vec4::new(255, 255, 255, 255),
-                    math::Vec2::new(0.0, 0.0),
-                    0,
-                ),
-                VertexBufferElement::new(
-                    math::Vec3::new(0.5, 0.5, 0.5),
-                    math::Vec4::new(255, 255, 255, 255),
-                    math::Vec2::new(0.0, 0.0),
-                    0,
-                ),
-            ];
+            let mut indices: Vec<IndexBufferElement> = Vec::new();
+            let mut vertices: Vec<VertexBufferElement> = Vec::new();
+            {
+                let mut append_vertex = |vertex: VertexBufferElement| {
+                    let index = vertices.len();
+                    vertices.push(vertex);
+                    index as IndexBufferElement
+                };
+                let mut render_quad =
+                    |v0: math::Vec3<f32>,
+                     v1: math::Vec3<f32>,
+                     v2: math::Vec3<f32>,
+                     v3: math::Vec3<f32>,
+                     color: math::Vec4<u8>| {
+                        let v0 = append_vertex(VertexBufferElement::new(
+                            v0,
+                            color,
+                            Default::default(),
+                            0,
+                        ));
+                        let v1 = append_vertex(VertexBufferElement::new(
+                            v1,
+                            color,
+                            Default::default(),
+                            0,
+                        ));
+                        let v2 = append_vertex(VertexBufferElement::new(
+                            v2,
+                            color,
+                            Default::default(),
+                            0,
+                        ));
+                        let v3 = append_vertex(VertexBufferElement::new(
+                            v3,
+                            color,
+                            Default::default(),
+                            0,
+                        ));
+                        indices.push(v0);
+                        indices.push(v1);
+                        indices.push(v2);
+                        indices.push(v2);
+                        indices.push(v3);
+                        indices.push(v0);
+                    };
+                let lights: &[(math::Vec3<f32>, math::Vec3<f32>)] = &[
+                    (
+                        math::Vec3::<f32>::new(1.0, -0.3, -0.3).normalize().unwrap(),
+                        math::Vec3::<f32>::new(1.0, 0.0, 0.0),
+                    ),
+                    (
+                        math::Vec3::<f32>::new(-0.3, 1.0, -0.3).normalize().unwrap(),
+                        math::Vec3::<f32>::new(0.0, 1.0, 0.0),
+                    ),
+                    (
+                        math::Vec3::<f32>::new(-0.3, -0.3, 1.0).normalize().unwrap(),
+                        math::Vec3::<f32>::new(0.0, 0.0, 1.0),
+                    ),
+                ];
+                let get_color = |normal: math::Vec3<f32>| {
+                    let mut retval = math::Vec3::splat(0.3);
+                    for light in lights {
+                        let amount = normal.dot(light.0).max(0.0);
+                        retval += math::Vec3::splat(amount) * light.1;
+                    }
+                    let retval = retval.map(|v| (v * 255.0).max(0.0).min(255.0) as u8);
+                    math::Vec4::new(retval.x, retval.y, retval.z, 255)
+                };
+                render_quad(
+                    math::Vec3::new(1.0, -1.0, -1.0),
+                    math::Vec3::new(1.0, -1.0, 1.0),
+                    math::Vec3::new(-1.0, -1.0, 1.0),
+                    math::Vec3::new(-1.0, -1.0, -1.0),
+                    get_color(math::Vec3::new(0.0, -1.0, 0.0)),
+                );
+                render_quad(
+                    math::Vec3::new(1.0, 1.0, -1.0),
+                    math::Vec3::new(-1.0, 1.0, -1.0),
+                    math::Vec3::new(-1.0, 1.0, 1.0),
+                    math::Vec3::new(1.0, 1.0, 1.0),
+                    get_color(math::Vec3::new(0.0, 1.0, 0.0)),
+                );
+                render_quad(
+                    math::Vec3::new(1.0, -1.0, -1.0),
+                    math::Vec3::new(1.0, 1.0, -1.0),
+                    math::Vec3::new(1.0, 1.0, 1.0),
+                    math::Vec3::new(1.0, -1.0, 1.0),
+                    get_color(math::Vec3::new(1.0, 0.0, 0.0)),
+                );
+                render_quad(
+                    math::Vec3::new(1.0, -1.0, 1.0),
+                    math::Vec3::new(1.0, 1.0, 1.0),
+                    math::Vec3::new(-1.0, 1.0, 1.0),
+                    math::Vec3::new(-1.0, -1.0, 1.0),
+                    get_color(math::Vec3::new(0.0, 0.0, 1.0)),
+                );
+                render_quad(
+                    math::Vec3::new(-1.0, -1.0, 1.0),
+                    math::Vec3::new(-1.0, 1.0, 1.0),
+                    math::Vec3::new(-1.0, 1.0, -1.0),
+                    math::Vec3::new(-1.0, -1.0, -1.0),
+                    get_color(math::Vec3::new(-1.0, 0.0, 0.0)),
+                );
+                render_quad(
+                    math::Vec3::new(1.0, 1.0, -1.0),
+                    math::Vec3::new(1.0, -1.0, -1.0),
+                    math::Vec3::new(-1.0, -1.0, -1.0),
+                    math::Vec3::new(-1.0, 1.0, -1.0),
+                    get_color(math::Vec3::new(0.0, 0.0, -1.0)),
+                );
+            }
             let mut loader_command_buffer_builder =
                 device.create_loader_command_buffer_builder()?;
             let mut render_command_buffer_builder =
                 device.create_render_command_buffer_builder()?;
-            let mut index_buffer = device.create_staging_index_buffer(index_array.len())?;
-            for (index, element) in index_array.iter().enumerate() {
+            let mut index_buffer = device.create_staging_index_buffer(indices.len())?;
+            for (index, element) in indices.iter().enumerate() {
                 index_buffer.write(index, *element);
             }
             let index_buffer =
                 loader_command_buffer_builder.copy_index_buffer_to_device(index_buffer)?;
-            let mut vertex_buffer = device.create_staging_vertex_buffer(vertex_array.len())?;
-            for (index, element) in vertex_array.iter().enumerate() {
+            let mut vertex_buffer = device.create_staging_vertex_buffer(vertices.len())?;
+            for (index, element) in vertices.iter().enumerate() {
                 vertex_buffer.write(index, *element);
             }
             let vertex_buffer =
                 loader_command_buffer_builder.copy_vertex_buffer_to_device(vertex_buffer)?;
             render_command_buffer_builder.set_buffers(vertex_buffer, index_buffer);
-            render_command_buffer_builder.draw(index_array.len() as u32, 0, 0);
+            render_command_buffer_builder.draw(indices.len() as u32, 0, 0);
             let loader_command_buffer = loader_command_buffer_builder.finish()?;
             let render_command_buffer = render_command_buffer_builder.finish()?;
             device.submit_loader_command_buffers(&mut vec![loader_command_buffer])?;
@@ -112,6 +206,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     let mut state_enum = State::Paused(Paused {
         device: paused_device,
     });
+    let start_instant = time::Instant::now();
     loop {
         match state_enum {
             State::Running(mut state) => {
@@ -131,14 +226,44 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                         event => println!("unhandled event: {:?}", event),
                     }
                 } else {
+                    let elapsed_time = start_instant.elapsed();
+                    let time =
+                        elapsed_time.subsec_nanos() as f32 / 1e9 + elapsed_time.as_secs() as f32;
+                    let near = 0.1;
+                    let far = 10.0;
+                    let mut transform_matrix;
+                    if true {
+                        transform_matrix = math::Mat4::<f32>::perspective_projection(
+                            -near, near, -near, near, near, far,
+                        );
+                    } else {
+                        transform_matrix = math::Mat4::<f32>::orthographic_projection(
+                            -1.0, 1.0, -1.0, 1.0, near, far,
+                        );
+                    }
+                    if true {
+                        transform_matrix =
+                            transform_matrix.translate(math::Vec3::new(0.0, 0.0, -5.0));
+                        transform_matrix = transform_matrix.rotate(
+                            (time * 90.0).to_radians(),
+                            math::Vec3::new(1.0, 0.5, 1.0f32).normalize().unwrap(),
+                        );
+                        transform_matrix = transform_matrix.rotate(
+                            (time * 180.0).to_radians(),
+                            math::Vec3::new(1.0, -0.5, 1.0f32).normalize().unwrap(),
+                        );
+                    } else {
+                        transform_matrix =
+                            transform_matrix.translate(math::Vec3::new(0.0, 0.0, -3.0));
+                    }
                     state
                         .device
                         .render_frame(
-                            math::Vec4::new(1.0, 0.0, 0.0, 1.0),
+                            math::Vec4::new(0.1, 0.1, 0.1, 1.0),
                             &mut Vec::new(),
                             &[RenderCommandBufferGroup {
                                 render_command_buffers: &[state.render_command_buffer.clone()],
-                                final_transform: math::Mat4::identity(),
+                                final_transform: transform_matrix,
                             }],
                         ).unwrap();
                 }
