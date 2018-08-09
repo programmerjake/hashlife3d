@@ -28,8 +28,16 @@ unsafe fn run_main() {
     if cfg!(debug_assertions) {
         env::set_var("RUST_BACKTRACE", "1");
     }
+    env::set_var("SDL_VIDEODRIVER", "wayland");
     if api::SDL_Init(api::SDL_INIT_VIDEO) != 0 {
-        panic!("SDL_Init failed: {}", super::get_error());
+        eprintln!(
+            "SDL_Init failed: {}\nTrying default SDL driver.",
+            super::get_error()
+        );
+        env::remove_var("SDL_VIDEODRIVER");
+        if api::SDL_Init(api::SDL_INIT_VIDEO) != 0 {
+            panic!("SDL_Init failed: {}", super::get_error());
+        }
     }
     let sdl = CallOnDrop::new(|| api::SDL_Quit());
     let retval = ::rust_main(&super::event::make_event_source());

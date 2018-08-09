@@ -55,6 +55,8 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     struct Running<D: renderer::Device> {
         device: D,
         render_command_buffer: D::RenderCommandBuffer,
+        last_fps_report: time::Instant,
+        frame_count_since_last_fps_report: u32,
     }
     impl<D: renderer::Device> Running<D> {
         fn new(mut device: D) -> Result<Self, D::Error> {
@@ -193,6 +195,8 @@ fn render_main_loop<PD: renderer::PausedDevice>(
             Ok(Self {
                 device: device,
                 render_command_buffer: render_command_buffer,
+                last_fps_report: time::Instant::now(),
+                frame_count_since_last_fps_report: 0,
             })
         }
     }
@@ -226,6 +230,19 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                         event => println!("unhandled event: {:?}", event),
                     }
                 } else {
+                    {
+                        let current_time = time::Instant::now();
+                        let elapsed_time = current_time.duration_since(state.last_fps_report);
+                        let elapsed_time = elapsed_time.subsec_nanos() as f32 / 1e9
+                            + elapsed_time.as_secs() as f32;
+                        state.frame_count_since_last_fps_report += 1;
+                        if elapsed_time >= 5.0 {
+                            let fps = state.frame_count_since_last_fps_report as f32 / elapsed_time;
+                            state.last_fps_report = current_time;
+                            state.frame_count_since_last_fps_report = 0;
+                            println!("FPS: {}", fps);
+                        }
+                    }
                     let elapsed_time = start_instant.elapsed();
                     let time =
                         elapsed_time.subsec_nanos() as f32 / 1e9 + elapsed_time.as_secs() as f32;
@@ -342,8 +359,10 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             &self,
             device_factory: DF,
         ) -> Result<DF::PausedDevice, Box<error::Error>> {
+            let flags = sdl::api::SDL_WINDOW_RESIZABLE;
+            //let flags = sdl::api::SDL_WINDOW_FULLSCREEN_DESKTOP;
             device_factory
-                .create("", None, (640, 480), 0)
+                .create("Hashlife3d", None, (640, 480), flags)
                 .map_err(|v| Box::new(v).into())
         }
         fn main_loop<PD: renderer::PausedDevice>(

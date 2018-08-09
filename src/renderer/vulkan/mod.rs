@@ -819,22 +819,11 @@ impl VulkanDevice {
             result => Err(VulkanError::VulkanError(result)),
         }
     }
-    fn create_swapchain(
+    fn create_swapchain_with_dimensions(
         &self,
         previous_swapchain: Option<Arc<SwapchainState>>,
-    ) -> Result<Option<SwapchainState>> {
-        let mut dimensions = (0, 0);
-        unsafe {
-            sdl::api::SDL_Vulkan_GetDrawableSize(
-                self.get_window().get(),
-                &mut dimensions.0,
-                &mut dimensions.1,
-            );
-        }
-        let dimensions = match dimensions {
-            (0, _) | (_, 0) => return Ok(None),
-            dimensions => (dimensions.0 as u32, dimensions.1 as u32),
-        };
+        dimensions: (u32, u32),
+    ) -> Result<SwapchainState> {
         let device = self.device_reference.device.clone();
         let mut swapchain = null_or_zero();
         let swapchain = match unsafe {
@@ -1053,11 +1042,32 @@ impl VulkanDevice {
             };
             framebuffers.push(framebuffer);
         }
-        Ok(Some(SwapchainState {
+        Ok(SwapchainState {
             swapchain: swapchain,
             framebuffers: framebuffers,
             dimensions: dimensions,
-        }))
+        })
+    }
+    fn create_swapchain(
+        &self,
+        previous_swapchain: Option<Arc<SwapchainState>>,
+    ) -> Result<Option<SwapchainState>> {
+        let mut dimensions = (0, 0);
+        unsafe {
+            sdl::api::SDL_Vulkan_GetDrawableSize(
+                self.get_window().get(),
+                &mut dimensions.0,
+                &mut dimensions.1,
+            );
+        }
+        let dimensions = match dimensions {
+            (0, _) | (_, 0) => return Ok(None),
+            dimensions => (dimensions.0 as u32, dimensions.1 as u32),
+        };
+        Ok(Some(self.create_swapchain_with_dimensions(
+            previous_swapchain,
+            dimensions,
+        )?))
     }
     fn free_finished_objects(&mut self) -> Result<()> {
         let device = &self.device_reference.device;
