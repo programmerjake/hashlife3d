@@ -1,12 +1,13 @@
 use super::super::sdl;
 use super::*;
 use std::error;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::mem;
 use std::os::raw::*;
 use std::ptr::*;
 use std::result;
+use std::sync::*;
 
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
@@ -371,6 +372,7 @@ impl Api {
 #[derive(Debug)]
 pub enum GLES2Error {
     SDLError(sdl::SDLError),
+    NoShaderCompilerSupport,
 }
 
 impl From<sdl::SDLError> for GLES2Error {
@@ -383,60 +385,135 @@ impl fmt::Display for GLES2Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             GLES2Error::SDLError(error) => (error as &fmt::Display).fmt(f),
+            GLES2Error::NoShaderCompilerSupport => {
+                f.write_str("the OpenGL ES implementation doesn't support compiling shaders")
+            }
         }
     }
 }
 
 impl error::Error for GLES2Error {}
 
-pub struct GLES2StagingVertexBuffer {}
+pub struct GLES2StagingVertexBuffer {
+    buffer_data: Vec<VertexBufferElement>,
+}
+
+impl GLES2StagingVertexBuffer {
+    fn new(len: usize) -> Self {
+        let mut buffer_data = Vec::new();
+        buffer_data.resize(len, unsafe { mem::zeroed() });
+        Self {
+            buffer_data: buffer_data,
+        }
+    }
+}
 
 impl StagingVertexBuffer for GLES2StagingVertexBuffer {
     fn len(&self) -> usize {
-        unimplemented!()
+        self.buffer_data.len()
     }
     fn write(&mut self, index: usize, value: VertexBufferElement) {
-        unimplemented!()
+        self.buffer_data[index] = value;
+    }
+}
+
+struct DeviceBuffer {
+    buffer: api::GLuint,
+    buffer_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
+}
+
+impl Drop for DeviceBuffer {
+    fn drop(&mut self) {
+        self.buffer_deallocate_channel_sender
+            .send(self.buffer)
+            .unwrap_or_default();
     }
 }
 
 #[derive(Clone)]
-pub struct GLES2DeviceVertexBuffer {}
+pub struct GLES2DeviceVertexBuffer {
+    buffer: Arc<Mutex<Option<DeviceBuffer>>>,
+    len: usize,
+    load_submitted_flag: Arc<atomic::AtomicBool>,
+}
 
 impl DeviceVertexBuffer for GLES2DeviceVertexBuffer {
     fn len(&self) -> usize {
-        unimplemented!()
+        self.len
     }
 }
 
-pub struct GLES2StagingIndexBuffer {}
+pub struct GLES2StagingIndexBuffer {
+    buffer_data: Vec<IndexBufferElement>,
+}
+
+impl GLES2StagingIndexBuffer {
+    fn new(len: usize) -> Self {
+        let mut buffer_data = Vec::new();
+        buffer_data.resize(len, Default::default());
+        Self {
+            buffer_data: buffer_data,
+        }
+    }
+}
 
 impl StagingIndexBuffer for GLES2StagingIndexBuffer {
     fn len(&self) -> usize {
-        unimplemented!()
+        self.buffer_data.len()
     }
     fn write(&mut self, index: usize, value: IndexBufferElement) {
-        unimplemented!()
+        self.buffer_data[index] = value;
     }
 }
 
 #[derive(Clone)]
-pub struct GLES2DeviceIndexBuffer {}
+pub struct GLES2DeviceIndexBuffer {
+    buffer: Arc<Mutex<Option<DeviceBuffer>>>,
+    len: usize,
+    load_submitted_flag: Arc<atomic::AtomicBool>,
+}
 
 impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {
     fn len(&self) -> usize {
-        unimplemented!()
+        self.len
     }
 }
 
 #[derive(Clone)]
 pub struct GLES2DeviceReference {}
 
-pub struct GLES2LoaderCommandBuffer {}
+enum LoaderCommand {
+    CopyVertexBufferToDevice {
+        staging_vertex_buffer: GLES2StagingVertexBuffer,
+        device_vertex_buffer: GLES2DeviceVertexBuffer,
+    },
+    CopyIndexBufferToDevice {
+        staging_index_buffer: GLES2StagingIndexBuffer,
+        device_index_buffer: GLES2DeviceIndexBuffer,
+    },
+}
+
+pub struct GLES2LoaderCommandBuffer {
+    commands: Vec<LoaderCommand>,
+    submitted_flag: Arc<atomic::AtomicBool>,
+}
 
 impl CommandBuffer for GLES2LoaderCommandBuffer {}
 
-pub struct GLES2LoaderCommandBufferBuilder {}
+pub struct GLES2LoaderCommandBufferBuilder {
+    command_buffer: GLES2LoaderCommandBuffer,
+}
+
+impl GLES2LoaderCommandBufferBuilder {
+    fn new() -> Self {
+        Self {
+            command_buffer: GLES2LoaderCommandBuffer {
+                commands: Vec::new(),
+                submitted_flag: Arc::new(atomic::AtomicBool::new(false)),
+            },
+        }
+    }
+}
 
 impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
     type Error = GLES2Error;
@@ -446,28 +523,81 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
     fn finish(self) -> Result<GLES2LoaderCommandBuffer> {
-        unimplemented!()
+        Ok(self.command_buffer)
     }
     fn copy_vertex_buffer_to_device(
         &mut self,
         staging_vertex_buffer: GLES2StagingVertexBuffer,
     ) -> Result<GLES2DeviceVertexBuffer> {
-        unimplemented!()
+        let device_buffer = GLES2DeviceVertexBuffer {
+            buffer: Arc::new(Mutex::new(None)),
+            len: staging_vertex_buffer.buffer_data.len(),
+            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
+        };
+        self.command_buffer
+            .commands
+            .push(LoaderCommand::CopyVertexBufferToDevice {
+                staging_vertex_buffer: staging_vertex_buffer,
+                device_vertex_buffer: device_buffer.clone(),
+            });
+        Ok(device_buffer)
     }
     fn copy_index_buffer_to_device(
         &mut self,
         staging_index_buffer: GLES2StagingIndexBuffer,
     ) -> Result<GLES2DeviceIndexBuffer> {
-        unimplemented!()
+        let device_buffer = GLES2DeviceIndexBuffer {
+            buffer: Arc::new(Mutex::new(None)),
+            len: staging_index_buffer.buffer_data.len(),
+            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
+        };
+        self.command_buffer
+            .commands
+            .push(LoaderCommand::CopyIndexBufferToDevice {
+                staging_index_buffer: staging_index_buffer,
+                device_index_buffer: device_buffer.clone(),
+            });
+        Ok(device_buffer)
     }
 }
 
+enum RenderCommand {
+    Draw {
+        vertex_buffer: GLES2DeviceVertexBuffer,
+        index_buffer: GLES2DeviceIndexBuffer,
+        initial_transform: math::Mat4<f32>,
+        index_count: u32,
+        first_index: u32,
+        vertex_offset: u32,
+    },
+}
+
+struct RenderCommandBufferState {
+    commands: Vec<RenderCommand>,
+}
+
 #[derive(Clone)]
-pub struct GLES2RenderCommandBuffer {}
+pub struct GLES2RenderCommandBuffer(Arc<RenderCommandBufferState>);
 
 impl CommandBuffer for GLES2RenderCommandBuffer {}
 
-pub struct GLES2RenderCommandBufferBuilder {}
+pub struct GLES2RenderCommandBufferBuilder {
+    state: RenderCommandBufferState,
+    buffers: Option<(GLES2DeviceVertexBuffer, GLES2DeviceIndexBuffer)>,
+    initial_transform: math::Mat4<f32>,
+}
+
+impl GLES2RenderCommandBufferBuilder {
+    fn new() -> Self {
+        Self {
+            state: RenderCommandBufferState {
+                commands: Vec::new(),
+            },
+            buffers: None,
+            initial_transform: math::Mat4::identity(),
+        }
+    }
+}
 
 impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
     type Error = GLES2Error;
@@ -479,16 +609,34 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
         vertex_buffer: GLES2DeviceVertexBuffer,
         index_buffer: GLES2DeviceIndexBuffer,
     ) {
-        unimplemented!()
+        self.buffers = Some((vertex_buffer, index_buffer));
     }
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
-        unimplemented!()
+        self.initial_transform = transform;
     }
     fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
-        unimplemented!()
+        let (vertex_buffer, index_buffer) = self
+            .buffers
+            .clone()
+            .expect("can't draw without vertex and index buffers bound");
+        assert!(index_count as usize <= index_buffer.len());
+        assert!(index_count as usize + first_index as usize <= index_buffer.len());
+        assert!((vertex_offset as usize) < vertex_buffer.len());
+        assert!(index_count % 3 == 0, "must be whole number of triangles");
+        if index_count == 0 {
+            return;
+        }
+        self.state.commands.push(RenderCommand::Draw {
+            vertex_buffer: vertex_buffer,
+            index_buffer: index_buffer,
+            initial_transform: self.initial_transform,
+            index_count: index_count,
+            first_index: first_index,
+            vertex_offset: vertex_offset,
+        });
     }
     fn finish(self) -> Result<GLES2RenderCommandBuffer> {
-        unimplemented!()
+        Ok(GLES2RenderCommandBuffer(Arc::new(self.state)))
     }
 }
 
@@ -503,16 +651,16 @@ impl DeviceReference for GLES2DeviceReference {
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
     fn create_loader_command_buffer_builder(&self) -> Result<GLES2LoaderCommandBufferBuilder> {
-        Ok(GLES2LoaderCommandBufferBuilder {})
+        Ok(GLES2LoaderCommandBufferBuilder::new())
     }
     fn create_render_command_buffer_builder(&self) -> Result<GLES2RenderCommandBufferBuilder> {
-        Ok(GLES2RenderCommandBufferBuilder {})
+        Ok(GLES2RenderCommandBufferBuilder::new())
     }
     fn create_staging_vertex_buffer(&self, len: usize) -> Result<GLES2StagingVertexBuffer> {
-        unimplemented!()
+        Ok(GLES2StagingVertexBuffer::new(len))
     }
     fn create_staging_index_buffer(&self, len: usize) -> Result<GLES2StagingIndexBuffer> {
-        unimplemented!()
+        Ok(GLES2StagingIndexBuffer::new(len))
     }
 }
 
@@ -524,9 +672,91 @@ pub struct GLES2PausedDevice {
     surface_state: SurfaceState,
 }
 
+struct GLContextWrapper {
+    context: sdl::api::SDL_GLContext,
+    api: Api,
+}
+
+impl GLContextWrapper {
+    unsafe fn new(window: &sdl::window::Window) -> Result<Self> {
+        let mut temp_context = TempContextWrapper {
+            context: sdl::api::SDL_GL_CreateContext(window.get()),
+        };
+        if temp_context.context.is_null() {
+            return Err(GLES2Error::SDLError(sdl::get_error()));
+        }
+        let api = Api::new();
+        return Ok(Self {
+            context: mem::replace(&mut temp_context.context, null_mut()),
+            api: api,
+        });
+        struct TempContextWrapper {
+            context: sdl::api::SDL_GLContext,
+        }
+        impl Drop for TempContextWrapper {
+            fn drop(&mut self) {
+                if self.context.is_null() {
+                    return;
+                }
+                unsafe {
+                    sdl::api::SDL_GL_DeleteContext(self.context);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for GLContextWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            sdl::api::SDL_GL_DeleteContext(self.context);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ShaderAttributeLocations {
+    input_position: api::GLint,
+    input_color: api::GLint,
+    input_texture_coord: api::GLint,
+    input_texture_index: api::GLint,
+}
+
+struct ShaderUniformLocations {
+    initial_transform: api::GLint,
+    final_transform: api::GLint,
+}
+
 pub struct GLES2Device {
     device_reference: GLES2DeviceReference,
     surface_state: SurfaceState,
+    gl_context: GLContextWrapper,
+    buffer_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
+    buffer_deallocate_channel_receiver: mpsc::Receiver<api::GLuint>,
+    shader_attribute_locations: ShaderAttributeLocations,
+    shader_uniform_locations: ShaderUniformLocations,
+    last_surface_dimensions: Option<(u32, u32)>,
+}
+
+impl GLES2Device {
+    fn allocate_buffer(&mut self) -> DeviceBuffer {
+        match self.buffer_deallocate_channel_receiver.try_recv() {
+            Ok(buffer) => DeviceBuffer {
+                buffer: buffer,
+                buffer_deallocate_channel_sender: self.buffer_deallocate_channel_sender.clone(),
+            },
+            Err(mpsc::TryRecvError::Empty) => unsafe {
+                let api = &self.gl_context.api;
+                let mut buffer = 0;
+                api.glGenBuffers.unwrap()(1, &mut buffer);
+                DeviceBuffer {
+                    buffer: buffer,
+                    buffer_deallocate_channel_sender: self.buffer_deallocate_channel_sender.clone(),
+                }
+            },
+            _ => panic!(),
+        }
+    }
 }
 
 pub type Result<T> = result::Result<T, GLES2Error>;
@@ -556,14 +786,201 @@ impl Device for GLES2Device {
         }
     }
     fn resume(paused_device: GLES2PausedDevice) -> Result<Self> {
-        let SurfaceState { window } = paused_device.surface_state;
+        let vertex_shader_source: &'static CStr = CStr::from_bytes_with_nul(
+            concat!(
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/shaders/gles2_main.vert"
+                )),
+                "\0"
+            ).as_bytes(),
+        ).unwrap();
+        let fragment_shader_source: &'static CStr = CStr::from_bytes_with_nul(
+            concat!(
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/shaders/gles2_main.frag"
+                )),
+                "\0"
+            ).as_bytes(),
+        ).unwrap();
         unsafe {
+            let SurfaceState { window } = paused_device.surface_state;
             set_gl_attributes()?;
+            let gl_context = GLContextWrapper::new(&window)?;
+            let shader_attribute_locations;
+            let shader_uniform_locations;
+            {
+                let api = &gl_context.api;
+                api.glEnable.unwrap()(api::GL_BLEND);
+                api.glEnable.unwrap()(api::GL_CULL_FACE);
+                api.glEnable.unwrap()(api::GL_DEPTH_TEST);
+                let mut shader_compiler_supported = api::GL_FALSE as api::GLboolean;
+                api.glGetBooleanv.unwrap()(api::GL_SHADER_COMPILER, &mut shader_compiler_supported);
+                if shader_compiler_supported == api::GL_FALSE as api::GLboolean {
+                    return Err(GLES2Error::NoShaderCompilerSupport);
+                }
+                let vertex_shader = api.glCreateShader.unwrap()(api::GL_VERTEX_SHADER);
+                assert_ne!(vertex_shader, 0);
+                api.glShaderSource.unwrap()(
+                    vertex_shader,
+                    1,
+                    &vertex_shader_source.as_ptr(),
+                    null(),
+                );
+                api.glCompileShader.unwrap()(vertex_shader);
+                fn is_info_log_empty(info_log: &str) -> bool {
+                    for c in info_log.chars() {
+                        match c {
+                            ' ' | '\r' | '\n' | '\t' => {}
+                            _ => {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                }
+                let get_shader_info_log = |shader: api::GLuint| -> CString {
+                    let mut length = 0;
+                    api.glGetShaderiv.unwrap()(shader, api::GL_INFO_LOG_LENGTH, &mut length);
+                    let mut buffer = Vec::new();
+                    buffer.resize(length as usize, 0);
+                    let mut length = 0;
+                    api.glGetShaderInfoLog.unwrap()(
+                        shader,
+                        buffer.len() as api::GLsizei,
+                        &mut length,
+                        buffer.as_mut_ptr() as *mut c_char,
+                    );
+                    buffer.resize(length as usize + 1, 0);
+                    CString::from_vec_unchecked(buffer)
+                };
+                let write_shader_info_log = |shader: api::GLuint, name: &str| {
+                    let info_log = get_shader_info_log(shader);
+                    let info_log = info_log.to_string_lossy();
+                    if !is_info_log_empty(&info_log) {
+                        println!("{}:\n{}", name, info_log);
+                    }
+                };
+                let get_program_info_log = |program: api::GLuint| -> CString {
+                    let mut length = 0;
+                    api.glGetProgramiv.unwrap()(program, api::GL_INFO_LOG_LENGTH, &mut length);
+                    let mut buffer = Vec::new();
+                    buffer.resize(length as usize, 0);
+                    let mut length = 0;
+                    api.glGetProgramInfoLog.unwrap()(
+                        program,
+                        buffer.len() as api::GLsizei,
+                        &mut length,
+                        buffer.as_mut_ptr() as *mut c_char,
+                    );
+                    buffer.resize(length as usize + 1, 0);
+                    CString::from_vec_unchecked(buffer)
+                };
+                let write_program_info_log = |program: api::GLuint| {
+                    let info_log = get_program_info_log(program);
+                    let info_log = info_log.to_string_lossy();
+                    if !is_info_log_empty(&info_log) {
+                        println!("Program Link:\n{}", info_log);
+                    }
+                };
+                let get_shader_compile_status = |shader: api::GLuint| {
+                    let mut compile_status = api::GL_FALSE as api::GLint;
+                    api.glGetShaderiv.unwrap()(shader, api::GL_COMPILE_STATUS, &mut compile_status);
+                    compile_status != api::GL_FALSE as api::GLint
+                };
+                let get_program_link_status = |program: api::GLuint| {
+                    let mut link_status = api::GL_FALSE as api::GLint;
+                    api.glGetProgramiv.unwrap()(program, api::GL_LINK_STATUS, &mut link_status);
+                    link_status != api::GL_FALSE as api::GLint
+                };
+                write_shader_info_log(vertex_shader, "Vertex Shader");
+                assert!(
+                    get_shader_compile_status(vertex_shader),
+                    "vertex shader compile failed"
+                );
+                let fragment_shader = api.glCreateShader.unwrap()(api::GL_FRAGMENT_SHADER);
+                assert_ne!(fragment_shader, 0);
+                api.glShaderSource.unwrap()(
+                    fragment_shader,
+                    1,
+                    &fragment_shader_source.as_ptr(),
+                    null(),
+                );
+                api.glCompileShader.unwrap()(fragment_shader);
+                write_shader_info_log(fragment_shader, "Fragment Shader");
+                assert!(
+                    get_shader_compile_status(fragment_shader),
+                    "fragment shader compile failed"
+                );
+                let shader_program = api.glCreateProgram.unwrap()();
+                assert_ne!(shader_program, 0);
+                api.glAttachShader.unwrap()(shader_program, vertex_shader);
+                api.glAttachShader.unwrap()(shader_program, fragment_shader);
+                api.glLinkProgram.unwrap()(shader_program);
+                write_program_info_log(shader_program);
+                assert!(
+                    get_program_link_status(shader_program),
+                    "program link failed"
+                );
+                api.glUseProgram.unwrap()(shader_program);
+                macro_rules! shader_attribute_locations {
+                    ($program:expr, ($($name:ident,)*)) => {
+                        ShaderAttributeLocations {
+                            $(
+                                $name: {
+                                    let location = api.glGetAttribLocation.unwrap()(
+                                        $program,
+                                        concat!(stringify!($name), "\0").as_ptr() as *const c_char,
+                                    );
+                                    if location != -1 {
+                                        api.glEnableVertexAttribArray.unwrap()(location as api::GLuint);
+                                    }
+                                    location
+                                },
+                            )*
+                        }
+                    };
+                }
+                macro_rules! shader_uniform_locations {
+                    ($program:expr, ($($name:ident,)*)) => {
+                        ShaderUniformLocations {
+                            $(
+                                $name: api.glGetUniformLocation.unwrap()(
+                                    $program,
+                                    concat!(stringify!($name), "\0").as_ptr() as *const c_char,
+                                ),
+                            )*
+                        }
+                    };
+                }
+                shader_attribute_locations = shader_attribute_locations!(
+                    shader_program,
+                    (
+                        input_position,
+                        input_color,
+                        input_texture_coord,
+                        input_texture_index,
+                    )
+                );
+                shader_uniform_locations = shader_uniform_locations!(
+                    shader_program,
+                    (initial_transform, final_transform,)
+                );
+            }
+            let (buffer_deallocate_channel_sender, buffer_deallocate_channel_receiver) =
+                mpsc::channel();
+            Ok(GLES2Device {
+                device_reference: GLES2DeviceReference {},
+                surface_state: SurfaceState { window: window },
+                gl_context: gl_context,
+                buffer_deallocate_channel_sender: buffer_deallocate_channel_sender,
+                buffer_deallocate_channel_receiver: buffer_deallocate_channel_receiver,
+                shader_attribute_locations: shader_attribute_locations,
+                shader_uniform_locations: shader_uniform_locations,
+                last_surface_dimensions: None,
+            })
         }
-        Ok(GLES2Device {
-            device_reference: GLES2DeviceReference {},
-            surface_state: SurfaceState { window: window },
-        })
     }
     fn get_device_ref(&self) -> &GLES2DeviceReference {
         &self.device_reference
@@ -575,7 +992,65 @@ impl Device for GLES2Device {
         &mut self,
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
     ) -> Result<()> {
-        unimplemented!()
+        for loader_command_buffer in loader_command_buffers.drain(..) {
+            loader_command_buffer
+                .submitted_flag
+                .store(true, atomic::Ordering::Release);
+            for command in loader_command_buffer.commands {
+                match command {
+                    LoaderCommand::CopyVertexBufferToDevice {
+                        staging_vertex_buffer: GLES2StagingVertexBuffer { buffer_data },
+                        device_vertex_buffer:
+                            GLES2DeviceVertexBuffer {
+                                buffer,
+                                len: _,
+                                load_submitted_flag: _,
+                            },
+                    } => {
+                        let new_buffer = self.allocate_buffer();
+                        unsafe {
+                            let api = &self.gl_context.api;
+                            api.glBindBuffer.unwrap()(api::GL_ARRAY_BUFFER, new_buffer.buffer);
+                            api.glBufferData.unwrap()(
+                                api::GL_ARRAY_BUFFER,
+                                (buffer_data.len() * mem::size_of::<VertexBufferElement>())
+                                    as api::GLsizeiptr,
+                                buffer_data.as_ptr() as *const c_void,
+                                api::GL_STATIC_DRAW,
+                            );
+                        }
+                        *buffer.lock().unwrap() = Some(new_buffer);
+                    }
+                    LoaderCommand::CopyIndexBufferToDevice {
+                        staging_index_buffer: GLES2StagingIndexBuffer { buffer_data },
+                        device_index_buffer:
+                            GLES2DeviceIndexBuffer {
+                                buffer,
+                                len: _,
+                                load_submitted_flag: _,
+                            },
+                    } => {
+                        let new_buffer = self.allocate_buffer();
+                        unsafe {
+                            let api = &self.gl_context.api;
+                            api.glBindBuffer.unwrap()(
+                                api::GL_ELEMENT_ARRAY_BUFFER,
+                                new_buffer.buffer,
+                            );
+                            api.glBufferData.unwrap()(
+                                api::GL_ELEMENT_ARRAY_BUFFER,
+                                (buffer_data.len() * mem::size_of::<IndexBufferElement>())
+                                    as api::GLsizeiptr,
+                                buffer_data.as_ptr() as *const c_void,
+                                api::GL_STATIC_DRAW,
+                            );
+                        }
+                        *buffer.lock().unwrap() = Some(new_buffer);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn render_frame(
         &mut self,
@@ -583,7 +1058,142 @@ impl Device for GLES2Device {
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
         render_command_buffer_groups: &[RenderCommandBufferGroup<GLES2RenderCommandBuffer>],
     ) -> Result<()> {
-        unimplemented!()
+        unsafe {
+            let mut sdl_dimensions = (0, 0);
+            sdl::api::SDL_GL_GetDrawableSize(
+                self.surface_state.window.get(),
+                &mut sdl_dimensions.0,
+                &mut sdl_dimensions.1,
+            );
+            let sdl_dimensions = (sdl_dimensions.0 as u32, sdl_dimensions.1 as u32);
+            if Some(sdl_dimensions) != self.last_surface_dimensions {
+                self.last_surface_dimensions = Some(sdl_dimensions);
+                let api = &self.gl_context.api;
+                api.glViewport.unwrap()(
+                    0,
+                    0,
+                    sdl_dimensions.0 as api::GLsizei,
+                    sdl_dimensions.1 as api::GLsizei,
+                );
+            }
+            self.submit_loader_command_buffers(loader_command_buffers)?;
+            let api = &self.gl_context.api;
+            api.glClearColor.unwrap()(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+            api.glClear.unwrap()(api::GL_COLOR_BUFFER_BIT | api::GL_DEPTH_BUFFER_BIT);
+            for render_command_buffer_group in render_command_buffer_groups {
+                let set_uniform_matrix = |location: api::GLint, value: math::Mat4<f32>| {
+                    if location != -1 {
+                        let value: [[f32; 4]; 4] = value.into();
+                        api.glUniformMatrix4fv.unwrap()(
+                            location,
+                            1,
+                            api::GL_FALSE as api::GLboolean,
+                            &value as *const [f32; 4] as *const f32,
+                        )
+                    }
+                };
+                set_uniform_matrix(
+                    self.shader_uniform_locations.final_transform,
+                    render_command_buffer_group.final_transform,
+                );
+                for GLES2RenderCommandBuffer(state) in
+                    render_command_buffer_group.render_command_buffers
+                {
+                    for command in &state.commands {
+                        match command {
+                            RenderCommand::Draw {
+                                vertex_buffer:
+                                    GLES2DeviceVertexBuffer {
+                                        buffer: vertex_buffer,
+                                        len: _,
+                                        load_submitted_flag: vertex_buffer_load_submitted_flag,
+                                    },
+                                index_buffer:
+                                    GLES2DeviceIndexBuffer {
+                                        buffer: index_buffer,
+                                        len: _,
+                                        load_submitted_flag: index_buffer_load_submitted_flag,
+                                    },
+                                initial_transform,
+                                index_count,
+                                first_index,
+                                vertex_offset,
+                            } => {
+                                assert!(
+                                    vertex_buffer_load_submitted_flag
+                                        .load(atomic::Ordering::Acquire)
+                                );
+                                assert!(
+                                    index_buffer_load_submitted_flag
+                                        .load(atomic::Ordering::Acquire)
+                                );
+                                set_uniform_matrix(
+                                    self.shader_uniform_locations.initial_transform,
+                                    *initial_transform,
+                                );
+                                api.glBindBuffer.unwrap()(
+                                    api::GL_ELEMENT_ARRAY_BUFFER,
+                                    index_buffer.lock().unwrap().as_ref().unwrap().buffer,
+                                );
+                                api.glBindBuffer.unwrap()(
+                                    api::GL_ARRAY_BUFFER,
+                                    vertex_buffer.lock().unwrap().as_ref().unwrap().buffer,
+                                );
+                                macro_rules! set_attributes {
+                                    ($(($name:ident, $member:ident, $size:expr, $type:expr, $normalized:expr),)*) => {
+                                        {
+                                            let ShaderAttributeLocations{$($name,)*} = self.shader_attribute_locations;
+                                            $(
+                                                if $name != -1 {
+                                                    let vertex: VertexBufferElement = mem::uninitialized();
+                                                    let offset = &vertex.$member as *const _ as usize - &vertex as *const _ as usize;
+                                                    mem::forget(vertex);
+                                                    api.glVertexAttribPointer.unwrap()(
+                                                        $name as api::GLuint,
+                                                        $size,
+                                                        $type,
+                                                        $normalized as api::GLboolean,
+                                                        mem::size_of::<VertexBufferElement>() as api::GLsizei,
+                                                        (mem::size_of::<VertexBufferElement>() * *vertex_offset as usize + offset) as *const _,
+                                                    );
+                                                }
+                                            )*
+                                        }
+                                    };
+                                }
+                                set_attributes!(
+                                    (input_position, position, 3, api::GL_FLOAT, api::GL_FALSE),
+                                    (input_color, color, 4, api::GL_UNSIGNED_BYTE, api::GL_TRUE),
+                                    (
+                                        input_texture_coord,
+                                        texture_coord,
+                                        2,
+                                        api::GL_FLOAT,
+                                        api::GL_FALSE
+                                    ),
+                                    (
+                                        input_texture_index,
+                                        texture_index,
+                                        1,
+                                        api::GL_UNSIGNED_SHORT,
+                                        api::GL_FALSE
+                                    ),
+                                );
+                                api.glDrawElements.unwrap()(
+                                    api::GL_TRIANGLES,
+                                    *index_count as api::GLsizei,
+                                    api::GL_UNSIGNED_SHORT,
+                                    (*first_index as usize * mem::size_of::<IndexBufferElement>())
+                                        as *const _,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            sdl::api::SDL_GL_SwapWindow(self.surface_state.window.get());
+            Ok(())
+        }
     }
 }
 

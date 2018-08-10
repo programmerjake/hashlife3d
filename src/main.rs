@@ -373,12 +373,19 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             render_main_loop(paused_device, event_source);
         }
     }
-    struct BackendVisitor<'a> {
+    struct BackendVisitor<'a, 'b> {
         main_loop: Option<MainLoop>,
+        selected_backend: &'b mut Option<String>,
         event_source: &'a sdl::event::EventSource,
     }
-    impl<'a> renderer::BackendVisitor for BackendVisitor<'a> {
+    impl<'a, 'b> renderer::BackendVisitor for BackendVisitor<'a, 'b> {
         fn visit<B: Backend>(&mut self, backend: B) -> renderer::BackendVisitorResult {
+            if let Some(name) = &self.selected_backend {
+                if backend.get_name() != name {
+                    return renderer::BackendVisitorResult::Continue;
+                }
+            }
+            *self.selected_backend = None;
             eprintln!("starting using {}", backend.get_title());
             match backend.run_main_loop(self.main_loop.take().unwrap(), self.event_source) {
                 renderer::BackendRunResult::StartupFailed { error, main_loop } => {
@@ -390,11 +397,21 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             }
         }
     }
+    let mut selected_backend = None;
+    if true {
+        // FIXME: change back to dynamically selecting the backend
+        selected_backend = Some(String::from("gles2"));
+    }
     if let BackendVisitorResult::Continue = renderer::for_each_backend(&mut BackendVisitor {
         main_loop: Some(MainLoop {}),
+        selected_backend: &mut selected_backend,
         event_source: event_source,
     }) {
-        panic!("all graphics backends failed to start");
+        if let Some(name) = selected_backend {
+            panic!("unknown backend: {}", name);
+        } else {
+            panic!("all graphics backends failed to start");
+        }
     }
     world_thread.join().unwrap()
 }

@@ -101,6 +101,7 @@ impl DeviceMemoryWrapper {
             result => Err(VulkanError::VulkanError(result)),
         }
     }
+    #[allow(dead_code)]
     pub fn unmap_memory(&mut self) {
         assert!(self.mapped_memory.is_some());
         self.mapped_memory = None;
