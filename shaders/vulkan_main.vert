@@ -25,4 +25,5 @@ void main()
     gl_Position = push_constants.final_transform * (push_constants.initial_transform * vec4(input_position, 1.0));
     color = input_color;
     texture_coord = input_texture_coord;
+    texture_index = input_texture_index;
 }
