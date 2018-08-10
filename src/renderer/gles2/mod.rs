@@ -808,6 +808,9 @@ impl Device for GLES2Device {
             let SurfaceState { window } = paused_device.surface_state;
             set_gl_attributes()?;
             let gl_context = GLContextWrapper::new(&window)?;
+            if sdl::api::SDL_GL_SetSwapInterval(0) != 0 {
+                eprintln!("can't set swap interval: {}", sdl::get_error());
+            }
             let shader_attribute_locations;
             let shader_uniform_locations;
             {
