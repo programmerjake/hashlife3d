@@ -818,6 +818,7 @@ impl Device for GLES2Device {
                 api.glEnable.unwrap()(api::GL_BLEND);
                 api.glEnable.unwrap()(api::GL_CULL_FACE);
                 api.glEnable.unwrap()(api::GL_DEPTH_TEST);
+                api.glBlendFunc.unwrap()(api::GL_SRC_ALPHA, api::GL_ONE_MINUS_SRC_ALPHA);
                 let mut shader_compiler_supported = api::GL_FALSE as api::GLboolean;
                 api.glGetBooleanv.unwrap()(api::GL_SHADER_COMPILER, &mut shader_compiler_supported);
                 if shader_compiler_supported == api::GL_FALSE as api::GLboolean {
