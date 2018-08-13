@@ -680,6 +680,34 @@ impl ImageLoader for PngImageLoader {
                                 math::Vec4::new(value * 0xFF, value * 0xFF, value * 0xFF, 0xFF);
                         }
                     }
+                    (2, ColorType::Grayscale) => {
+                        for x in 0..width {
+                            let value =
+                                (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
+                            *retval.get_mut(x, y) =
+                                math::Vec4::new(value * 0x55, value * 0x55, value * 0x55, 0xFF);
+                        }
+                    }
+                    (4, ColorType::Grayscale) => {
+                        for x in 0..width {
+                            let value =
+                                (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
+                            *retval.get_mut(x, y) =
+                                math::Vec4::new(value * 0x11, value * 0x11, value * 0x11, 0xFF);
+                        }
+                    }
+                    (8, ColorType::Grayscale) => {
+                        for x in 0..width {
+                            let value = current_scanline[x as usize];
+                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
+                        }
+                    }
+                    (16, ColorType::Grayscale) => {
+                        for x in 0..width {
+                            let value = current_scanline[x as usize * 2]; // just get MSB; ignore LSB
+                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
+                        }
+                    }
                     _ => unimplemented!(),
                 }
                 mem::swap(&mut current_scanline, &mut last_scanline);

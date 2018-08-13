@@ -91,7 +91,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 228755220
     })
 );
 test_png!(
@@ -99,7 +99,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 775938693
     })
 );
 test_png!(
@@ -107,7 +107,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2366596123
     })
 );
 test_png!(
@@ -126,6 +126,7 @@ test_png!(
         crc: 0
     })
 );
+/*
 test_png!(
     basi2c08,
     Ok(HashedImage {
@@ -206,12 +207,13 @@ test_png!(
         crc: 0
     })
 );
+*/
 test_png!(
     basn0g01,
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 228755220
     })
 );
 test_png!(
@@ -219,7 +221,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 775938693
     })
 );
 test_png!(
@@ -227,7 +229,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2366596123
     })
 );
 test_png!(
@@ -246,6 +248,7 @@ test_png!(
         crc: 0
     })
 );
+/*
 test_png!(
     basn2c08,
     Ok(HashedImage {
@@ -1388,3 +1391,4 @@ test_png!(
         crc: 0
     })
 );
+*/
