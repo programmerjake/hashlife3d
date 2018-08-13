@@ -2,6 +2,7 @@
 #![feature(concat_idents)]
 #![feature(vec_resize_with)]
 #![cfg_attr(not(test), no_main)]
+extern crate inflate;
 extern crate libc;
 mod hashtable;
 mod renderer;
@@ -353,6 +354,18 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             }
         }
     });
+    if false {
+        use std::io::Read;
+        let ppm: Vec<u8> = renderer::image::load_image_bytes(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/pngsuite/basn0g01.png"
+        ))).unwrap()
+        .as_ppm()
+        .bytes()
+        .map(Result::unwrap)
+        .collect();
+        ::std::fs::write("out.ppm", ppm).unwrap();
+    }
     struct MainLoop {}
     impl renderer::MainLoop for MainLoop {
         fn startup<DF: renderer::DeviceFactory>(

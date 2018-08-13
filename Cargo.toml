@@ -10,3 +10,4 @@ glsl-to-spirv = "0.1.6"
 
 [dependencies]
 libc = "0.2"
+inflate = "0.4.3"

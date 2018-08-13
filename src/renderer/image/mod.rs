@@ -1,5 +1,5 @@
 mod png;
-use super::math;
+use super::math::{self, Mappable};
 use std::error;
 use std::fmt;
 use std::io;
@@ -29,6 +29,51 @@ impl fmt::Debug for ImageSizeMismatchError {
 impl fmt::Display for ImageSizeMismatchError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("image size mismatch error")
+    }
+}
+
+pub struct ImageAsPPM<'a> {
+    image: &'a Image,
+    header_or_scanline: io::Cursor<Vec<u8>>,
+    y: u32,
+}
+
+impl<'a> ImageAsPPM<'a> {
+    fn new(image: &'a Image) -> Self {
+        Self {
+            image: image,
+            header_or_scanline: io::Cursor::new(
+                format!("P6\n{} {}\n255\n", image.width(), image.height()).into_bytes(),
+            ),
+            y: 0,
+        }
+    }
+}
+
+impl<'a> io::Read for ImageAsPPM<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.header_or_scanline.read(buf) {
+                Ok(0) => {
+                    if buf.len() != 0 && self.image.width() != 0 && self.y < self.image.height() {
+                        self.header_or_scanline.set_position(0);
+                        let scanline = self.header_or_scanline.get_mut();
+                        scanline.resize(self.image.width() as usize * 3, 0);
+                        for x in 0..self.image.width() {
+                            let pixel = self.image.get(x, self.y);
+                            scanline[x as usize * 3] = pixel.x;
+                            scanline[x as usize * 3 + 1] = pixel.y;
+                            scanline[x as usize * 3 + 2] = pixel.z;
+                        }
+                        self.y = self.y + 1;
+                        continue;
+                    } else {
+                        return Ok(0);
+                    }
+                }
+                result => return result,
+            }
+        }
     }
 }
 
@@ -157,6 +202,20 @@ impl Image {
                     *src.get_unchecked(x + src_x, y + src_y);
             }
         }
+    }
+    pub fn composite_on_color(&mut self, background_color: math::Vec4<u8>) {
+        fn mix(t: u8, a: u8, b: u8) -> u8 {
+            let v = (0xFF - t as u32) * a as u32 + t as u32 * b as u32;
+            ((v + 0xFF / 2) / 0xFF) as u8
+        }
+        for pixel in &mut self.pixels {
+            *pixel = background_color
+                .zip(*pixel)
+                .map(|(a, b)| mix(pixel.w, a, b));
+        }
+    }
+    pub fn as_ppm(&self) -> ImageAsPPM {
+        ImageAsPPM::new(self)
     }
 }
 

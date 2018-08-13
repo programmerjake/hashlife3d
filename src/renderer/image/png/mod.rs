@@ -1,7 +1,8 @@
-mod inflate;
 #[cfg(test)]
 mod tests;
 use super::{Image, ImageLoader};
+use inflate::DeflateDecoder;
+use renderer::math;
 use std::ascii;
 use std::borrow::BorrowMut;
 use std::error;
@@ -247,6 +248,93 @@ impl ColorType {
             | (ColorType::RGBA, 8)
             | (ColorType::RGBA, 16) => true,
             _ => false,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+enum ScanlineFilterAlgorithm {
+    None = 0x0,
+    Sub = 0x1,
+    Up = 0x2,
+    Average = 0x3,
+    Paeth = 0x4,
+}
+
+impl ScanlineFilterAlgorithm {
+    fn from(v: u8) -> Option<ScanlineFilterAlgorithm> {
+        let enumerants = [
+            ScanlineFilterAlgorithm::None,
+            ScanlineFilterAlgorithm::Sub,
+            ScanlineFilterAlgorithm::Up,
+            ScanlineFilterAlgorithm::Average,
+            ScanlineFilterAlgorithm::Paeth,
+        ];
+        for &enumerant in &enumerants {
+            if v == enumerant as u8 {
+                return Some(enumerant);
+            }
+        }
+        None
+    }
+    fn filter_scanline(
+        self,
+        prev_scanline: &[u8],
+        scanline: &mut [u8],
+        pixel_size_in_bytes: usize,
+    ) {
+        const MAX_PIXEL_SIZE: usize = 8;
+        assert_eq!(prev_scanline.len(), scanline.len());
+        match self {
+            ScanlineFilterAlgorithm::None => {}
+            ScanlineFilterAlgorithm::Sub => for i in 0..scanline.len() {
+                let left = if i < pixel_size_in_bytes {
+                    0
+                } else {
+                    scanline[i - pixel_size_in_bytes]
+                };
+                scanline[i] = left.wrapping_add(scanline[i]);
+            },
+            ScanlineFilterAlgorithm::Up => for i in 0..scanline.len() {
+                let up = prev_scanline[i];
+                scanline[i] = up.wrapping_add(scanline[i]);
+            },
+            ScanlineFilterAlgorithm::Average => for i in 0..scanline.len() {
+                let left = if i < pixel_size_in_bytes {
+                    0
+                } else {
+                    scanline[i - pixel_size_in_bytes]
+                };
+                let up = prev_scanline[i];
+                scanline[i] = (((up as u32 + left as u32) / 2) as u8).wrapping_add(scanline[i]);
+            },
+            ScanlineFilterAlgorithm::Paeth => for i in 0..scanline.len() {
+                let left = if i < pixel_size_in_bytes {
+                    0
+                } else {
+                    scanline[i - pixel_size_in_bytes]
+                };
+                let up_left = if i < pixel_size_in_bytes {
+                    0
+                } else {
+                    prev_scanline[i - pixel_size_in_bytes]
+                };
+                let up = prev_scanline[i];
+                let initial_estimate = left as i32 + up as i32 + up_left as i32;
+                let left_distance = (initial_estimate - left as i32).abs();
+                let up_distance = (initial_estimate - up as i32).abs();
+                let up_left_distance = (initial_estimate - up_left as i32).abs();
+                let prediction =
+                    if left_distance <= up_distance && left_distance <= up_left_distance {
+                        left
+                    } else if up_distance <= up_left_distance {
+                        up
+                    } else {
+                        up_left
+                    };
+                scanline[i] = prediction.wrapping_add(scanline[i]);
+            },
         }
     }
 }
@@ -546,13 +634,144 @@ impl ImageLoader for PngImageLoader {
                     .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing IDAT chunk"))??,
             )?;
         }
-        {
+        fn decode_image<R: Read>(
+            width: u32,
+            height: u32,
+            bit_depth: u8,
+            color_type: ColorType,
+            reader: &mut R,
+        ) -> Result<Option<Image>> {
+            if width == 0 || height == 0 {
+                return Ok(None);
+            }
+            let bits_per_pixel = match color_type {
+                ColorType::Grayscale => bit_depth,
+                ColorType::RGB => bit_depth * 3,
+                ColorType::RGBPalette => bit_depth,
+                ColorType::GrayscaleAlpha => bit_depth * 2,
+                ColorType::RGBA => bit_depth * 4,
+            };
+            let rounded_up_bytes_per_pixel = (bits_per_pixel + 7) / 8;
+            let image_bytes_per_scan_line = ((width as usize)
+                .checked_mul(bits_per_pixel as usize)
+                .unwrap()
+                + 7)
+                / 8;
+            let mut last_scanline = Vec::new();
+            last_scanline.resize(image_bytes_per_scan_line, 0); // last_scanline needs to start as all zeros
+            let mut current_scanline = last_scanline.clone();
+            let mut retval = Image::new(width, height, Default::default());
+            for y in 0..height {
+                let filter_algorithm =
+                    ScanlineFilterAlgorithm::from(read_u8(reader)?).ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidData, "invalid scanline filter algorithm")
+                    })?;
+                reader.read_exact(&mut current_scanline)?;
+                filter_algorithm.filter_scanline(
+                    &last_scanline,
+                    &mut current_scanline,
+                    rounded_up_bytes_per_pixel as usize,
+                );
+                match (bit_depth, color_type) {
+                    (1, ColorType::Grayscale) => {
+                        for x in 0..width {
+                            let value = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
+                            *retval.get_mut(x, y) =
+                                math::Vec4::new(value * 0xFF, value * 0xFF, value * 0xFF, 0xFF);
+                        }
+                    }
+                    _ => unimplemented!(),
+                }
+                mem::swap(&mut current_scanline, &mut last_scanline);
+            }
+            Ok(Some(retval))
+        }
+        let retval = {
             let compressed_byte_reader = CompressedByteReader {
                 chunk_iterator: &mut chunk_iterator,
                 chunk: None,
             };
-            unimplemented!();
-        }
+            let mut decompressed_reader = DeflateDecoder::from_zlib(compressed_byte_reader);
+            let IHDRChunk {
+                width,
+                height,
+                bit_depth,
+                color_type,
+                compression_method,
+                filter_method,
+                interlace_method,
+            } = ihdr_chunk;
+            let retval = match (compression_method, filter_method, interlace_method) {
+                (
+                    CompressionMethod::Deflate,
+                    FilterMethod::Adaptive,
+                    InterlaceMethod::NoInterlace,
+                ) => decode_image(
+                    width,
+                    height,
+                    bit_depth,
+                    color_type,
+                    &mut decompressed_reader,
+                )?.unwrap(),
+                (CompressionMethod::Deflate, FilterMethod::Adaptive, InterlaceMethod::Adam7) => {
+                    let mut retval = Image::new(width, height, Default::default());
+                    {
+                        let mut decode_subpass = |width_divisor: u32,
+                                                  height_divisor: u32,
+                                                  width_offset: u32,
+                                                  height_offset: u32|
+                         -> Result<()> {
+                            if let Some(subpass) = decode_image(
+                                width / width_divisor + if width % width_divisor <= width_offset {
+                                    0
+                                } else {
+                                    1
+                                },
+                                height / height_divisor + if height % height_divisor
+                                    <= height_offset
+                                {
+                                    0
+                                } else {
+                                    1
+                                },
+                                bit_depth,
+                                color_type,
+                                &mut decompressed_reader,
+                            )? {
+                                for y in 0..subpass.height() {
+                                    for x in 0..subpass.width() {
+                                        *retval.get_mut(
+                                            x * width_divisor + width_offset,
+                                            y * height_divisor + height_offset,
+                                        ) = *subpass.get(x, y);
+                                    }
+                                }
+                            }
+                            Ok(())
+                        };
+                        decode_subpass(8, 8, 0, 0)?;
+                        decode_subpass(8, 8, 4, 0)?;
+                        decode_subpass(4, 8, 0, 4)?;
+                        decode_subpass(4, 4, 2, 0)?;
+                        decode_subpass(2, 4, 0, 2)?;
+                        decode_subpass(2, 2, 1, 0)?;
+                        decode_subpass(1, 2, 0, 1)?;
+                    }
+                    retval
+                }
+            };
+            match decompressed_reader.bytes().next() {
+                Some(Err(error)) => return Err(error),
+                Some(Ok(_)) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "compressed data is too long",
+                    ))
+                }
+                None => {}
+            }
+            retval
+        };
         loop {
             if let Some(Ok(Chunk {
                 name: ChunkName::IEND,
@@ -586,7 +805,7 @@ impl ImageLoader for PngImageLoader {
                 format!("chunk after IEND chunk: {:?}", chunk.name),
             ));
         }
-        unimplemented!()
+        Ok(retval)
     }
 }
 
