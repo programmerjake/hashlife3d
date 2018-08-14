@@ -1241,13 +1241,12 @@ test_png!(
         crc: 3207180197
     })
 );
-/*
 test_png!(
     tbbn0g04,
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1552854915
     })
 );
 test_png!(
@@ -1255,7 +1254,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 57733001
     })
 );
 test_png!(
@@ -1263,7 +1262,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2639711591
     })
 );
 test_png!(
@@ -1271,7 +1270,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 57733001
     })
 );
 test_png!(
@@ -1279,7 +1278,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2639711591
     })
 );
 test_png!(
@@ -1287,7 +1286,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 57733001
     })
 );
 test_png!(
@@ -1295,7 +1294,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3320083380
     })
 );
 test_png!(
@@ -1303,7 +1302,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2639711591
     })
 );
 test_png!(
@@ -1311,7 +1310,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2639711591
     })
 );
 test_png!(
@@ -1319,7 +1318,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3889866741
     })
 );
 test_png!(
@@ -1327,7 +1326,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1469470836
     })
 );
 test_png!(
@@ -1335,7 +1334,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1738351796
     })
 );
 test_png!(
@@ -1343,7 +1342,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 319463781
     })
 );
 test_png!(
@@ -1351,10 +1350,9 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2639711591
     })
 );
-*/
 test_png!(xc1n0g08, Err(ImageLoadError(None)));
 test_png!(xc9n2c08, Err(ImageLoadError(None)));
 test_png!(xcrn0g04, Err(ImageLoadError(None)));

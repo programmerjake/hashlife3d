@@ -11,7 +11,6 @@ use std::hash::Hasher;
 use std::io::{self, prelude::*, Error, ErrorKind, Result};
 use std::iter::Peekable;
 use std::mem;
-use std::result;
 
 pub struct PngImageLoader {
     max_chunk_length: usize,
@@ -135,6 +134,8 @@ impl ChunkName {
     const PLTE: ChunkName = ChunkName(*b"PLTE");
     const IDAT: ChunkName = ChunkName(*b"IDAT");
     const IEND: ChunkName = ChunkName(*b"IEND");
+    #[allow(non_upper_case_globals)]
+    const tRNS: ChunkName = ChunkName(*b"tRNS");
 }
 
 fn read_all_or_none<R: Read, T: BorrowMut<[u8]>>(
@@ -732,6 +733,11 @@ impl ImageLoader for PngImageLoader {
                     ErrorKind::InvalidData,
                     format!("IEND chunk is not allowed here"),
                 ))
+            } else if chunk.name == ChunkName::tRNS {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("tRNS chunk is not allowed here"),
+                ))
             } else if chunk.name.is_critical() {
                 Err(Error::new(
                     ErrorKind::InvalidData,
@@ -742,6 +748,7 @@ impl ImageLoader for PngImageLoader {
             }
         }
         let mut palette = None;
+        let mut trns_chunk = None;
         loop {
             if let Some(Ok(Chunk {
                 name: ChunkName::IDAT,
@@ -750,11 +757,11 @@ impl ImageLoader for PngImageLoader {
             {
                 break;
             }
-            let chunk = chunk_iterator
+            let mut chunk = chunk_iterator
                 .next()
                 .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing IDAT chunk"))??;
             match chunk.name {
-                ChunkName::PLTE if palette.is_none() => {
+                ChunkName::PLTE if palette.is_none() && trns_chunk.is_none() => {
                     if chunk.data.len() == 0 {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
@@ -785,6 +792,73 @@ impl ImageLoader for PngImageLoader {
                     }
                     palette = Some(chunk.data);
                 }
+                ChunkName::tRNS if trns_chunk.is_none() => {
+                    if chunk.data.len() == 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "tRNS must have non-zero length",
+                        ));
+                    }
+                    match ihdr_chunk.color_type {
+                        ColorType::RGBPalette => {
+                            let palette = palette.as_ref().ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS must not precede PLTE chunk for indexed images",
+                                )
+                            })?;
+                            if chunk.data.len() * 3 > palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS must have fewer entries than the palette",
+                                ));
+                            }
+                            chunk.data.resize(palette.len() / 3, 0xFF);
+                        }
+                        ColorType::Grayscale => {
+                            if chunk.data.len() != 2 {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS must be 2 bytes for grayscale images",
+                                ));
+                            }
+                            let value = ((chunk.data[0] as u32) << 8) | chunk.data[1] as u32;
+                            if (value >> ihdr_chunk.bit_depth) != 0 {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS value is out of range",
+                                ));
+                            }
+                        }
+                        ColorType::RGB => {
+                            if chunk.data.len() != 6 {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS must be 6 bytes for truecolor images",
+                                ));
+                            }
+                            let r = ((chunk.data[0] as u32) << 8) | chunk.data[1] as u32;
+                            let g = ((chunk.data[2] as u32) << 8) | chunk.data[3] as u32;
+                            let b = ((chunk.data[4] as u32) << 8) | chunk.data[5] as u32;
+                            if (r >> ihdr_chunk.bit_depth) != 0
+                                || (g >> ihdr_chunk.bit_depth) != 0
+                                || (b >> ihdr_chunk.bit_depth) != 0
+                            {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "tRNS value is out of range",
+                                ));
+                            }
+                        }
+                        ColorType::GrayscaleAlpha | ColorType::RGBA => {
+                            return Err(Error::new(
+                                ErrorKind::InvalidData,
+                                "tRNS chunk is not allowed for images with alpha channels",
+                            ))
+                        }
+                    }
+                    trns_chunk = Some(chunk.data);
+                }
                 _ => handle_ignored_chunk(chunk)?,
             }
         }
@@ -797,6 +871,7 @@ impl ImageLoader for PngImageLoader {
             bit_depth: u8,
             color_type: ColorType,
             palette: &Option<Vec<u8>>,
+            trns_chunk: &Option<Vec<u8>>,
             reader: &mut R,
         ) -> Result<Option<Image>> {
             if width == 0 || height == 0 {
@@ -833,15 +908,27 @@ impl ImageLoader for PngImageLoader {
                 fn u16_to_u8(value: u16) -> u8 {
                     ((value as u32 * 0xFF + 0xFFFF / 2) / 0xFFFF) as u8
                 }
-                match (bit_depth, color_type) {
-                    (1, ColorType::Grayscale) => {
+                match (bit_depth, color_type, trns_chunk) {
+                    (1, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
                             *retval.get_mut(x, y) =
                                 math::Vec4::new(value * 0xFF, value * 0xFF, value * 0xFF, 0xFF);
                         }
                     }
-                    (2, ColorType::Grayscale) => {
+                    (1, ColorType::Grayscale, Some(trns_chunk)) => {
+                        let transparent_value = trns_chunk[1];
+                        for x in 0..width {
+                            let value = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                value * 0xFF,
+                                value * 0xFF,
+                                value * 0xFF,
+                                if value == transparent_value { 0 } else { 0xFF },
+                            );
+                        }
+                    }
+                    (2, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value =
                                 (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
@@ -849,7 +936,20 @@ impl ImageLoader for PngImageLoader {
                                 math::Vec4::new(value * 0x55, value * 0x55, value * 0x55, 0xFF);
                         }
                     }
-                    (4, ColorType::Grayscale) => {
+                    (2, ColorType::Grayscale, Some(trns_chunk)) => {
+                        let transparent_value = trns_chunk[1];
+                        for x in 0..width {
+                            let value =
+                                (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                value * 0x55,
+                                value * 0x55,
+                                value * 0x55,
+                                if value == transparent_value { 0 } else { 0xFF },
+                            );
+                        }
+                    }
+                    (4, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value =
                                 (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
@@ -857,13 +957,38 @@ impl ImageLoader for PngImageLoader {
                                 math::Vec4::new(value * 0x11, value * 0x11, value * 0x11, 0xFF);
                         }
                     }
-                    (8, ColorType::Grayscale) => {
+                    (4, ColorType::Grayscale, Some(trns_chunk)) => {
+                        let transparent_value = trns_chunk[1];
+                        for x in 0..width {
+                            let value =
+                                (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                value * 0x11,
+                                value * 0x11,
+                                value * 0x11,
+                                if value == transparent_value { 0 } else { 0xFF },
+                            );
+                        }
+                    }
+                    (8, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value = current_scanline[x as usize];
                             *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
                         }
                     }
-                    (16, ColorType::Grayscale) => {
+                    (8, ColorType::Grayscale, Some(trns_chunk)) => {
+                        let transparent_value = trns_chunk[1];
+                        for x in 0..width {
+                            let value = current_scanline[x as usize];
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                value,
+                                value,
+                                value,
+                                if value == transparent_value { 0 } else { 0xFF },
+                            );
+                        }
+                    }
+                    (16, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value = u16_to_u8(
                                 ((current_scanline[x as usize * 2] as u16) << 8)
@@ -872,7 +997,18 @@ impl ImageLoader for PngImageLoader {
                             *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
                         }
                     }
-                    (8, ColorType::RGB) => {
+                    (16, ColorType::Grayscale, Some(trns_chunk)) => {
+                        let transparent_value =
+                            ((trns_chunk[0] as u16) << 8) | trns_chunk[1] as u16;
+                        for x in 0..width {
+                            let value = ((current_scanline[x as usize * 2] as u16) << 8)
+                                | current_scanline[x as usize * 2 + 1] as u16;
+                            let a = if value == transparent_value { 0 } else { 0xFF };
+                            let value = u16_to_u8(value);
+                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, a);
+                        }
+                    }
+                    (8, ColorType::RGB, None) => {
                         for x in 0..width {
                             *retval.get_mut(x, y) = math::Vec4::new(
                                 current_scanline[x as usize * 3],
@@ -882,7 +1018,27 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (16, ColorType::RGB) => {
+                    (8, ColorType::RGB, Some(trns_chunk)) => {
+                        let transparent_r = trns_chunk[1];
+                        let transparent_g = trns_chunk[3];
+                        let transparent_b = trns_chunk[5];
+                        for x in 0..width {
+                            let r = current_scanline[x as usize * 3];
+                            let g = current_scanline[x as usize * 3 + 1];
+                            let b = current_scanline[x as usize * 3 + 2];
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                r,
+                                g,
+                                b,
+                                if r == transparent_r && g == transparent_g && b == transparent_b {
+                                    0
+                                } else {
+                                    0xFF
+                                },
+                            );
+                        }
+                    }
+                    (16, ColorType::RGB, None) => {
                         for x in 0..width {
                             let r = u16_to_u8(
                                 ((current_scanline[x as usize * 6] as u16) << 8)
@@ -899,7 +1055,30 @@ impl ImageLoader for PngImageLoader {
                             *retval.get_mut(x, y) = math::Vec4::new(r, g, b, 0xFF);
                         }
                     }
-                    (1, ColorType::RGBPalette) => {
+                    (16, ColorType::RGB, Some(trns_chunk)) => {
+                        let transparent_r = ((trns_chunk[0] as u16) << 8) | trns_chunk[1] as u16;
+                        let transparent_g = ((trns_chunk[2] as u16) << 8) | trns_chunk[3] as u16;
+                        let transparent_b = ((trns_chunk[4] as u16) << 8) | trns_chunk[5] as u16;
+                        for x in 0..width {
+                            let r = ((current_scanline[x as usize * 6] as u16) << 8)
+                                | current_scanline[x as usize * 6 + 1] as u16;
+                            let g = ((current_scanline[x as usize * 6 + 2] as u16) << 8)
+                                | current_scanline[x as usize * 6 + 3] as u16;
+                            let b = ((current_scanline[x as usize * 6 + 4] as u16) << 8)
+                                | current_scanline[x as usize * 6 + 5] as u16;
+                            let a =
+                                if r == transparent_r && g == transparent_g && b == transparent_b {
+                                    0
+                                } else {
+                                    0xFF
+                                };
+                            let r = u16_to_u8(r);
+                            let g = u16_to_u8(g);
+                            let b = u16_to_u8(b);
+                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, a);
+                        }
+                    }
+                    (1, ColorType::RGBPalette, None) => {
                         let palette = palette.as_ref().unwrap();
                         for x in 0..width {
                             let index = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
@@ -918,7 +1097,26 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (2, ColorType::RGBPalette) => {
+                    (1, ColorType::RGBPalette, Some(trns_chunk)) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = ((current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1)
+                                as usize;
+                            if index * 3 >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index * 3],
+                                palette[index * 3 + 1],
+                                palette[index * 3 + 2],
+                                trns_chunk[index],
+                            );
+                        }
+                    }
+                    (2, ColorType::RGBPalette, None) => {
                         let palette = palette.as_ref().unwrap();
                         for x in 0..width {
                             let index =
@@ -938,7 +1136,26 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (4, ColorType::RGBPalette) => {
+                    (2, ColorType::RGBPalette, Some(trns_chunk)) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = ((current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2)
+                                & 0x3) as usize;
+                            if index * 3 >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index * 3],
+                                palette[index * 3 + 1],
+                                palette[index * 3 + 2],
+                                trns_chunk[index],
+                            );
+                        }
+                    }
+                    (4, ColorType::RGBPalette, None) => {
                         let palette = palette.as_ref().unwrap();
                         for x in 0..width {
                             let index =
@@ -958,7 +1175,26 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (8, ColorType::RGBPalette) => {
+                    (4, ColorType::RGBPalette, Some(trns_chunk)) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = ((current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4)
+                                & 0xF) as usize;
+                            if index * 3 >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index * 3],
+                                palette[index * 3 + 1],
+                                palette[index * 3 + 2],
+                                trns_chunk[index],
+                            );
+                        }
+                    }
+                    (8, ColorType::RGBPalette, None) => {
                         let palette = palette.as_ref().unwrap();
                         for x in 0..width {
                             let index = current_scanline[x as usize];
@@ -977,7 +1213,25 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (8, ColorType::GrayscaleAlpha) => {
+                    (8, ColorType::RGBPalette, Some(trns_chunk)) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = current_scanline[x as usize] as usize;
+                            if index * 3 >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index * 3],
+                                palette[index * 3 + 1],
+                                palette[index * 3 + 2],
+                                trns_chunk[index],
+                            );
+                        }
+                    }
+                    (8, ColorType::GrayscaleAlpha, _) => {
                         for x in 0..width {
                             *retval.get_mut(x, y) = math::Vec4::new(
                                 current_scanline[x as usize * 2],
@@ -987,7 +1241,7 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (16, ColorType::GrayscaleAlpha) => {
+                    (16, ColorType::GrayscaleAlpha, _) => {
                         for x in 0..width {
                             let v = u16_to_u8(
                                 ((current_scanline[x as usize * 4] as u16) << 8)
@@ -1000,7 +1254,7 @@ impl ImageLoader for PngImageLoader {
                             *retval.get_mut(x, y) = math::Vec4::new(v, v, v, a);
                         }
                     }
-                    (8, ColorType::RGBA) => {
+                    (8, ColorType::RGBA, _) => {
                         for x in 0..width {
                             *retval.get_mut(x, y) = math::Vec4::new(
                                 current_scanline[x as usize * 4],
@@ -1010,7 +1264,7 @@ impl ImageLoader for PngImageLoader {
                             );
                         }
                     }
-                    (16, ColorType::RGBA) => {
+                    (16, ColorType::RGBA, _) => {
                         for x in 0..width {
                             let r = u16_to_u8(
                                 ((current_scanline[x as usize * 8] as u16) << 8)
@@ -1064,6 +1318,7 @@ impl ImageLoader for PngImageLoader {
                     bit_depth,
                     color_type,
                     &palette,
+                    &trns_chunk,
                     &mut decompressed_reader,
                 )?.unwrap(),
                 (CompressionMethod::Deflate, FilterMethod::Adaptive, InterlaceMethod::Adam7) => {
@@ -1090,6 +1345,7 @@ impl ImageLoader for PngImageLoader {
                                 bit_depth,
                                 color_type,
                                 &palette,
+                                &trns_chunk,
                                 &mut decompressed_reader,
                             )? {
                                 for y in 0..subpass.height() {
