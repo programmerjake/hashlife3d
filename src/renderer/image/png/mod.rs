@@ -284,8 +284,18 @@ impl ScanlineFilterAlgorithm {
         scanline: &mut [u8],
         pixel_size_in_bytes: usize,
     ) {
-        const MAX_PIXEL_SIZE: usize = 8;
         assert_eq!(prev_scanline.len(), scanline.len());
+        const DEBUG_PRINT: bool = false;
+        if DEBUG_PRINT {
+            println!(
+                "filter_scanline: self = {:?}, pixel_size_in_bytes = {}",
+                self, pixel_size_in_bytes,
+            );
+            println!(
+                "prev_scanline:\n{:?}\nscanline:\n{:?}",
+                prev_scanline, scanline,
+            );
+        }
         match self {
             ScanlineFilterAlgorithm::None => {}
             ScanlineFilterAlgorithm::Sub => for i in 0..scanline.len() {
@@ -321,20 +331,25 @@ impl ScanlineFilterAlgorithm {
                     prev_scanline[i - pixel_size_in_bytes]
                 };
                 let up = prev_scanline[i];
-                let initial_estimate = left as i32 + up as i32 + up_left as i32;
-                let left_distance = (initial_estimate - left as i32).abs();
-                let up_distance = (initial_estimate - up as i32).abs();
-                let up_left_distance = (initial_estimate - up_left as i32).abs();
-                let prediction =
-                    if left_distance <= up_distance && left_distance <= up_left_distance {
-                        left
-                    } else if up_distance <= up_left_distance {
-                        up
+                fn paeth_predictor(a: i32, b: i32, c: i32) -> i32 {
+                    let p = a + b - c;
+                    let pa = (p - a).abs();
+                    let pb = (p - b).abs();
+                    let pc = (p - c).abs();
+                    if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
                     } else {
-                        up_left
-                    };
-                scanline[i] = prediction.wrapping_add(scanline[i]);
+                        c
+                    }
+                }
+                scanline[i] = (paeth_predictor(left as i32, up as i32, up_left as i32) as u8)
+                    .wrapping_add(scanline[i]);
             },
+        }
+        if DEBUG_PRINT {
+            println!("scanline:\n{:?}", scanline,);
         }
     }
 }
@@ -672,6 +687,9 @@ impl ImageLoader for PngImageLoader {
                     &mut current_scanline,
                     rounded_up_bytes_per_pixel as usize,
                 );
+                fn u16_to_u8(value: u16) -> u8 {
+                    ((value as u32 * 0xFF + 0xFFFF / 2) / 0xFFFF) as u8
+                }
                 match (bit_depth, color_type) {
                     (1, ColorType::Grayscale) => {
                         for x in 0..width {
@@ -704,7 +722,10 @@ impl ImageLoader for PngImageLoader {
                     }
                     (16, ColorType::Grayscale) => {
                         for x in 0..width {
-                            let value = current_scanline[x as usize * 2]; // just get MSB; ignore LSB
+                            let value = u16_to_u8(
+                                ((current_scanline[x as usize * 2] as u16) << 8)
+                                    | current_scanline[x as usize * 2 + 1] as u16,
+                            );
                             *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
                         }
                     }

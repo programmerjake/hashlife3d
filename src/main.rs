@@ -354,13 +354,13 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             }
         }
     });
-    if false {
+    if true {
         use std::io::Read;
         let ppm: Vec<u8> = renderer::image::load_image_bytes(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/pngsuite/basn0g01.png"
+            "/pngsuite/basn0g08.png"
         ))).unwrap()
-        .as_ppm()
+        .as_ppm(renderer::image::PPMMode::Text)
         .bytes()
         .map(Result::unwrap)
         .collect();

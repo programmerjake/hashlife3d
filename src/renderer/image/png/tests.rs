@@ -1,4 +1,5 @@
 use super::*;
+use renderer::image::PPMMode;
 use std::fs;
 use std::rc::Rc;
 use std::result::Result;
@@ -73,7 +74,7 @@ macro_rules! test_png {
                     eprintln!("Test failed; writing decoded image to {:?}", file_path);
                     let write = || {
                         let mut ppm = Vec::new();
-                        image.as_ppm().read_to_end(&mut ppm)?;
+                        image.as_ppm(PPMMode::Text).read_to_end(&mut ppm)?;
                         fs::write(file_path, ppm)
                     };
                     if let Err(error) = write() {
@@ -115,7 +116,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3281348668
     })
 );
 test_png!(
@@ -123,7 +124,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 /*
@@ -237,7 +238,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3281348668
     })
 );
 test_png!(
@@ -245,7 +246,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 /*

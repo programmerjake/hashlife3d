@@ -32,20 +32,42 @@ impl fmt::Display for ImageSizeMismatchError {
     }
 }
 
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+pub enum PPMMode {
+    Binary,
+    Text,
+}
+
+impl Default for PPMMode {
+    fn default() -> Self {
+        PPMMode::Binary
+    }
+}
+
 pub struct ImageAsPPM<'a> {
     image: &'a Image,
     header_or_scanline: io::Cursor<Vec<u8>>,
     y: u32,
+    mode: PPMMode,
 }
 
 impl<'a> ImageAsPPM<'a> {
-    fn new(image: &'a Image) -> Self {
+    fn new(image: &'a Image, mode: PPMMode) -> Self {
         Self {
             image: image,
             header_or_scanline: io::Cursor::new(
-                format!("P6\n{} {}\n255\n", image.width(), image.height()).into_bytes(),
+                format!(
+                    "{}\n{} {}\n255\n",
+                    match mode {
+                        PPMMode::Binary => "P6",
+                        PPMMode::Text => "P3",
+                    },
+                    image.width(),
+                    image.height()
+                ).into_bytes(),
             ),
             y: 0,
+            mode: mode,
         }
     }
 }
@@ -57,13 +79,30 @@ impl<'a> io::Read for ImageAsPPM<'a> {
                 Ok(0) => {
                     if buf.len() != 0 && self.image.width() != 0 && self.y < self.image.height() {
                         self.header_or_scanline.set_position(0);
-                        let scanline = self.header_or_scanline.get_mut();
-                        scanline.resize(self.image.width() as usize * 3, 0);
-                        for x in 0..self.image.width() {
-                            let pixel = self.image.get(x, self.y);
-                            scanline[x as usize * 3] = pixel.x;
-                            scanline[x as usize * 3 + 1] = pixel.y;
-                            scanline[x as usize * 3 + 2] = pixel.z;
+                        match self.mode {
+                            PPMMode::Binary => {
+                                let scanline = self.header_or_scanline.get_mut();
+                                scanline.resize(self.image.width() as usize * 3, 0);
+                                for x in 0..self.image.width() {
+                                    let pixel = self.image.get(x, self.y);
+                                    scanline[x as usize * 3] = pixel.x;
+                                    scanline[x as usize * 3 + 1] = pixel.y;
+                                    scanline[x as usize * 3 + 2] = pixel.z;
+                                }
+                            }
+                            PPMMode::Text => {
+                                self.header_or_scanline.get_mut().clear();
+                                for x in 0..self.image.width() {
+                                    let pixel = self.image.get(x, self.y);
+                                    write!(
+                                        &mut self.header_or_scanline,
+                                        "{} {} {} ",
+                                        pixel.x, pixel.y, pixel.z,
+                                    );
+                                }
+                                writeln!(&mut self.header_or_scanline);
+                                self.header_or_scanline.set_position(0);
+                            }
                         }
                         self.y = self.y + 1;
                         continue;
@@ -214,8 +253,8 @@ impl Image {
                 .map(|(a, b)| mix(pixel.w, a, b));
         }
     }
-    pub fn as_ppm(&self) -> ImageAsPPM {
-        ImageAsPPM::new(self)
+    pub fn as_ppm(&self, mode: PPMMode) -> ImageAsPPM {
+        ImageAsPPM::new(self, mode)
     }
 }
 
