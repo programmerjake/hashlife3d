@@ -878,7 +878,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 test_png!(
@@ -894,7 +894,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 test_png!(
@@ -902,7 +902,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(

@@ -11,6 +11,7 @@ use std::hash::Hasher;
 use std::io::{self, prelude::*, Error, ErrorKind, Result};
 use std::iter::Peekable;
 use std::mem;
+use std::result;
 
 pub struct PngImageLoader {
     max_chunk_length: usize,
@@ -464,6 +465,7 @@ impl IHDRChunk {
     }
 }
 
+#[derive(Debug)]
 struct Chunk {
     name: ChunkName,
     data: Vec<u8>,
@@ -584,15 +586,13 @@ struct CompressedByteReader<'a, R: 'a + Read> {
 impl<'a, R: 'a + Read> Read for CompressedByteReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         loop {
-            if let Some(mut chunk) = self.chunk.take() {
+            if let Some(chunk) = self.chunk.as_mut() {
                 match chunk.read(buf) {
                     Ok(0) => {}
-                    result => {
-                        self.chunk = Some(chunk);
-                        return result;
-                    }
+                    result => return result,
                 }
             }
+            self.chunk = None;
             match self.chunk_iterator.peek() {
                 Some(Ok(Chunk {
                     name: ChunkName::IDAT,
@@ -604,6 +604,60 @@ impl<'a, R: 'a + Read> Read for CompressedByteReader<'a, R> {
             self.chunk = Some(io::Cursor::new(self.chunk_iterator.next().unwrap()?.data));
         }
         Ok(0)
+    }
+}
+
+struct ChunkingReader<R: Read> {
+    underlying_reader: R,
+    chunk: Option<io::Cursor<Vec<u8>>>,
+    hit_end: bool,
+}
+
+impl<R: Read> ChunkingReader<R> {
+    fn new(underlying_reader: R) -> Self {
+        Self {
+            underlying_reader: underlying_reader,
+            chunk: Some(io::Cursor::new(Vec::new())),
+            hit_end: false,
+        }
+    }
+}
+
+impl<R: Read> Read for ChunkingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        const CHUNK_SIZE: usize = 0x1000;
+        loop {
+            match self.chunk.as_mut().unwrap().read(buf) {
+                Ok(0) => (),
+                result => return result,
+            }
+            if self.hit_end {
+                return Ok(0);
+            }
+            let mut chunk = self.chunk.take().unwrap().into_inner();
+            chunk.resize(CHUNK_SIZE, 0);
+            let mut position = 0;
+            loop {
+                if position >= chunk.len() {
+                    chunk.resize(position, 0);
+                    self.chunk = Some(io::Cursor::new(chunk));
+                    break;
+                }
+                match self.underlying_reader.read(&mut chunk[position..]) {
+                    Ok(current_count) if current_count != 0 => {
+                        assert!(current_count <= chunk[position..].len());
+                        position += current_count;
+                    }
+                    result => {
+                        chunk.resize(position, 0);
+                        self.chunk = Some(io::Cursor::new(chunk));
+                        result?;
+                        self.hit_end = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -988,7 +1042,8 @@ impl ImageLoader for PngImageLoader {
                 chunk_iterator: &mut chunk_iterator,
                 chunk: None,
             };
-            let mut decompressed_reader = DeflateDecoder::from_zlib(compressed_byte_reader);
+            let mut decompressed_reader =
+                DeflateDecoder::from_zlib(ChunkingReader::new(compressed_byte_reader));
             let IHDRChunk {
                 width,
                 height,
