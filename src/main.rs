@@ -358,7 +358,7 @@ fn rust_main(event_source: &sdl::event::EventSource) {
         use std::io::Read;
         let ppm: Vec<u8> = renderer::image::load_image_bytes(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/pngsuite/basn0g08.png"
+            "/pngsuite/oi9n2c16.png"
         ))).unwrap()
         .as_ppm(renderer::image::PPMMode::Text)
         .bytes()

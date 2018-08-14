@@ -5,6 +5,7 @@ use std::fmt;
 use std::io;
 use std::io::prelude::*;
 
+#[derive(Clone)]
 pub struct Image {
     width: u32,
     height: u32,

@@ -131,6 +131,7 @@ impl ChunkName {
         !self.is_private()
     }
     const IHDR: ChunkName = ChunkName(*b"IHDR");
+    const PLTE: ChunkName = ChunkName(*b"PLTE");
     const IDAT: ChunkName = ChunkName(*b"IDAT");
     const IEND: ChunkName = ChunkName(*b"IEND");
 }
@@ -497,6 +498,36 @@ impl Chunk {
             ))
         }
     }
+    fn require_length(self, expected_length: usize) -> Result<Self> {
+        if self.data.len() == expected_length {
+            Ok(self)
+        } else {
+            #[derive(Debug)]
+            struct RequiredChunkLengthError {
+                chunk_name: ChunkName,
+                expected_length: usize,
+                found_length: usize,
+            }
+            impl fmt::Display for RequiredChunkLengthError {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    write!(
+                        f,
+                        "chunk: {:?} must have length {}: found {}",
+                        self.chunk_name, self.expected_length, self.found_length
+                    )
+                }
+            }
+            impl error::Error for RequiredChunkLengthError {}
+            Err(Error::new(
+                ErrorKind::InvalidData,
+                RequiredChunkLengthError {
+                    chunk_name: self.name,
+                    expected_length: expected_length,
+                    found_length: self.data.len(),
+                },
+            ))
+        }
+    }
 }
 
 struct ChunkIterator<R: Read> {
@@ -603,6 +634,7 @@ impl ImageLoader for PngImageLoader {
                 .next()
                 .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing IHDR chunk"))??
                 .require(ChunkName::IHDR)?
+                .require_length(IHDRChunk::SIZE)?
                 .data,
         ))?;
         if ihdr_chunk.width > self.max_width || ihdr_chunk.height > self.max_height {
@@ -626,15 +658,36 @@ impl ImageLoader for PngImageLoader {
             ));
         }
         fn handle_ignored_chunk(chunk: Chunk) -> Result<()> {
-            if chunk.name.is_critical() {
-                return Err(Error::new(
+            if chunk.name == ChunkName::IHDR {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("IHDR chunk is not allowed here"),
+                ))
+            } else if chunk.name == ChunkName::PLTE {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("PLTE chunk is not allowed here"),
+                ))
+            } else if chunk.name == ChunkName::IDAT {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("IDAT chunk is not allowed here"),
+                ))
+            } else if chunk.name == ChunkName::IEND {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("IEND chunk is not allowed here"),
+                ))
+            } else if chunk.name.is_critical() {
+                Err(Error::new(
                     ErrorKind::InvalidData,
                     format!("unknown critical chunk: {:?}", chunk.name),
-                ));
+                ))
             } else {
                 Ok(())
             }
         }
+        let mut palette = None;
         loop {
             if let Some(Ok(Chunk {
                 name: ChunkName::IDAT,
@@ -643,17 +696,53 @@ impl ImageLoader for PngImageLoader {
             {
                 break;
             }
-            handle_ignored_chunk(
-                chunk_iterator
-                    .next()
-                    .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing IDAT chunk"))??,
-            )?;
+            let chunk = chunk_iterator
+                .next()
+                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing IDAT chunk"))??;
+            match chunk.name {
+                ChunkName::PLTE if palette.is_none() => {
+                    if chunk.data.len() == 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "PLTE must have non-zero length",
+                        ));
+                    }
+                    if chunk.data.len() % 3 != 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "PLTE must have length that is a multiple of 3",
+                        ));
+                    }
+                    let max_palette_entry_count = match ihdr_chunk.color_type {
+                        ColorType::RGBPalette => 1 << ihdr_chunk.bit_depth,
+                        ColorType::RGB | ColorType::RGBA => 0x100,
+                        _ => {
+                            return Err(Error::new(
+                                ErrorKind::InvalidData,
+                                "PLTE not allowed for grayscale images",
+                            ))
+                        }
+                    };
+                    if chunk.data.len() > 3 * max_palette_entry_count {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "PLTE has too many entries",
+                        ));
+                    }
+                    palette = Some(chunk.data);
+                }
+                _ => handle_ignored_chunk(chunk)?,
+            }
+        }
+        if palette.is_none() && ihdr_chunk.color_type == ColorType::RGBPalette {
+            return Err(Error::new(ErrorKind::InvalidData, "PLTE chunk not found"));
         }
         fn decode_image<R: Read>(
             width: u32,
             height: u32,
             bit_depth: u8,
             color_type: ColorType,
+            palette: &Option<Vec<u8>>,
             reader: &mut R,
         ) -> Result<Option<Image>> {
             if width == 0 || height == 0 {
@@ -729,6 +818,165 @@ impl ImageLoader for PngImageLoader {
                             *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
                         }
                     }
+                    (8, ColorType::RGB) => {
+                        for x in 0..width {
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                current_scanline[x as usize * 3],
+                                current_scanline[x as usize * 3 + 1],
+                                current_scanline[x as usize * 3 + 2],
+                                0xFF,
+                            );
+                        }
+                    }
+                    (16, ColorType::RGB) => {
+                        for x in 0..width {
+                            let r = u16_to_u8(
+                                ((current_scanline[x as usize * 6] as u16) << 8)
+                                    | current_scanline[x as usize * 6 + 1] as u16,
+                            );
+                            let g = u16_to_u8(
+                                ((current_scanline[x as usize * 6 + 2] as u16) << 8)
+                                    | current_scanline[x as usize * 6 + 3] as u16,
+                            );
+                            let b = u16_to_u8(
+                                ((current_scanline[x as usize * 6 + 4] as u16) << 8)
+                                    | current_scanline[x as usize * 6 + 5] as u16,
+                            );
+                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, 0xFF);
+                        }
+                    }
+                    (1, ColorType::RGBPalette) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
+                            let index = index as usize * 3;
+                            if index >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index],
+                                palette[index + 1],
+                                palette[index + 2],
+                                0xFF,
+                            );
+                        }
+                    }
+                    (2, ColorType::RGBPalette) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index =
+                                (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
+                            let index = index as usize * 3;
+                            if index >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index],
+                                palette[index + 1],
+                                palette[index + 2],
+                                0xFF,
+                            );
+                        }
+                    }
+                    (4, ColorType::RGBPalette) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index =
+                                (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
+                            let index = index as usize * 3;
+                            if index >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index],
+                                palette[index + 1],
+                                palette[index + 2],
+                                0xFF,
+                            );
+                        }
+                    }
+                    (8, ColorType::RGBPalette) => {
+                        let palette = palette.as_ref().unwrap();
+                        for x in 0..width {
+                            let index = current_scanline[x as usize];
+                            let index = index as usize * 3;
+                            if index >= palette.len() {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "pixel palette index out of range",
+                                ));
+                            }
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                palette[index],
+                                palette[index + 1],
+                                palette[index + 2],
+                                0xFF,
+                            );
+                        }
+                    }
+                    (8, ColorType::GrayscaleAlpha) => {
+                        for x in 0..width {
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                current_scanline[x as usize * 2],
+                                current_scanline[x as usize * 2],
+                                current_scanline[x as usize * 2],
+                                current_scanline[x as usize * 2 + 1],
+                            );
+                        }
+                    }
+                    (16, ColorType::GrayscaleAlpha) => {
+                        for x in 0..width {
+                            let v = u16_to_u8(
+                                ((current_scanline[x as usize * 4] as u16) << 8)
+                                    | current_scanline[x as usize * 4 + 1] as u16,
+                            );
+                            let a = u16_to_u8(
+                                ((current_scanline[x as usize * 4 + 2] as u16) << 8)
+                                    | current_scanline[x as usize * 4 + 3] as u16,
+                            );
+                            *retval.get_mut(x, y) = math::Vec4::new(v, v, v, a);
+                        }
+                    }
+                    (8, ColorType::RGBA) => {
+                        for x in 0..width {
+                            *retval.get_mut(x, y) = math::Vec4::new(
+                                current_scanline[x as usize * 4],
+                                current_scanline[x as usize * 4 + 1],
+                                current_scanline[x as usize * 4 + 2],
+                                current_scanline[x as usize * 4 + 3],
+                            );
+                        }
+                    }
+                    (16, ColorType::RGBA) => {
+                        for x in 0..width {
+                            let r = u16_to_u8(
+                                ((current_scanline[x as usize * 8] as u16) << 8)
+                                    | current_scanline[x as usize * 8 + 1] as u16,
+                            );
+                            let g = u16_to_u8(
+                                ((current_scanline[x as usize * 8 + 2] as u16) << 8)
+                                    | current_scanline[x as usize * 8 + 3] as u16,
+                            );
+                            let b = u16_to_u8(
+                                ((current_scanline[x as usize * 8 + 4] as u16) << 8)
+                                    | current_scanline[x as usize * 8 + 5] as u16,
+                            );
+                            let a = u16_to_u8(
+                                ((current_scanline[x as usize * 8 + 6] as u16) << 8)
+                                    | current_scanline[x as usize * 8 + 7] as u16,
+                            );
+                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, a);
+                        }
+                    }
                     _ => unimplemented!(),
                 }
                 mem::swap(&mut current_scanline, &mut last_scanline);
@@ -760,6 +1008,7 @@ impl ImageLoader for PngImageLoader {
                     height,
                     bit_depth,
                     color_type,
+                    &palette,
                     &mut decompressed_reader,
                 )?.unwrap(),
                 (CompressionMethod::Deflate, FilterMethod::Adaptive, InterlaceMethod::Adam7) => {
@@ -785,6 +1034,7 @@ impl ImageLoader for PngImageLoader {
                                 },
                                 bit_depth,
                                 color_type,
+                                &palette,
                                 &mut decompressed_reader,
                             )? {
                                 for y in 0..subpass.height() {

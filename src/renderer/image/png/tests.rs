@@ -65,20 +65,30 @@ macro_rules! test_png {
             let expected_result: Result<HashedImage, ImageLoadError> = $result;
             if image_hash != expected_result {
                 if let Ok(image) = &image {
-                    let file_path = concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/pngsuite_out/",
-                        stringify!($name),
-                        ".ppm"
-                    );
-                    eprintln!("Test failed; writing decoded image to {:?}", file_path);
-                    let write = || {
-                        let mut ppm = Vec::new();
-                        image.as_ppm(PPMMode::Text).read_to_end(&mut ppm)?;
-                        fs::write(file_path, ppm)
-                    };
-                    if let Err(error) = write() {
-                        eprintln!("Writing decoded image failed: {}", error);
+                    for &(background_color, file_name_part) in &[
+                        (math::Vec4::new(0, 0, 0, 0xFF), "_black"),
+                        (math::Vec4::splat(0xFF), "_white"),
+                    ] {
+                        let file_path = format!(
+                            concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/pngsuite_out/",
+                                stringify!($name),
+                                "{}.ppm"
+                            ),
+                            file_name_part
+                        );
+                        eprintln!("Test failed; writing decoded image to {:?}", file_path);
+                        let write = || {
+                            let mut image = image.clone();
+                            image.composite_on_color(background_color);
+                            let mut ppm = Vec::new();
+                            image.as_ppm(PPMMode::Text).read_to_end(&mut ppm)?;
+                            fs::write(file_path, ppm)
+                        };
+                        if let Err(error) = write() {
+                            eprintln!("Writing decoded image failed: {}", error);
+                        }
                     }
                 }
                 assert_eq!(image_hash, expected_result);
@@ -127,13 +137,12 @@ test_png!(
         crc: 1178435148
     })
 );
-/*
 test_png!(
     basi2c08,
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 800407606
     })
 );
 test_png!(
@@ -141,7 +150,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -149,7 +158,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1300509092
     })
 );
 test_png!(
@@ -157,7 +166,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3839604412
     })
 );
 test_png!(
@@ -165,7 +174,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730119695
     })
 );
 test_png!(
@@ -173,7 +182,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 961709698
     })
 );
 test_png!(
@@ -181,7 +190,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2422037344
     })
 );
 test_png!(
@@ -189,7 +198,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1263975026
     })
 );
 test_png!(
@@ -197,7 +206,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2806903596
     })
 );
 test_png!(
@@ -205,10 +214,9 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 752110262
     })
 );
-*/
 test_png!(
     basn0g01,
     Ok(HashedImage {
@@ -249,13 +257,12 @@ test_png!(
         crc: 1178435148
     })
 );
-/*
 test_png!(
     basn2c08,
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 800407606
     })
 );
 test_png!(
@@ -263,7 +270,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -271,7 +278,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1300509092
     })
 );
 test_png!(
@@ -279,7 +286,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3839604412
     })
 );
 test_png!(
@@ -287,7 +294,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730119695
     })
 );
 test_png!(
@@ -295,7 +302,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 961709698
     })
 );
 test_png!(
@@ -303,7 +310,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2422037344
     })
 );
 test_png!(
@@ -311,7 +318,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1263975026
     })
 );
 test_png!(
@@ -319,7 +326,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2806903596
     })
 );
 test_png!(
@@ -327,7 +334,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 752110262
     })
 );
 test_png!(
@@ -335,7 +342,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2422037344
     })
 );
 test_png!(
@@ -343,7 +350,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1263975026
     })
 );
 test_png!(
@@ -351,7 +358,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2806903596
     })
 );
 test_png!(
@@ -359,7 +366,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 752110262
     })
 );
 test_png!(
@@ -367,7 +374,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2422037344
     })
 );
 test_png!(
@@ -375,7 +382,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1263975026
     })
 );
 test_png!(
@@ -383,7 +390,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2806903596
     })
 );
 test_png!(
@@ -391,7 +398,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 752110262
     })
 );
 test_png!(
@@ -399,7 +406,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1084663420
     })
 );
 test_png!(
@@ -407,7 +414,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2442313642
     })
 );
 test_png!(
@@ -415,7 +422,7 @@ test_png!(
     Ok(HashedImage {
         width: 8,
         height: 32,
-        crc: 0
+        crc: 720559608
     })
 );
 test_png!(
@@ -423,7 +430,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 8,
-        crc: 0
+        crc: 600507161
     })
 );
 test_png!(
@@ -431,7 +438,7 @@ test_png!(
     Ok(HashedImage {
         width: 8,
         height: 8,
-        crc: 0
+        crc: 3625926251
     })
 );
 test_png!(
@@ -439,7 +446,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2273986211
     })
 );
 test_png!(
@@ -447,7 +454,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730119695
     })
 );
 test_png!(
@@ -455,7 +462,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 961709698
     })
 );
 test_png!(
@@ -463,7 +470,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -471,7 +478,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -479,7 +486,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -487,7 +494,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3013984881
     })
 );
 test_png!(
@@ -495,7 +502,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3788303508
     })
 );
 test_png!(
@@ -503,7 +510,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2216934552
     })
 );
 test_png!(
@@ -511,7 +518,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2216934552
     })
 );
 test_png!(
@@ -519,7 +526,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 168253622
     })
 );
 test_png!(
@@ -527,7 +534,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 168253622
     })
 );
 test_png!(
@@ -535,7 +542,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -543,7 +550,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -551,7 +558,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2009322718
     })
 );
 test_png!(
@@ -559,7 +566,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4211329078
     })
 );
 test_png!(
@@ -567,7 +574,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 345367617
     })
 );
 test_png!(
@@ -575,7 +582,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1797453018
     })
 );
 test_png!(
@@ -583,7 +590,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2059556349
     })
 );
 test_png!(
@@ -591,7 +598,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3074681988
     })
 );
 test_png!(
@@ -599,7 +606,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2161709622
     })
 );
 test_png!(
@@ -607,7 +614,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 194018796
     })
 );
 test_png!(
@@ -615,7 +622,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2597630091
     })
 );
 test_png!(
@@ -623,7 +630,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 555338111
     })
 );
 test_png!(
@@ -631,7 +638,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3810330354
     })
 );
 test_png!(
@@ -639,7 +646,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3224777943
     })
 );
 test_png!(
@@ -647,7 +654,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3121433383
     })
 );
 test_png!(
@@ -655,7 +662,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 983333777
     })
 );
 test_png!(
@@ -663,7 +670,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1831428469
     })
 );
 test_png!(
@@ -671,7 +678,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 687644849
     })
 );
 test_png!(
@@ -679,7 +686,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3318004397
     })
 );
 test_png!(
@@ -687,7 +694,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4167136019
     })
 );
 test_png!(
@@ -695,7 +702,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2083933272
     })
 );
 test_png!(
@@ -703,7 +710,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4136119327
     })
 );
 test_png!(
@@ -711,7 +718,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 323125065
     })
 );
 test_png!(
@@ -719,7 +726,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1910025725
     })
 );
 test_png!(
@@ -727,7 +734,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2461854947
     })
 );
 test_png!(
@@ -735,7 +742,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2218902895
     })
 );
 test_png!(
@@ -743,7 +750,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4184392872
     })
 );
 test_png!(
@@ -751,7 +758,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1968032885
     })
 );
 test_png!(
@@ -759,7 +766,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 663277128
     })
 );
 test_png!(
@@ -767,7 +774,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1003884474
     })
 );
 test_png!(
@@ -775,7 +782,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 810337521
     })
 );
 test_png!(
@@ -783,7 +790,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 964161794
     })
 );
 test_png!(
@@ -791,7 +798,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2741025008
     })
 );
 test_png!(
@@ -799,7 +806,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1844853900
     })
 );
 test_png!(
@@ -807,7 +814,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2165175821
     })
 );
 test_png!(
@@ -815,7 +822,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 295161443
     })
 );
 test_png!(
@@ -823,7 +830,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4092665921
     })
 );
 test_png!(
@@ -831,7 +838,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 4218548137
     })
 );
 test_png!(
@@ -839,7 +846,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 test_png!(
@@ -847,7 +854,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -855,7 +862,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1178435148
     })
 );
 test_png!(
@@ -863,7 +870,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -879,7 +886,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -903,7 +910,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -911,7 +918,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 249584737
     })
 );
 test_png!(
@@ -919,7 +926,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3281348668
     })
 );
 test_png!(
@@ -927,7 +934,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -935,7 +942,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 3281348668
     })
 );
 test_png!(
@@ -943,7 +950,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -951,7 +958,7 @@ test_png!(
     Ok(HashedImage {
         width: 1,
         height: 1,
-        crc: 0
+        crc: 2674052579
     })
 );
 test_png!(
@@ -959,7 +966,7 @@ test_png!(
     Ok(HashedImage {
         width: 1,
         height: 1,
-        crc: 0
+        crc: 2674052579
     })
 );
 test_png!(
@@ -967,7 +974,7 @@ test_png!(
     Ok(HashedImage {
         width: 2,
         height: 2,
-        crc: 0
+        crc: 4237659839
     })
 );
 test_png!(
@@ -975,7 +982,7 @@ test_png!(
     Ok(HashedImage {
         width: 2,
         height: 2,
-        crc: 0
+        crc: 4237659839
     })
 );
 test_png!(
@@ -983,7 +990,7 @@ test_png!(
     Ok(HashedImage {
         width: 3,
         height: 3,
-        crc: 0
+        crc: 4113962449
     })
 );
 test_png!(
@@ -991,7 +998,7 @@ test_png!(
     Ok(HashedImage {
         width: 3,
         height: 3,
-        crc: 0
+        crc: 4113962449
     })
 );
 test_png!(
@@ -999,7 +1006,7 @@ test_png!(
     Ok(HashedImage {
         width: 4,
         height: 4,
-        crc: 0
+        crc: 3458935464
     })
 );
 test_png!(
@@ -1007,7 +1014,7 @@ test_png!(
     Ok(HashedImage {
         width: 4,
         height: 4,
-        crc: 0
+        crc: 3458935464
     })
 );
 test_png!(
@@ -1015,7 +1022,7 @@ test_png!(
     Ok(HashedImage {
         width: 5,
         height: 5,
-        crc: 0
+        crc: 1912183391
     })
 );
 test_png!(
@@ -1023,7 +1030,7 @@ test_png!(
     Ok(HashedImage {
         width: 5,
         height: 5,
-        crc: 0
+        crc: 1912183391
     })
 );
 test_png!(
@@ -1031,7 +1038,7 @@ test_png!(
     Ok(HashedImage {
         width: 6,
         height: 6,
-        crc: 0
+        crc: 386379374
     })
 );
 test_png!(
@@ -1039,7 +1046,7 @@ test_png!(
     Ok(HashedImage {
         width: 6,
         height: 6,
-        crc: 0
+        crc: 386379374
     })
 );
 test_png!(
@@ -1047,7 +1054,7 @@ test_png!(
     Ok(HashedImage {
         width: 7,
         height: 7,
-        crc: 0
+        crc: 4087511840
     })
 );
 test_png!(
@@ -1055,7 +1062,7 @@ test_png!(
     Ok(HashedImage {
         width: 7,
         height: 7,
-        crc: 0
+        crc: 4087511840
     })
 );
 test_png!(
@@ -1063,7 +1070,7 @@ test_png!(
     Ok(HashedImage {
         width: 8,
         height: 8,
-        crc: 0
+        crc: 783702580
     })
 );
 test_png!(
@@ -1071,7 +1078,7 @@ test_png!(
     Ok(HashedImage {
         width: 8,
         height: 8,
-        crc: 0
+        crc: 783702580
     })
 );
 test_png!(
@@ -1079,7 +1086,7 @@ test_png!(
     Ok(HashedImage {
         width: 9,
         height: 9,
-        crc: 0
+        crc: 1154653108
     })
 );
 test_png!(
@@ -1087,7 +1094,7 @@ test_png!(
     Ok(HashedImage {
         width: 9,
         height: 9,
-        crc: 0
+        crc: 1154653108
     })
 );
 test_png!(
@@ -1095,7 +1102,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2484130469
     })
 );
 test_png!(
@@ -1103,7 +1110,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 2484130469
     })
 );
 test_png!(
@@ -1111,7 +1118,7 @@ test_png!(
     Ok(HashedImage {
         width: 33,
         height: 33,
-        crc: 0
+        crc: 3489781867
     })
 );
 test_png!(
@@ -1119,7 +1126,7 @@ test_png!(
     Ok(HashedImage {
         width: 33,
         height: 33,
-        crc: 0
+        crc: 3489781867
     })
 );
 test_png!(
@@ -1127,7 +1134,7 @@ test_png!(
     Ok(HashedImage {
         width: 34,
         height: 34,
-        crc: 0
+        crc: 399499693
     })
 );
 test_png!(
@@ -1135,7 +1142,7 @@ test_png!(
     Ok(HashedImage {
         width: 34,
         height: 34,
-        crc: 0
+        crc: 399499693
     })
 );
 test_png!(
@@ -1143,7 +1150,7 @@ test_png!(
     Ok(HashedImage {
         width: 35,
         height: 35,
-        crc: 0
+        crc: 3100131453
     })
 );
 test_png!(
@@ -1151,7 +1158,7 @@ test_png!(
     Ok(HashedImage {
         width: 35,
         height: 35,
-        crc: 0
+        crc: 3100131453
     })
 );
 test_png!(
@@ -1159,7 +1166,7 @@ test_png!(
     Ok(HashedImage {
         width: 36,
         height: 36,
-        crc: 0
+        crc: 3585001115
     })
 );
 test_png!(
@@ -1167,7 +1174,7 @@ test_png!(
     Ok(HashedImage {
         width: 36,
         height: 36,
-        crc: 0
+        crc: 3585001115
     })
 );
 test_png!(
@@ -1175,7 +1182,7 @@ test_png!(
     Ok(HashedImage {
         width: 37,
         height: 37,
-        crc: 0
+        crc: 2706780708
     })
 );
 test_png!(
@@ -1183,7 +1190,7 @@ test_png!(
     Ok(HashedImage {
         width: 37,
         height: 37,
-        crc: 0
+        crc: 2706780708
     })
 );
 test_png!(
@@ -1191,7 +1198,7 @@ test_png!(
     Ok(HashedImage {
         width: 38,
         height: 38,
-        crc: 0
+        crc: 3182374538
     })
 );
 test_png!(
@@ -1199,7 +1206,7 @@ test_png!(
     Ok(HashedImage {
         width: 38,
         height: 38,
-        crc: 0
+        crc: 3182374538
     })
 );
 test_png!(
@@ -1207,7 +1214,7 @@ test_png!(
     Ok(HashedImage {
         width: 39,
         height: 39,
-        crc: 0
+        crc: 1555689769
     })
 );
 test_png!(
@@ -1215,7 +1222,7 @@ test_png!(
     Ok(HashedImage {
         width: 39,
         height: 39,
-        crc: 0
+        crc: 1555689769
     })
 );
 test_png!(
@@ -1223,7 +1230,7 @@ test_png!(
     Ok(HashedImage {
         width: 40,
         height: 40,
-        crc: 0
+        crc: 3207180197
     })
 );
 test_png!(
@@ -1231,9 +1238,10 @@ test_png!(
     Ok(HashedImage {
         width: 40,
         height: 40,
-        crc: 0
+        crc: 3207180197
     })
 );
+/*
 test_png!(
     tbbn0g04,
     Ok(HashedImage {
@@ -1346,6 +1354,7 @@ test_png!(
         crc: 0
     })
 );
+*/
 test_png!(xc1n0g08, Err(ImageLoadError(None)));
 test_png!(xc9n2c08, Err(ImageLoadError(None)));
 test_png!(xcrn0g04, Err(ImageLoadError(None)));
@@ -1365,7 +1374,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -1373,7 +1382,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -1381,7 +1390,7 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
 test_png!(
@@ -1389,7 +1398,6 @@ test_png!(
     Ok(HashedImage {
         width: 32,
         height: 32,
-        crc: 0
+        crc: 1730743317
     })
 );
-*/
