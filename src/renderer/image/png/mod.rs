@@ -14,7 +14,7 @@
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 #[cfg(test)]
 mod tests;
-use super::{Image, ImageLoader};
+use super::{Image, ImageLoader, Pixel};
 use inflate::DeflateDecoder;
 use renderer::math;
 use std::ascii;
@@ -913,14 +913,14 @@ impl ImageLoader for PngImageLoader {
                         for x in 0..width {
                             let value = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
                             *retval.get_mut(x, y) =
-                                math::Vec4::new(value * 0xFF, value * 0xFF, value * 0xFF, 0xFF);
+                                Pixel::new(value * 0xFF, value * 0xFF, value * 0xFF, 0xFF);
                         }
                     }
                     (1, ColorType::Grayscale, Some(trns_chunk)) => {
                         let transparent_value = trns_chunk[1];
                         for x in 0..width {
                             let value = (current_scanline[(x / 8) as usize] >> (7 - x % 8)) & 0x1;
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 value * 0xFF,
                                 value * 0xFF,
                                 value * 0xFF,
@@ -933,7 +933,7 @@ impl ImageLoader for PngImageLoader {
                             let value =
                                 (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
                             *retval.get_mut(x, y) =
-                                math::Vec4::new(value * 0x55, value * 0x55, value * 0x55, 0xFF);
+                                Pixel::new(value * 0x55, value * 0x55, value * 0x55, 0xFF);
                         }
                     }
                     (2, ColorType::Grayscale, Some(trns_chunk)) => {
@@ -941,7 +941,7 @@ impl ImageLoader for PngImageLoader {
                         for x in 0..width {
                             let value =
                                 (current_scanline[(x / 4) as usize] >> (3 - x % 4) * 2) & 0x3;
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 value * 0x55,
                                 value * 0x55,
                                 value * 0x55,
@@ -954,7 +954,7 @@ impl ImageLoader for PngImageLoader {
                             let value =
                                 (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
                             *retval.get_mut(x, y) =
-                                math::Vec4::new(value * 0x11, value * 0x11, value * 0x11, 0xFF);
+                                Pixel::new(value * 0x11, value * 0x11, value * 0x11, 0xFF);
                         }
                     }
                     (4, ColorType::Grayscale, Some(trns_chunk)) => {
@@ -962,7 +962,7 @@ impl ImageLoader for PngImageLoader {
                         for x in 0..width {
                             let value =
                                 (current_scanline[(x / 2) as usize] >> (1 - x % 2) * 4) & 0xF;
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 value * 0x11,
                                 value * 0x11,
                                 value * 0x11,
@@ -973,14 +973,14 @@ impl ImageLoader for PngImageLoader {
                     (8, ColorType::Grayscale, None) => {
                         for x in 0..width {
                             let value = current_scanline[x as usize];
-                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
+                            *retval.get_mut(x, y) = Pixel::new(value, value, value, 0xFF);
                         }
                     }
                     (8, ColorType::Grayscale, Some(trns_chunk)) => {
                         let transparent_value = trns_chunk[1];
                         for x in 0..width {
                             let value = current_scanline[x as usize];
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 value,
                                 value,
                                 value,
@@ -994,7 +994,7 @@ impl ImageLoader for PngImageLoader {
                                 ((current_scanline[x as usize * 2] as u16) << 8)
                                     | current_scanline[x as usize * 2 + 1] as u16,
                             );
-                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, 0xFF);
+                            *retval.get_mut(x, y) = Pixel::new(value, value, value, 0xFF);
                         }
                     }
                     (16, ColorType::Grayscale, Some(trns_chunk)) => {
@@ -1005,12 +1005,12 @@ impl ImageLoader for PngImageLoader {
                                 | current_scanline[x as usize * 2 + 1] as u16;
                             let a = if value == transparent_value { 0 } else { 0xFF };
                             let value = u16_to_u8(value);
-                            *retval.get_mut(x, y) = math::Vec4::new(value, value, value, a);
+                            *retval.get_mut(x, y) = Pixel::new(value, value, value, a);
                         }
                     }
                     (8, ColorType::RGB, None) => {
                         for x in 0..width {
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 current_scanline[x as usize * 3],
                                 current_scanline[x as usize * 3 + 1],
                                 current_scanline[x as usize * 3 + 2],
@@ -1026,7 +1026,7 @@ impl ImageLoader for PngImageLoader {
                             let r = current_scanline[x as usize * 3];
                             let g = current_scanline[x as usize * 3 + 1];
                             let b = current_scanline[x as usize * 3 + 2];
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 r,
                                 g,
                                 b,
@@ -1052,7 +1052,7 @@ impl ImageLoader for PngImageLoader {
                                 ((current_scanline[x as usize * 6 + 4] as u16) << 8)
                                     | current_scanline[x as usize * 6 + 5] as u16,
                             );
-                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, 0xFF);
+                            *retval.get_mut(x, y) = Pixel::new(r, g, b, 0xFF);
                         }
                     }
                     (16, ColorType::RGB, Some(trns_chunk)) => {
@@ -1075,7 +1075,7 @@ impl ImageLoader for PngImageLoader {
                             let r = u16_to_u8(r);
                             let g = u16_to_u8(g);
                             let b = u16_to_u8(b);
-                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, a);
+                            *retval.get_mut(x, y) = Pixel::new(r, g, b, a);
                         }
                     }
                     (1, ColorType::RGBPalette, None) => {
@@ -1089,7 +1089,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index],
                                 palette[index + 1],
                                 palette[index + 2],
@@ -1108,7 +1108,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index * 3],
                                 palette[index * 3 + 1],
                                 palette[index * 3 + 2],
@@ -1128,7 +1128,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index],
                                 palette[index + 1],
                                 palette[index + 2],
@@ -1147,7 +1147,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index * 3],
                                 palette[index * 3 + 1],
                                 palette[index * 3 + 2],
@@ -1167,7 +1167,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index],
                                 palette[index + 1],
                                 palette[index + 2],
@@ -1186,7 +1186,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index * 3],
                                 palette[index * 3 + 1],
                                 palette[index * 3 + 2],
@@ -1205,7 +1205,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index],
                                 palette[index + 1],
                                 palette[index + 2],
@@ -1223,7 +1223,7 @@ impl ImageLoader for PngImageLoader {
                                     "pixel palette index out of range",
                                 ));
                             }
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 palette[index * 3],
                                 palette[index * 3 + 1],
                                 palette[index * 3 + 2],
@@ -1233,7 +1233,7 @@ impl ImageLoader for PngImageLoader {
                     }
                     (8, ColorType::GrayscaleAlpha, _) => {
                         for x in 0..width {
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 current_scanline[x as usize * 2],
                                 current_scanline[x as usize * 2],
                                 current_scanline[x as usize * 2],
@@ -1251,12 +1251,12 @@ impl ImageLoader for PngImageLoader {
                                 ((current_scanline[x as usize * 4 + 2] as u16) << 8)
                                     | current_scanline[x as usize * 4 + 3] as u16,
                             );
-                            *retval.get_mut(x, y) = math::Vec4::new(v, v, v, a);
+                            *retval.get_mut(x, y) = Pixel::new(v, v, v, a);
                         }
                     }
                     (8, ColorType::RGBA, _) => {
                         for x in 0..width {
-                            *retval.get_mut(x, y) = math::Vec4::new(
+                            *retval.get_mut(x, y) = Pixel::new(
                                 current_scanline[x as usize * 4],
                                 current_scanline[x as usize * 4 + 1],
                                 current_scanline[x as usize * 4 + 2],
@@ -1282,7 +1282,7 @@ impl ImageLoader for PngImageLoader {
                                 ((current_scanline[x as usize * 8 + 6] as u16) << 8)
                                     | current_scanline[x as usize * 8 + 7] as u16,
                             );
-                            *retval.get_mut(x, y) = math::Vec4::new(r, g, b, a);
+                            *retval.get_mut(x, y) = Pixel::new(r, g, b, a);
                         }
                     }
                     _ => unimplemented!(),

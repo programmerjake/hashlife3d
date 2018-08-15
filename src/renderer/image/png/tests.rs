@@ -80,8 +80,8 @@ macro_rules! test_png {
             if image_hash != expected_result {
                 if let Ok(image) = &image {
                     for &(background_color, file_name_part) in &[
-                        (math::Vec4::new(0, 0, 0, 0xFF), "_black"),
-                        (math::Vec4::splat(0xFF), "_white"),
+                        (Pixel::new(0, 0, 0, 0xFF), "_black"),
+                        (Pixel::splat(0xFF), "_white"),
                     ] {
                         let file_path = format!(
                             concat!(

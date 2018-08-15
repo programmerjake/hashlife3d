@@ -19,16 +19,18 @@ use std::fmt;
 use std::io;
 use std::io::prelude::*;
 
+pub type Pixel = math::Vec4<u8>;
+
 #[derive(Clone)]
 pub struct Image {
     width: u32,
     height: u32,
-    pixels: Vec<math::Vec4<u8>>,
+    pixels: Vec<Pixel>,
 }
 
 #[derive(Clone)]
 pub struct ImageSizeMismatchError {
-    pub pixels: Vec<math::Vec4<u8>>,
+    pub pixels: Vec<Pixel>,
 }
 
 impl error::Error for ImageSizeMismatchError {}
@@ -156,7 +158,7 @@ impl Image {
     pub unsafe fn get_pixel_offset_in_pixels_unchecked(&self, x: u32, y: u32) -> usize {
         x as usize + self.get_line_offset_in_pixels_unchecked(y)
     }
-    pub fn new(width: u32, height: u32, fill_color: math::Vec4<u8>) -> Self {
+    pub fn new(width: u32, height: u32, fill_color: Pixel) -> Self {
         let mut pixels = Vec::new();
         pixels.resize(
             (width as usize).checked_mul(height as usize).unwrap(),
@@ -172,7 +174,7 @@ impl Image {
     pub fn from_pixels(
         width: u32,
         height: u32,
-        pixels: Vec<math::Vec4<u8>>,
+        pixels: Vec<Pixel>,
     ) -> Result<Self, ImageSizeMismatchError> {
         if Some(pixels.len()) == (width as usize).checked_mul(height as usize) {
             Ok(Self {
@@ -185,44 +187,40 @@ impl Image {
         }
     }
     #[allow(dead_code)]
-    pub unsafe fn from_pixels_unchecked(
-        width: u32,
-        height: u32,
-        pixels: Vec<math::Vec4<u8>>,
-    ) -> Self {
+    pub unsafe fn from_pixels_unchecked(width: u32, height: u32, pixels: Vec<Pixel>) -> Self {
         Self {
             width: width,
             height: height,
             pixels: pixels,
         }
     }
-    pub fn get(&self, x: u32, y: u32) -> &math::Vec4<u8> {
+    pub fn get(&self, x: u32, y: u32) -> &Pixel {
         assert!(x < self.width);
         assert!(y < self.height);
         unsafe { self.get_unchecked(x, y) }
     }
-    pub unsafe fn get_unchecked(&self, x: u32, y: u32) -> &math::Vec4<u8> {
+    pub unsafe fn get_unchecked(&self, x: u32, y: u32) -> &Pixel {
         self.pixels
             .get_unchecked(self.get_pixel_offset_in_pixels_unchecked(x, y))
     }
-    pub fn get_mut(&mut self, x: u32, y: u32) -> &mut math::Vec4<u8> {
+    pub fn get_mut(&mut self, x: u32, y: u32) -> &mut Pixel {
         assert!(x < self.width);
         assert!(y < self.height);
         unsafe { self.get_unchecked_mut(x, y) }
     }
-    pub unsafe fn get_unchecked_mut(&mut self, x: u32, y: u32) -> &mut math::Vec4<u8> {
+    pub unsafe fn get_unchecked_mut(&mut self, x: u32, y: u32) -> &mut Pixel {
         let pixel_offset = self.get_pixel_offset_in_pixels_unchecked(x, y);
         self.pixels.get_unchecked_mut(pixel_offset)
     }
     #[allow(dead_code)]
-    pub fn into_pixels(self) -> Vec<math::Vec4<u8>> {
+    pub fn into_pixels(self) -> Vec<Pixel> {
         self.pixels
     }
-    pub fn get_pixels(&self) -> &Vec<math::Vec4<u8>> {
+    pub fn get_pixels(&self) -> &Vec<Pixel> {
         &self.pixels
     }
     #[allow(dead_code)]
-    pub unsafe fn get_mut_pixels(&mut self) -> &mut Vec<math::Vec4<u8>> {
+    pub unsafe fn get_mut_pixels(&mut self) -> &mut Vec<Pixel> {
         &mut self.pixels
     }
     pub fn copy_area_from(
@@ -265,7 +263,7 @@ impl Image {
         }
     }
     #[allow(dead_code)]
-    pub fn composite_on_color(&mut self, background_color: math::Vec4<u8>) {
+    pub fn composite_on_color(&mut self, background_color: Pixel) {
         fn mix(t: u8, a: u8, b: u8) -> u8 {
             let v = (0xFF - t as u32) * a as u32 + t as u32 * b as u32;
             ((v + 0xFF / 2) / 0xFF) as u8
