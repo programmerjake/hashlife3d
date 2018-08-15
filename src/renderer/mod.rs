@@ -20,13 +20,15 @@ use super::sdl;
 use std::error;
 use std::u64;
 
+pub type TextureIndex = u16;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VertexBufferElement {
     pub position: [f32; 3],
     pub color: [u8; 4],
     pub texture_coord: [f32; 2],
-    pub texture_index: u16,
+    pub texture_index: TextureIndex,
 }
 
 impl VertexBufferElement {
@@ -34,7 +36,7 @@ impl VertexBufferElement {
         position: math::Vec3,
         color: math::Vec4<u8>,
         texture_coord: math::Vec2,
-        texture_index: u16,
+        texture_index: TextureIndex,
     ) -> Self {
         Self {
             position: position.into(),
@@ -65,6 +67,19 @@ pub trait DeviceIndexBuffer: Sized + Send + Clone {
     fn len(&self) -> usize;
 }
 
+pub trait StagingImageSet: Sized + Send {
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn count(&self) -> u32;
+    fn write(&mut self, image_index: TextureIndex, image: &image::Image);
+}
+
+pub trait DeviceImageSet: Sized + Send + Clone {
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn count(&self) -> u32;
+}
+
 pub trait LoaderCommandBufferBuilder: Sized {
     type Error: error::Error + 'static;
     type CommandBuffer: CommandBuffer;
@@ -72,6 +87,8 @@ pub trait LoaderCommandBufferBuilder: Sized {
     type DeviceVertexBuffer: DeviceVertexBuffer;
     type StagingIndexBuffer: StagingIndexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingImageSet: StagingImageSet;
+    type DeviceImageSet: DeviceImageSet;
     fn copy_vertex_buffer_to_device(
         &mut self,
         staging_vertex_buffer: Self::StagingVertexBuffer,
@@ -80,6 +97,10 @@ pub trait LoaderCommandBufferBuilder: Sized {
         &mut self,
         staging_index_buffer: Self::StagingIndexBuffer,
     ) -> Result<Self::DeviceIndexBuffer, Self::Error>;
+    fn copy_image_set_to_device(
+        &mut self,
+        staging_image_set: Self::StagingImageSet,
+    ) -> Result<Self::DeviceImageSet, Self::Error>;
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
 }
 
@@ -88,6 +109,8 @@ pub trait RenderCommandBufferBuilder: Sized {
     type CommandBuffer: CommandBuffer + Clone;
     type DeviceVertexBuffer: DeviceVertexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
+    type DeviceImageSet: DeviceImageSet;
+    fn set_image_set(&mut self, image_set: Self::DeviceImageSet);
     fn set_buffers(
         &mut self,
         vertex_buffer: Self::DeviceVertexBuffer,
@@ -106,12 +129,15 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
     type DeviceVertexBuffer: DeviceVertexBuffer;
     type StagingIndexBuffer: StagingIndexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingImageSet: StagingImageSet;
+    type DeviceImageSet: DeviceImageSet;
     type RenderCommandBuffer: CommandBuffer + Clone;
     type RenderCommandBufferBuilder: RenderCommandBufferBuilder<
         CommandBuffer = Self::RenderCommandBuffer,
         Error = Self::Error,
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        DeviceImageSet = Self::DeviceImageSet,
     >;
     type LoaderCommandBuffer: CommandBuffer;
     type LoaderCommandBufferBuilder: LoaderCommandBufferBuilder<
@@ -121,6 +147,8 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        StagingImageSet = Self::StagingImageSet,
+        DeviceImageSet = Self::DeviceImageSet,
     >;
     fn create_render_command_buffer_builder(
         &self,
@@ -136,6 +164,15 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         &self,
         len: usize,
     ) -> Result<Self::StagingIndexBuffer, Self::Error>;
+    fn get_max_image_dimension_size(&self) -> u32;
+    fn get_max_image_count_in_image_set(&self, width: u32, height: u32)
+        -> Result<u32, Self::Error>;
+    fn create_staging_image_set(
+        &self,
+        width: u32,
+        height: u32,
+        count: u32,
+    ) -> Result<Self::StagingImageSet, Self::Error>;
 }
 
 pub trait PausedDevice: Sized {
@@ -160,6 +197,8 @@ pub trait Device: Sized {
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        StagingImageSet = Self::StagingImageSet,
+        DeviceImageSet = Self::DeviceImageSet,
     >;
     type PausedDevice: PausedDevice<Device = Self>;
     type RenderCommandBuffer: CommandBuffer + Clone;
@@ -168,6 +207,7 @@ pub trait Device: Sized {
         Error = Self::Error,
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        DeviceImageSet = Self::DeviceImageSet,
     >;
     type LoaderCommandBuffer: CommandBuffer;
     type LoaderCommandBufferBuilder: LoaderCommandBufferBuilder<
@@ -177,11 +217,15 @@ pub trait Device: Sized {
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        StagingImageSet = Self::StagingImageSet,
+        DeviceImageSet = Self::DeviceImageSet,
     >;
     type StagingVertexBuffer: StagingVertexBuffer;
     type DeviceVertexBuffer: DeviceVertexBuffer;
     type StagingIndexBuffer: StagingIndexBuffer;
     type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingImageSet: StagingImageSet;
+    type DeviceImageSet: DeviceImageSet;
     fn pause(self) -> Self::PausedDevice;
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
@@ -217,6 +261,26 @@ pub trait Device: Sized {
         len: usize,
     ) -> Result<Self::StagingIndexBuffer, Self::Error> {
         self.get_device_ref().create_staging_index_buffer(len)
+    }
+    fn get_max_image_dimension_size(&self) -> u32 {
+        self.get_device_ref().get_max_image_dimension_size()
+    }
+    fn get_max_image_count_in_image_set(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, Self::Error> {
+        self.get_device_ref()
+            .get_max_image_count_in_image_set(width, height)
+    }
+    fn create_staging_image_set(
+        &self,
+        width: u32,
+        height: u32,
+        count: u32,
+    ) -> Result<Self::StagingImageSet, Self::Error> {
+        self.get_device_ref()
+            .create_staging_image_set(width, height, count)
     }
 }
 

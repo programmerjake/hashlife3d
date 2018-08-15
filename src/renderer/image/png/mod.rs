@@ -188,12 +188,6 @@ fn read_u32_unchecked_range<R: Read>(reader: &mut R) -> Result<u32> {
     read_u32_or_none_unchecked_range(reader)?.ok_or_else(|| ErrorKind::UnexpectedEof.into())
 }
 
-fn read_i32_unchecked_range<R: Read>(reader: &mut R) -> Result<i32> {
-    Ok(i32::from_be(unsafe {
-        mem::transmute(read_all(reader, [0; 4])?)
-    }))
-}
-
 fn read_chunk_name<R: Read>(reader: &mut R) -> Result<ChunkName> {
     Ok(ChunkName(read_all(reader, [0; 4])?))
 }
@@ -211,14 +205,6 @@ fn read_u32_or_none<R: Read>(reader: &mut R) -> Result<Option<u32>> {
 
 fn read_u32<R: Read>(reader: &mut R) -> Result<u32> {
     read_u32_or_none(reader)?.ok_or_else(|| ErrorKind::UnexpectedEof.into())
-}
-
-fn read_i32<R: Read>(reader: &mut R) -> Result<i32> {
-    let retval = read_i32_unchecked_range(reader)?;
-    if retval == (-1 << 31) {
-        return Err(Error::new(ErrorKind::InvalidData, "value out of range"));
-    }
-    Ok(retval)
 }
 
 #[repr(u8)]

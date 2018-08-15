@@ -26,6 +26,7 @@ use self::math::Dot;
 use self::math::Mappable;
 #[cfg(not(test))]
 pub use self::sdl::SDL_main;
+use renderer::image::Image;
 use renderer::math;
 use renderer::*;
 use sdl::event::Event;
@@ -34,16 +35,12 @@ use std::time;
 use world3d::{State, World};
 
 #[no_mangle]
-#[cfg(
-    not(
-        any(
-            target_os = "windows",
-            target_os = "ios",
-            target_os = "android",
-            test
-        )
-    )
-)]
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "ios",
+    target_os = "android",
+    test
+)))]
 pub extern "C" fn main(argc: libc::c_int, argv: *mut *mut libc::c_char) -> libc::c_int {
     SDL_main(argc, argv)
 }
@@ -67,6 +64,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     paused_device: PD,
     event_source: &sdl::event::EventSource,
 ) {
+    let mut rotating = true;
     struct Running<D: renderer::Device> {
         device: D,
         render_command_buffer: D::RenderCommandBuffer,
@@ -75,9 +73,22 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     }
     impl<D: renderer::Device> Running<D> {
         fn new(mut device: D) -> Result<Self, D::Error> {
+            let mut textures: Vec<Image> = Vec::new();
             let mut indices: Vec<IndexBufferElement> = Vec::new();
             let mut vertices: Vec<VertexBufferElement> = Vec::new();
             {
+                macro_rules! load_texture {
+                    ($texture:expr) => {{
+                        textures.push(
+                            renderer::image::load_image_bytes(include_bytes!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/textures/",
+                                $texture
+                            ))).unwrap(),
+                        );
+                        textures.len() as TextureIndex
+                    }};
+                };
                 let mut append_vertex = |vertex: VertexBufferElement| {
                     let index = vertices.len();
                     vertices.push(vertex);
@@ -88,30 +99,31 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                      v1: math::Vec3<f32>,
                      v2: math::Vec3<f32>,
                      v3: math::Vec3<f32>,
-                     color: math::Vec4<u8>| {
+                     color: math::Vec4<u8>,
+                     texture: TextureIndex| {
                         let v0 = append_vertex(VertexBufferElement::new(
                             v0,
                             color,
-                            Default::default(),
-                            0,
+                            math::Vec2::new(1.0, 1.0),
+                            texture,
                         ));
                         let v1 = append_vertex(VertexBufferElement::new(
                             v1,
                             color,
-                            Default::default(),
-                            0,
+                            math::Vec2::new(1.0, 0.0),
+                            texture,
                         ));
                         let v2 = append_vertex(VertexBufferElement::new(
                             v2,
                             color,
-                            Default::default(),
-                            0,
+                            math::Vec2::new(0.0, 0.0),
+                            texture,
                         ));
                         let v3 = append_vertex(VertexBufferElement::new(
                             v3,
                             color,
-                            Default::default(),
-                            0,
+                            math::Vec2::new(0.0, 1.0),
+                            texture,
                         ));
                         indices.push(v0);
                         indices.push(v1);
@@ -143,12 +155,14 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     let retval = retval.map(|v| (v * 255.0).max(0.0).min(255.0) as u8);
                     math::Vec4::new(retval.x, retval.y, retval.z, 255)
                 };
+                let test_texture = load_texture!("test.png");
                 render_quad(
                     math::Vec3::new(1.0, -1.0, -1.0),
                     math::Vec3::new(1.0, -1.0, 1.0),
                     math::Vec3::new(-1.0, -1.0, 1.0),
                     math::Vec3::new(-1.0, -1.0, -1.0),
                     get_color(math::Vec3::new(0.0, -1.0, 0.0)),
+                    test_texture,
                 );
                 render_quad(
                     math::Vec3::new(1.0, 1.0, -1.0),
@@ -156,6 +170,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     math::Vec3::new(-1.0, 1.0, 1.0),
                     math::Vec3::new(1.0, 1.0, 1.0),
                     get_color(math::Vec3::new(0.0, 1.0, 0.0)),
+                    test_texture,
                 );
                 render_quad(
                     math::Vec3::new(1.0, -1.0, -1.0),
@@ -163,6 +178,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     math::Vec3::new(1.0, 1.0, 1.0),
                     math::Vec3::new(1.0, -1.0, 1.0),
                     get_color(math::Vec3::new(1.0, 0.0, 0.0)),
+                    test_texture,
                 );
                 render_quad(
                     math::Vec3::new(1.0, -1.0, 1.0),
@@ -170,6 +186,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     math::Vec3::new(-1.0, 1.0, 1.0),
                     math::Vec3::new(-1.0, -1.0, 1.0),
                     get_color(math::Vec3::new(0.0, 0.0, 1.0)),
+                    test_texture,
                 );
                 render_quad(
                     math::Vec3::new(-1.0, -1.0, 1.0),
@@ -177,6 +194,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     math::Vec3::new(-1.0, 1.0, -1.0),
                     math::Vec3::new(-1.0, -1.0, -1.0),
                     get_color(math::Vec3::new(-1.0, 0.0, 0.0)),
+                    test_texture,
                 );
                 render_quad(
                     math::Vec3::new(1.0, 1.0, -1.0),
@@ -184,6 +202,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     math::Vec3::new(-1.0, -1.0, -1.0),
                     math::Vec3::new(-1.0, 1.0, -1.0),
                     get_color(math::Vec3::new(0.0, 0.0, -1.0)),
+                    test_texture,
                 );
             }
             let mut loader_command_buffer_builder =
@@ -202,6 +221,16 @@ fn render_main_loop<PD: renderer::PausedDevice>(
             }
             let vertex_buffer =
                 loader_command_buffer_builder.copy_vertex_buffer_to_device(vertex_buffer)?;
+            let mut image_set = device.create_staging_image_set(
+                textures[0].width(),
+                textures[0].height(),
+                textures.len() as u32,
+            )?;
+            for (index, image) in textures.iter().enumerate() {
+                image_set.write((index + 1) as TextureIndex, image);
+            }
+            let image_set = loader_command_buffer_builder.copy_image_set_to_device(image_set)?;
+            render_command_buffer_builder.set_image_set(image_set);
             render_command_buffer_builder.set_buffers(vertex_buffer, index_buffer);
             render_command_buffer_builder.draw(indices.len() as u32, 0, 0);
             let loader_command_buffer = loader_command_buffer_builder.finish()?;
@@ -242,6 +271,13 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                             println!("event: {:?}", event);
                             return;
                         }
+                        event @ Event::KeyDown {
+                            scancode: sdl::event::Scancode::Space,
+                            ..
+                        } => {
+                            println!("event: {:?}", event);
+                            rotating = !rotating;
+                        }
                         event => println!("unhandled event: {:?}", event),
                     }
                 } else {
@@ -273,15 +309,15 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                             -1.0, 1.0, -1.0, 1.0, near, far,
                         );
                     }
-                    if true {
+                    if rotating {
                         transform_matrix =
                             transform_matrix.translate(math::Vec3::new(0.0, 0.0, -5.0));
                         transform_matrix = transform_matrix.rotate(
-                            (time * 90.0).to_radians(),
+                            (time * 30.0).to_radians(),
                             math::Vec3::new(1.0, 0.5, 1.0f32).normalize().unwrap(),
                         );
                         transform_matrix = transform_matrix.rotate(
-                            (time * 180.0).to_radians(),
+                            (time * 60.0).to_radians(),
                             math::Vec3::new(1.0, -0.5, 1.0f32).normalize().unwrap(),
                         );
                     } else {
@@ -368,18 +404,6 @@ fn rust_main(event_source: &sdl::event::EventSource) {
             }
         }
     });
-    if true {
-        use std::io::Read;
-        let ppm: Vec<u8> = renderer::image::load_image_bytes(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/pngsuite/oi9n2c16.png"
-        ))).unwrap()
-        .as_ppm(renderer::image::PPMMode::Text)
-        .bytes()
-        .map(Result::unwrap)
-        .collect();
-        ::std::fs::write("out.ppm", ppm).unwrap();
-    }
     struct MainLoop {}
     impl renderer::MainLoop for MainLoop {
         fn startup<DF: renderer::DeviceFactory>(
@@ -425,7 +449,7 @@ fn rust_main(event_source: &sdl::event::EventSource) {
         }
     }
     let mut selected_backend = None;
-    if false {
+    if true {
         // FIXME: change back to dynamically selecting the backend
         selected_backend = Some(String::from("gles2"));
     }

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use super::super::sdl;
+use super::image::Image;
 use super::*;
 use std::error;
 use std::ffi::{CStr, CString};
@@ -387,6 +388,9 @@ impl Api {
 pub enum GLES2Error {
     SDLError(sdl::SDLError),
     NoShaderCompilerSupport,
+    ImageIsTooBig,
+    ImageMustHavePowerOfTwoDimensions,
+    ImageSetHasTooManyImages,
 }
 
 impl From<sdl::SDLError> for GLES2Error {
@@ -402,6 +406,11 @@ impl fmt::Display for GLES2Error {
             GLES2Error::NoShaderCompilerSupport => {
                 f.write_str("the OpenGL ES implementation doesn't support compiling shaders")
             }
+            GLES2Error::ImageIsTooBig => f.write_str("image is too big"),
+            GLES2Error::ImageMustHavePowerOfTwoDimensions => {
+                f.write_str("image must have power-of-two dimensions")
+            }
+            GLES2Error::ImageSetHasTooManyImages => f.write_str("image set has too many images"),
         }
     }
 }
@@ -440,6 +449,19 @@ impl Drop for DeviceBuffer {
     fn drop(&mut self) {
         self.buffer_deallocate_channel_sender
             .send(self.buffer)
+            .unwrap_or_default();
+    }
+}
+
+struct DeviceImage {
+    image: api::GLuint,
+    image_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
+}
+
+impl Drop for DeviceImage {
+    fn drop(&mut self) {
+        self.image_deallocate_channel_sender
+            .send(self.image)
             .unwrap_or_default();
     }
 }
@@ -493,8 +515,223 @@ impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {
     }
 }
 
+#[derive(Copy, Clone)]
+struct ImageSetLayoutBase {
+    sub_image_width: u32,
+    sub_image_height: u32,
+    max_image_size: u32,
+}
+
+impl ImageSetLayoutBase {
+    fn new(sub_image_width: u32, sub_image_height: u32, max_image_size: u32) -> Result<Self> {
+        if !sub_image_width.is_power_of_two() || !sub_image_height.is_power_of_two() {
+            return Err(GLES2Error::ImageMustHavePowerOfTwoDimensions);
+        }
+        assert!(max_image_size.is_power_of_two());
+        if sub_image_width > max_image_size || sub_image_height > max_image_size {
+            Err(GLES2Error::ImageIsTooBig)
+        } else {
+            Ok(Self {
+                sub_image_width: sub_image_width,
+                sub_image_height: sub_image_height,
+                max_image_size: max_image_size,
+            })
+        }
+    }
+    fn get_max_sub_image_count(&self) -> u32 {
+        // glsl only guarantees that integers up to 2^10 are representable as mediump int
+        const MAX_COUNT: u32 = 1 << 10;
+        let max_sub_image_count_x = self.max_image_size / self.sub_image_width;
+        let max_sub_image_count_y = self.max_image_size / self.sub_image_height;
+        let retval = max_sub_image_count_x
+            .checked_mul(max_sub_image_count_y)
+            .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
+            .unwrap_or(MAX_COUNT);
+        if retval > MAX_COUNT {
+            MAX_COUNT
+        } else {
+            retval
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct ImageSetLayout {
+    base: ImageSetLayoutBase,
+    sub_image_count_x: u32,
+    sub_image_count_y: u32,
+    sub_image_count: u32,
+    image_count: u32,
+}
+
+struct FragmentShaderImageSetParameters {
+    sampler_index_scale: f32,
+    texture_coord_scale: [f32; 2],
+    texture_index_scale: [f32; 2],
+}
+
+impl ImageSetLayout {
+    fn new(base: ImageSetLayoutBase, sub_image_count: u32) -> Result<Self> {
+        if sub_image_count > base.get_max_sub_image_count() {
+            return Err(GLES2Error::ImageSetHasTooManyImages);
+        }
+        let mut sub_image_count_x = base.max_image_size / base.sub_image_width;
+        let mut sub_image_count_y = base.max_image_size / base.sub_image_height;
+        loop {
+            if sub_image_count_x > 1
+                && (sub_image_count_y <= 1
+                    || sub_image_count_x * base.sub_image_width
+                        >= sub_image_count_y * base.sub_image_height)
+            {
+                let new_sub_image_count_x = sub_image_count_x / 2;
+                if new_sub_image_count_x
+                    .checked_mul(sub_image_count_y)
+                    .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
+                    .map(|v| v >= sub_image_count)
+                    .unwrap_or(true)
+                {
+                    sub_image_count_x = new_sub_image_count_x;
+                } else {
+                    break;
+                }
+            } else if sub_image_count_y > 1 {
+                let new_sub_image_count_y = sub_image_count_y / 2;
+                if sub_image_count_x
+                    .checked_mul(new_sub_image_count_y)
+                    .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
+                    .map(|v| v >= sub_image_count)
+                    .unwrap_or(true)
+                {
+                    sub_image_count_y = new_sub_image_count_y;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(Self {
+            base: base,
+            sub_image_count_x: sub_image_count_x,
+            sub_image_count_y: sub_image_count_y,
+            sub_image_count: sub_image_count,
+            image_count: (sub_image_count + sub_image_count_x * sub_image_count_y - 1)
+                / (sub_image_count_x * sub_image_count_y),
+        })
+    }
+    fn get_fragment_shader_parameters(&self) -> FragmentShaderImageSetParameters {
+        FragmentShaderImageSetParameters {
+            sampler_index_scale: 1.0 / (self.sub_image_count_x * self.sub_image_count_y) as f32,
+            texture_coord_scale: [
+                1.0 / self.sub_image_count_x as f32,
+                1.0 / self.sub_image_count_y as f32,
+            ],
+            texture_index_scale: [self.sub_image_count_x as f32, self.sub_image_count_y as f32],
+        }
+    }
+}
+
+pub struct GLES2StagingImageSet {
+    images: [Option<Image>; ShaderUniformLocations::SAMPLERS_LEN as usize],
+    layout: ImageSetLayout,
+}
+
+impl GLES2StagingImageSet {
+    fn make_images(
+        value: Option<Image>,
+    ) -> [Option<Image>; ShaderUniformLocations::SAMPLERS_LEN as usize] {
+        [
+            value.clone(),
+            value.clone(),
+            value.clone(),
+            value.clone(),
+            value.clone(),
+            value.clone(),
+            value.clone(),
+            value,
+        ]
+    }
+    fn new(layout: ImageSetLayout) -> Self {
+        let mut images = Self::make_images(None);
+        if layout.image_count != 0 {
+            let image = Image::new(
+                layout.base.sub_image_width * layout.sub_image_count_x,
+                layout.base.sub_image_height * layout.sub_image_count_y,
+                math::Vec4::new(0xFF, 0, 0xFF, 0xFF),
+            );
+            for i in 0..(layout.image_count as usize - 1) {
+                images[i] = Some(image.clone());
+            }
+            images[layout.image_count as usize - 1] = Some(image);
+        }
+        Self {
+            images: images,
+            layout: layout,
+        }
+    }
+}
+
+impl StagingImageSet for GLES2StagingImageSet {
+    fn width(&self) -> u32 {
+        self.layout.base.sub_image_width
+    }
+    fn height(&self) -> u32 {
+        self.layout.base.sub_image_height
+    }
+    fn count(&self) -> u32 {
+        self.layout.sub_image_count
+    }
+    fn write(&mut self, image_index: TextureIndex, image: &image::Image) {
+        assert!(image_index != 0);
+        let mut image_index = image_index as u32 - 1;
+        assert!(image_index < self.layout.sub_image_count);
+        assert!(image.width() == self.layout.base.sub_image_width);
+        assert!(image.height() == self.layout.base.sub_image_height);
+        let x_sub_image_index = image_index % self.layout.sub_image_count_x;
+        image_index /= self.layout.sub_image_count_x;
+        let y_sub_image_index =
+            self.layout.sub_image_count_y - image_index % self.layout.sub_image_count_y - 1;
+        image_index /= self.layout.sub_image_count_y;
+        self.images[image_index as usize]
+            .as_mut()
+            .unwrap()
+            .copy_area_from(
+                x_sub_image_index * self.layout.base.sub_image_width,
+                y_sub_image_index * self.layout.base.sub_image_height,
+                image,
+                0,
+                0,
+                self.layout.base.sub_image_width,
+                self.layout.base.sub_image_height,
+            );
+    }
+}
+
+struct GLES2DeviceImageSetState {
+    images: Mutex<[Option<Option<DeviceImage>>; ShaderUniformLocations::SAMPLERS_LEN as usize]>,
+    load_submitted_flag: Arc<atomic::AtomicBool>,
+    layout: ImageSetLayout,
+}
+
 #[derive(Clone)]
-pub struct GLES2DeviceReference {}
+pub struct GLES2DeviceImageSet(Arc<GLES2DeviceImageSetState>);
+
+impl DeviceImageSet for GLES2DeviceImageSet {
+    fn width(&self) -> u32 {
+        self.0.layout.base.sub_image_width
+    }
+    fn height(&self) -> u32 {
+        self.0.layout.base.sub_image_height
+    }
+    fn count(&self) -> u32 {
+        self.0.layout.sub_image_count
+    }
+}
+
+#[derive(Clone)]
+pub struct GLES2DeviceReference {
+    max_image_size: u32,
+}
 
 enum LoaderCommand {
     CopyVertexBufferToDevice {
@@ -504,6 +741,10 @@ enum LoaderCommand {
     CopyIndexBufferToDevice {
         staging_index_buffer: GLES2StagingIndexBuffer,
         device_index_buffer: GLES2DeviceIndexBuffer,
+    },
+    CopyImageSetToDevice {
+        staging_image_set: GLES2StagingImageSet,
+        device_image_set: GLES2DeviceImageSet,
     },
 }
 
@@ -536,6 +777,8 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingImageSet = GLES2StagingImageSet;
+    type DeviceImageSet = GLES2DeviceImageSet;
     fn finish(self) -> Result<GLES2LoaderCommandBuffer> {
         Ok(self.command_buffer)
     }
@@ -573,12 +816,38 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
             });
         Ok(device_buffer)
     }
+    fn copy_image_set_to_device(
+        &mut self,
+        staging_image_set: GLES2StagingImageSet,
+    ) -> Result<GLES2DeviceImageSet> {
+        let mut images = [None, None, None, None, None, None, None, None];
+        for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
+            images[i] = if staging_image_set.images[i].is_some() {
+                Some(None)
+            } else {
+                None
+            };
+        }
+        let device_image_set = GLES2DeviceImageSet(Arc::new(GLES2DeviceImageSetState {
+            images: Mutex::new(images),
+            layout: staging_image_set.layout,
+            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
+        }));
+        self.command_buffer
+            .commands
+            .push(LoaderCommand::CopyImageSetToDevice {
+                staging_image_set: staging_image_set,
+                device_image_set: device_image_set.clone(),
+            });
+        Ok(device_image_set)
+    }
 }
 
 enum RenderCommand {
     Draw {
         vertex_buffer: GLES2DeviceVertexBuffer,
         index_buffer: GLES2DeviceIndexBuffer,
+        image_set: GLES2DeviceImageSet,
         initial_transform: math::Mat4<f32>,
         index_count: u32,
         first_index: u32,
@@ -598,6 +867,7 @@ impl CommandBuffer for GLES2RenderCommandBuffer {}
 pub struct GLES2RenderCommandBufferBuilder {
     state: RenderCommandBufferState,
     buffers: Option<(GLES2DeviceVertexBuffer, GLES2DeviceIndexBuffer)>,
+    image_set: Option<GLES2DeviceImageSet>,
     initial_transform: math::Mat4<f32>,
 }
 
@@ -608,6 +878,7 @@ impl GLES2RenderCommandBufferBuilder {
                 commands: Vec::new(),
             },
             buffers: None,
+            image_set: None,
             initial_transform: math::Mat4::identity(),
         }
     }
@@ -618,6 +889,10 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
     type CommandBuffer = GLES2RenderCommandBuffer;
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type DeviceImageSet = GLES2DeviceImageSet;
+    fn set_image_set(&mut self, image_set: Self::DeviceImageSet) {
+        self.image_set = Some(image_set);
+    }
     fn set_buffers(
         &mut self,
         vertex_buffer: GLES2DeviceVertexBuffer,
@@ -633,6 +908,10 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
             .buffers
             .clone()
             .expect("can't draw without vertex and index buffers bound");
+        let image_set = self
+            .image_set
+            .clone()
+            .expect("can't draw without image set bound");
         assert!(index_count as usize <= index_buffer.len());
         assert!(index_count as usize + first_index as usize <= index_buffer.len());
         assert!((vertex_offset as usize) < vertex_buffer.len());
@@ -643,6 +922,7 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
         self.state.commands.push(RenderCommand::Draw {
             vertex_buffer: vertex_buffer,
             index_buffer: index_buffer,
+            image_set: image_set,
             initial_transform: self.initial_transform,
             index_count: index_count,
             first_index: first_index,
@@ -664,6 +944,8 @@ impl DeviceReference for GLES2DeviceReference {
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingImageSet = GLES2StagingImageSet;
+    type DeviceImageSet = GLES2DeviceImageSet;
     fn create_loader_command_buffer_builder(&self) -> Result<GLES2LoaderCommandBufferBuilder> {
         Ok(GLES2LoaderCommandBufferBuilder::new())
     }
@@ -675,6 +957,23 @@ impl DeviceReference for GLES2DeviceReference {
     }
     fn create_staging_index_buffer(&self, len: usize) -> Result<GLES2StagingIndexBuffer> {
         Ok(GLES2StagingIndexBuffer::new(len))
+    }
+    fn get_max_image_dimension_size(&self) -> u32 {
+        self.max_image_size
+    }
+    fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
+        Ok(ImageSetLayoutBase::new(width, height, self.max_image_size)?.get_max_sub_image_count())
+    }
+    fn create_staging_image_set(
+        &self,
+        width: u32,
+        height: u32,
+        count: u32,
+    ) -> Result<GLES2StagingImageSet> {
+        Ok(GLES2StagingImageSet::new(ImageSetLayout::new(
+            ImageSetLayoutBase::new(width, height, self.max_image_size)?,
+            count,
+        )?))
     }
 }
 
@@ -736,9 +1035,18 @@ struct ShaderAttributeLocations {
     input_texture_index: api::GLint,
 }
 
+#[derive(Clone, Copy)]
 struct ShaderUniformLocations {
     initial_transform: api::GLint,
     final_transform: api::GLint,
+    samplers: api::GLint,
+    sampler_index_scale: api::GLint,
+    texture_coord_scale: api::GLint,
+    texture_index_scale: api::GLint,
+}
+
+impl ShaderUniformLocations {
+    const SAMPLERS_LEN: u32 = 8;
 }
 
 pub struct GLES2Device {
@@ -747,6 +1055,8 @@ pub struct GLES2Device {
     gl_context: GLContextWrapper,
     buffer_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
     buffer_deallocate_channel_receiver: mpsc::Receiver<api::GLuint>,
+    image_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
+    image_deallocate_channel_receiver: mpsc::Receiver<api::GLuint>,
     shader_attribute_locations: ShaderAttributeLocations,
     shader_uniform_locations: ShaderUniformLocations,
     last_surface_dimensions: Option<(u32, u32)>,
@@ -766,6 +1076,24 @@ impl GLES2Device {
                 DeviceBuffer {
                     buffer: buffer,
                     buffer_deallocate_channel_sender: self.buffer_deallocate_channel_sender.clone(),
+                }
+            },
+            _ => panic!(),
+        }
+    }
+    fn allocate_image(&mut self) -> DeviceImage {
+        match self.image_deallocate_channel_receiver.try_recv() {
+            Ok(image) => DeviceImage {
+                image: image,
+                image_deallocate_channel_sender: self.image_deallocate_channel_sender.clone(),
+            },
+            Err(mpsc::TryRecvError::Empty) => unsafe {
+                let api = &self.gl_context.api;
+                let mut image = 0;
+                api.glGenTextures.unwrap()(1, &mut image);
+                DeviceImage {
+                    image: image,
+                    image_deallocate_channel_sender: self.image_deallocate_channel_sender.clone(),
                 }
             },
             _ => panic!(),
@@ -794,6 +1122,8 @@ impl Device for GLES2Device {
     type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
     type StagingIndexBuffer = GLES2StagingIndexBuffer;
     type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingImageSet = GLES2StagingImageSet;
+    type DeviceImageSet = GLES2DeviceImageSet;
     fn pause(self) -> GLES2PausedDevice {
         GLES2PausedDevice {
             surface_state: self.surface_state,
@@ -827,6 +1157,7 @@ impl Device for GLES2Device {
             }
             let shader_attribute_locations;
             let shader_uniform_locations;
+            let mut max_image_size;
             {
                 let api = &gl_context.api;
                 api.glEnable.unwrap()(api::GL_BLEND);
@@ -983,17 +1314,33 @@ impl Device for GLES2Device {
                 );
                 shader_uniform_locations = shader_uniform_locations!(
                     shader_program,
-                    (initial_transform, final_transform,)
+                    (
+                        initial_transform,
+                        final_transform,
+                        samplers,
+                        sampler_index_scale,
+                        texture_coord_scale,
+                        texture_index_scale,
+                    )
                 );
+                max_image_size = 0;
+                api.glGetIntegerv.unwrap()(api::GL_MAX_TEXTURE_SIZE, &mut max_image_size);
+                assert!(max_image_size > 0 && (max_image_size as u32).is_power_of_two());
             }
             let (buffer_deallocate_channel_sender, buffer_deallocate_channel_receiver) =
                 mpsc::channel();
+            let (image_deallocate_channel_sender, image_deallocate_channel_receiver) =
+                mpsc::channel();
             Ok(GLES2Device {
-                device_reference: GLES2DeviceReference {},
+                device_reference: GLES2DeviceReference {
+                    max_image_size: max_image_size as u32,
+                },
                 surface_state: SurfaceState { window: window },
                 gl_context: gl_context,
                 buffer_deallocate_channel_sender: buffer_deallocate_channel_sender,
                 buffer_deallocate_channel_receiver: buffer_deallocate_channel_receiver,
+                image_deallocate_channel_sender: image_deallocate_channel_sender,
+                image_deallocate_channel_receiver: image_deallocate_channel_receiver,
                 shader_attribute_locations: shader_attribute_locations,
                 shader_uniform_locations: shader_uniform_locations,
                 last_surface_dimensions: None,
@@ -1065,6 +1412,71 @@ impl Device for GLES2Device {
                         }
                         *buffer.lock().unwrap() = Some(new_buffer);
                     }
+                    LoaderCommand::CopyImageSetToDevice {
+                        staging_image_set:
+                            GLES2StagingImageSet {
+                                images: staging_images,
+                                layout: _,
+                            },
+                        device_image_set: GLES2DeviceImageSet(device_image_set_state),
+                    } => {
+                        let GLES2DeviceImageSetState {
+                            images: device_images,
+                            layout: _,
+                            load_submitted_flag: _,
+                        } = &*device_image_set_state;
+                        let mut device_images = device_images.lock().unwrap();
+                        unsafe {
+                            for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
+                                match (&staging_images[i], &mut device_images[i]) {
+                                    (Some(staging_image), Some(device_image)) => {
+                                        let new_image = self.allocate_image();
+                                        let api = &self.gl_context.api;
+                                        api.glBindTexture.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            new_image.image,
+                                        );
+                                        api.glTexParameteri.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            api::GL_TEXTURE_MIN_FILTER,
+                                            api::GL_NEAREST as api::GLint,
+                                        );
+                                        api.glTexParameteri.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            api::GL_TEXTURE_MAG_FILTER,
+                                            api::GL_NEAREST as api::GLint,
+                                        );
+                                        api.glTexParameteri.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            api::GL_TEXTURE_WRAP_S,
+                                            api::GL_REPEAT as api::GLint,
+                                        );
+                                        api.glTexParameteri.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            api::GL_TEXTURE_WRAP_T,
+                                            api::GL_REPEAT as api::GLint,
+                                        );
+                                        api.glTexImage2D.unwrap()(
+                                            api::GL_TEXTURE_2D,
+                                            0,
+                                            api::GL_RGBA as api::GLint,
+                                            staging_image.width() as api::GLsizei,
+                                            staging_image.height() as api::GLsizei,
+                                            0,
+                                            api::GL_RGBA,
+                                            api::GL_UNSIGNED_BYTE,
+                                            (staging_image.get_pixels() as &[math::Vec4<u8>])
+                                                .as_ptr()
+                                                as *const c_void,
+                                        );
+                                        *device_image = Some(new_image);
+                                    }
+                                    (None, None) => {}
+                                    _ => unreachable!(),
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1132,11 +1544,17 @@ impl Device for GLES2Device {
                                         len: _,
                                         load_submitted_flag: index_buffer_load_submitted_flag,
                                     },
+                                image_set: GLES2DeviceImageSet(image_set_state),
                                 initial_transform,
                                 index_count,
                                 first_index,
                                 vertex_offset,
                             } => {
+                                let GLES2DeviceImageSetState {
+                                    images: image_set_images,
+                                    layout: image_set_layout,
+                                    load_submitted_flag: image_set_load_submitted_flag,
+                                } = &**image_set_state;
                                 assert!(
                                     vertex_buffer_load_submitted_flag
                                         .load(atomic::Ordering::Acquire)
@@ -1145,9 +1563,50 @@ impl Device for GLES2Device {
                                     index_buffer_load_submitted_flag
                                         .load(atomic::Ordering::Acquire)
                                 );
+                                assert!(
+                                    image_set_load_submitted_flag.load(atomic::Ordering::Acquire)
+                                );
                                 set_uniform_matrix(
                                     self.shader_uniform_locations.initial_transform,
                                     *initial_transform,
+                                );
+                                let mut textures = [0 as api::GLint;
+                                    ShaderUniformLocations::SAMPLERS_LEN as usize];
+                                let image_set_images = image_set_images.lock().unwrap();
+                                for i in 0..ShaderUniformLocations::SAMPLERS_LEN {
+                                    api.glActiveTexture.unwrap()(api::GL_TEXTURE0 + i);
+                                    api.glBindTexture.unwrap()(
+                                        api::GL_TEXTURE_2D,
+                                        image_set_images[i as usize]
+                                            .as_ref()
+                                            .map(|image| image.as_ref().unwrap().image)
+                                            .unwrap_or(0),
+                                    );
+                                    textures[i as usize] = i as api::GLint;
+                                }
+                                api.glUniform1iv.unwrap()(
+                                    self.shader_uniform_locations.samplers,
+                                    ShaderUniformLocations::SAMPLERS_LEN as api::GLsizei,
+                                    &textures as *const _,
+                                );
+                                let FragmentShaderImageSetParameters {
+                                    sampler_index_scale,
+                                    texture_coord_scale,
+                                    texture_index_scale,
+                                } = image_set_layout.get_fragment_shader_parameters();
+                                api.glUniform1f.unwrap()(
+                                    self.shader_uniform_locations.sampler_index_scale,
+                                    sampler_index_scale,
+                                );
+                                api.glUniform2f.unwrap()(
+                                    self.shader_uniform_locations.texture_coord_scale,
+                                    texture_coord_scale[0],
+                                    texture_coord_scale[1],
+                                );
+                                api.glUniform2f.unwrap()(
+                                    self.shader_uniform_locations.texture_index_scale,
+                                    texture_index_scale[0],
+                                    texture_index_scale[1],
                                 );
                                 api.glBindBuffer.unwrap()(
                                     api::GL_ELEMENT_ARRAY_BUFFER,

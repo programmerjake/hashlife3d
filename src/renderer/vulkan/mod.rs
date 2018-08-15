@@ -320,6 +320,8 @@ impl DeviceReference for VulkanDeviceReference {
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type StagingIndexBuffer = VulkanStagingIndexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type StagingImageSet = VulkanStagingImageSet;
+    type DeviceImageSet = VulkanDeviceImageSet;
     fn create_loader_command_buffer_builder(&self) -> Result<VulkanLoaderCommandBufferBuilder> {
         unsafe { VulkanLoaderCommandBufferBuilder::new(&self.device, self.render_queue_index) }
     }
@@ -341,6 +343,20 @@ impl DeviceReference for VulkanDeviceReference {
     }
     fn create_staging_index_buffer(&self, len: usize) -> Result<VulkanStagingIndexBuffer> {
         unsafe { create_staging_index_buffer(self.device.clone(), &*self.device_memory_pools, len) }
+    }
+    fn get_max_image_dimension_size(&self) -> u32 {
+        unimplemented!()
+    }
+    fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
+        unimplemented!()
+    }
+    fn create_staging_image_set(
+        &self,
+        width: u32,
+        height: u32,
+        count: u32,
+    ) -> Result<VulkanStagingImageSet> {
+        unimplemented!()
     }
 }
 
@@ -1122,6 +1138,8 @@ impl Device for VulkanDevice {
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type StagingIndexBuffer = VulkanStagingIndexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type StagingImageSet = VulkanStagingImageSet;
+    type DeviceImageSet = VulkanDeviceImageSet;
     fn pause(mut self) -> VulkanPausedDevice {
         VulkanPausedDevice {
             surface_state: self.surface_state.take().unwrap(),

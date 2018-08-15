@@ -21,10 +21,10 @@ use super::{
     into_vulkan_staging_vertex_buffer_implementation, null_or_zero, set_push_constants,
     set_push_constants_initial_transform, BufferWrapper, DeviceMemoryPoolAllocation, DeviceWrapper,
     FenceState, FenceWrapper, GraphicsPipelineWrapper, PipelineLayoutWrapper, PushConstants,
-    RenderPassWrapper, Result, SemaphoreWrapper, VulkanDevice, VulkanDeviceIndexBuffer,
-    VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
-    VulkanDeviceVertexBufferImplementation, VulkanError, VulkanStagingIndexBuffer,
-    VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
+    RenderPassWrapper, Result, SemaphoreWrapper, VulkanDevice, VulkanDeviceImageSet,
+    VulkanDeviceIndexBuffer, VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
+    VulkanDeviceVertexBufferImplementation, VulkanError, VulkanStagingImageSet,
+    VulkanStagingIndexBuffer, VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
     VulkanStagingVertexBufferImplementation, COLOR_ATTACHEMENT_INDEX, DEPTH_ATTACHEMENT_INDEX,
 };
 use renderer::{
@@ -226,6 +226,8 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type StagingIndexBuffer = VulkanStagingIndexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type StagingImageSet = VulkanStagingImageSet;
+    type DeviceImageSet = VulkanDeviceImageSet;
     fn copy_vertex_buffer_to_device(
         &mut self,
         staging_vertex_buffer: VulkanStagingVertexBuffer,
@@ -355,6 +357,12 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
             );
         }
         Ok(device_buffer)
+    }
+    fn copy_image_set_to_device(
+        &mut self,
+        staging_image_set: VulkanStagingImageSet,
+    ) -> Result<VulkanDeviceImageSet> {
+        unimplemented!()
     }
     fn finish(self) -> Result<VulkanLoaderCommandBuffer> {
         let mut retval = self.0;
@@ -630,6 +638,7 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
     type CommandBuffer = VulkanRenderCommandBuffer;
     type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
     type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type DeviceImageSet = VulkanDeviceImageSet;
     fn set_buffers(
         &mut self,
         vertex_buffer: VulkanDeviceVertexBuffer,
@@ -641,6 +650,9 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
             vertex_buffer: vertex_buffer,
             index_buffer: index_buffer,
         });
+    }
+    fn set_image_set(&mut self, image_set: Self::DeviceImageSet) {
+        unimplemented!()
     }
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
         self.did_set_initial_transform = true;
@@ -1031,9 +1043,7 @@ pub unsafe fn render_frame(
             }
         }
         (None, None, None) => {}
-        _ => {
-            assert!(false);
-        }
+        _ => unreachable!(),
     }
     referenced_objects.push(Box::new(swapchain));
     vulkan_device

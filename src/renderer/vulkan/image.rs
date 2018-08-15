@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use super::{
-    api, null_or_zero, DeviceMemoryPoolAllocation, DeviceMemoryPools, DeviceWrapper, Result,
-    VulkanError,
+    api, null_or_zero, DeviceImageSet, DeviceMemoryPoolAllocation, DeviceMemoryPools,
+    DeviceWrapper, Result, StagingImageSet, TextureIndex, VulkanError,
 };
+use renderer::image::Image;
 use std::mem;
 use std::ptr::null;
 use std::sync::Arc;
@@ -129,5 +130,39 @@ impl Drop for ImageViewWrapper {
                 null(),
             );
         }
+    }
+}
+
+pub struct VulkanStagingImageSet {}
+
+impl StagingImageSet for VulkanStagingImageSet {
+    fn width(&self) -> u32 {
+        unimplemented!()
+    }
+    fn height(&self) -> u32 {
+        unimplemented!()
+    }
+    fn count(&self) -> u32 {
+        unimplemented!()
+    }
+    fn write(&mut self, image_index: TextureIndex, image: &Image) {
+        unimplemented!()
+    }
+}
+
+pub struct VulkanDeviceImageSetState {}
+
+#[derive(Clone)]
+pub struct VulkanDeviceImageSet(Arc<VulkanDeviceImageSetState>);
+
+impl DeviceImageSet for VulkanDeviceImageSet {
+    fn width(&self) -> u32 {
+        unimplemented!()
+    }
+    fn height(&self) -> u32 {
+        unimplemented!()
+    }
+    fn count(&self) -> u32 {
+        unimplemented!()
     }
 }

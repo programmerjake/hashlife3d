@@ -50,6 +50,7 @@ impl fmt::Display for ImageSizeMismatchError {
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
 pub enum PPMMode {
     Binary,
+    #[allow(dead_code)]
     Text,
 }
 
@@ -138,10 +139,12 @@ impl Image {
     pub fn height(&self) -> u32 {
         self.height
     }
+    #[allow(dead_code)]
     pub fn get_line_offset_in_pixels(&self, y: u32) -> usize {
         assert!(y < self.height);
         unsafe { self.get_line_offset_in_pixels_unchecked(y) }
     }
+    #[allow(dead_code)]
     pub fn get_pixel_offset_in_pixels(&self, x: u32, y: u32) -> usize {
         assert!(x < self.width);
         assert!(y < self.height);
@@ -165,6 +168,7 @@ impl Image {
             pixels: pixels,
         }
     }
+    #[allow(dead_code)]
     pub fn from_pixels(
         width: u32,
         height: u32,
@@ -180,6 +184,7 @@ impl Image {
             Err(ImageSizeMismatchError { pixels: pixels })
         }
     }
+    #[allow(dead_code)]
     pub unsafe fn from_pixels_unchecked(
         width: u32,
         height: u32,
@@ -209,12 +214,14 @@ impl Image {
         let pixel_offset = self.get_pixel_offset_in_pixels_unchecked(x, y);
         self.pixels.get_unchecked_mut(pixel_offset)
     }
+    #[allow(dead_code)]
     pub fn into_pixels(self) -> Vec<math::Vec4<u8>> {
         self.pixels
     }
     pub fn get_pixels(&self) -> &Vec<math::Vec4<u8>> {
         &self.pixels
     }
+    #[allow(dead_code)]
     pub unsafe fn get_mut_pixels(&mut self) -> &mut Vec<math::Vec4<u8>> {
         &mut self.pixels
     }
@@ -257,6 +264,7 @@ impl Image {
             }
         }
     }
+    #[allow(dead_code)]
     pub fn composite_on_color(&mut self, background_color: math::Vec4<u8>) {
         fn mix(t: u8, a: u8, b: u8) -> u8 {
             let v = (0xFF - t as u32) * a as u32 + t as u32 * b as u32;
@@ -268,6 +276,7 @@ impl Image {
                 .map(|(a, b)| mix(pixel.w, a, b));
         }
     }
+    #[allow(dead_code)]
     pub fn as_ppm(&self, mode: PPMMode) -> ImageAsPPM {
         ImageAsPPM::new(self, mode)
     }
