@@ -24,5 +24,14 @@ layout (binding = 0) uniform sampler2DArray samplers[8];
 
 void main()
 {
-    output_color = color;
+    vec4 texture_color = vec4(1.0);
+    if(texture_index != 0)
+    {
+        uint i = texture_index - 1;
+        uint texture_size = textureSize(samplers[0], 0).z;
+        uint sampler_index = i / texture_size;
+        i %= texture_size;
+        texture_color = texture(samplers[sampler_index], vec3(texture_coord, float(i)));
+    }
+    output_color = color * texture_color;
 }

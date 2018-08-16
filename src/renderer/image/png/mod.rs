@@ -16,7 +16,6 @@
 mod tests;
 use super::{Image, ImageLoader, Pixel};
 use inflate::DeflateDecoder;
-use renderer::math;
 use std::ascii;
 use std::borrow::BorrowMut;
 use std::error;
@@ -1285,7 +1284,7 @@ impl ImageLoader for PngImageLoader {
                             *retval.get_mut(x, y) = Pixel::new(r, g, b, a);
                         }
                     }
-                    _ => unimplemented!(),
+                    _ => unreachable!(),
                 }
                 mem::swap(&mut current_scanline, &mut last_scanline);
             }

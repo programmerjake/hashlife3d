@@ -1010,7 +1010,7 @@ impl From<api::SDL_Event> for Event {
                     direction: match event.wheel.direction {
                         api::SDL_MOUSEWHEEL_FLIPPED => MouseWheelDirection::Flipped,
                         api::SDL_MOUSEWHEEL_NORMAL => MouseWheelDirection::Normal,
-                        _ => panic!("unimplemented mouse wheel direction"),
+                        _ => unreachable!(),
                     },
                 },
                 api::SDL_JOYAXISMOTION => JoystickAxisMotion {

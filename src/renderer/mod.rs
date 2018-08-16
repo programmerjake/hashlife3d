@@ -164,7 +164,8 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         &self,
         len: usize,
     ) -> Result<Self::StagingIndexBuffer, Self::Error>;
-    fn get_max_image_dimension_size(&self) -> u32;
+    fn get_max_image_width(&self) -> u32;
+    fn get_max_image_height(&self) -> u32;
     fn get_max_image_count_in_image_set(&self, width: u32, height: u32)
         -> Result<u32, Self::Error>;
     fn create_staging_image_set(
@@ -262,8 +263,11 @@ pub trait Device: Sized {
     ) -> Result<Self::StagingIndexBuffer, Self::Error> {
         self.get_device_ref().create_staging_index_buffer(len)
     }
-    fn get_max_image_dimension_size(&self) -> u32 {
-        self.get_device_ref().get_max_image_dimension_size()
+    fn get_max_image_width(&self) -> u32 {
+        self.get_device_ref().get_max_image_width()
+    }
+    fn get_max_image_height(&self) -> u32 {
+        self.get_device_ref().get_max_image_height()
     }
     fn get_max_image_count_in_image_set(
         &self,

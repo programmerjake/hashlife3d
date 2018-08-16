@@ -13,24 +13,27 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use super::{
-    api, get_mut_vulkan_device_index_buffer_implementation,
+    api, create_device_image_set, get_mut_vulkan_device_index_buffer_implementation,
     get_mut_vulkan_device_vertex_buffer_implementation,
-    into_vulkan_device_index_buffer_implementation,
-    into_vulkan_device_vertex_buffer_implementation,
+    into_vulkan_device_image_set_implementation, into_vulkan_device_index_buffer_implementation,
+    into_vulkan_device_vertex_buffer_implementation, into_vulkan_staging_image_set_implementation,
     into_vulkan_staging_index_buffer_implementation,
     into_vulkan_staging_vertex_buffer_implementation, null_or_zero, set_push_constants,
-    set_push_constants_initial_transform, BufferWrapper, DeviceMemoryPoolAllocation, DeviceWrapper,
-    FenceState, FenceWrapper, GraphicsPipelineWrapper, PipelineLayoutWrapper, PushConstants,
-    RenderPassWrapper, Result, SemaphoreWrapper, VulkanDevice, VulkanDeviceImageSet,
+    set_push_constants_initial_transform, BufferWrapper, DescriptorSetWrapper,
+    DeviceMemoryPoolAllocation, DeviceWrapper, FenceState, FenceWrapper, GraphicsPipelineWrapper,
+    ImageViewWrapper, PipelineLayoutWrapper, PushConstants, RenderPassWrapper, Result,
+    SemaphoreWrapper, VulkanDevice, VulkanDeviceImageSet, VulkanDeviceImageSetImplementation,
     VulkanDeviceIndexBuffer, VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
     VulkanDeviceVertexBufferImplementation, VulkanError, VulkanStagingImageSet,
-    VulkanStagingIndexBuffer, VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
+    VulkanStagingImageSetImplementation, VulkanStagingIndexBuffer,
+    VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
     VulkanStagingVertexBufferImplementation, COLOR_ATTACHEMENT_INDEX, DEPTH_ATTACHEMENT_INDEX,
+    SAMPLERS_DESCRIPTOR_SET_INDEX,
 };
 use renderer::{
-    math, CommandBuffer, Device, DeviceIndexBuffer, DeviceVertexBuffer, IndexBufferElement,
-    LoaderCommandBufferBuilder, RenderCommandBufferBuilder, RenderCommandBufferGroup,
-    VertexBufferElement,
+    image::Pixel, math, CommandBuffer, Device, DeviceIndexBuffer, DeviceVertexBuffer,
+    IndexBufferElement, LoaderCommandBufferBuilder, RenderCommandBufferBuilder,
+    RenderCommandBufferGroup, VertexBufferElement,
 };
 use sdl;
 use std::any::Any;
@@ -179,6 +182,8 @@ pub struct CommandBufferReferencedObjects {
     shared_device_memory_allocations: Vec<Arc<DeviceMemoryPoolAllocation>>,
     buffers: Vec<BufferWrapper>,
     shared_buffers: Vec<Arc<BufferWrapper>>,
+    shared_image_view_vecs: Vec<Arc<Vec<ImageViewWrapper>>>,
+    shared_descriptor_sets: Vec<Arc<DescriptorSetWrapper>>,
 }
 
 impl Default for CommandBufferReferencedObjects {
@@ -189,6 +194,8 @@ impl Default for CommandBufferReferencedObjects {
             shared_device_memory_allocations: Vec::new(),
             buffers: Vec::new(),
             shared_buffers: Vec::new(),
+            shared_image_view_vecs: Vec::new(),
+            shared_descriptor_sets: Vec::new(),
         }
     }
 }
@@ -362,7 +369,151 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
         &mut self,
         staging_image_set: VulkanStagingImageSet,
     ) -> Result<VulkanDeviceImageSet> {
-        unimplemented!()
+        let command_buffer = &self.0.command_buffer;
+        let device = &command_buffer.command_pool.device;
+        let VulkanStagingImageSetImplementation {
+            buffer: staging_buffer,
+            buffer_allocation: staging_buffer_allocation,
+            mut device_image_set,
+            mapped_memory: _,
+        } = into_vulkan_staging_image_set_implementation(staging_image_set);
+        unsafe {
+            device_image_set.submit_tracker = Some(self.0.submit_tracker.clone());
+            let mut start_image_memory_barriers = Vec::new();
+            let mut end_image_memory_barriers = Vec::new();
+            for image in &*device_image_set.images {
+                start_image_memory_barriers.push(api::VkImageMemoryBarrier {
+                    sType: api::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    pNext: null(),
+                    srcAccessMask: 0,
+                    dstAccessMask: api::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    oldLayout: api::VK_IMAGE_LAYOUT_UNDEFINED,
+                    newLayout: api::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    srcQueueFamilyIndex: self.0.command_buffer.queue_family_index,
+                    dstQueueFamilyIndex: self.0.command_buffer.queue_family_index,
+                    image: image.image.image,
+                    subresourceRange: api::VkImageSubresourceRange {
+                        aspectMask: api::VK_IMAGE_ASPECT_COLOR_BIT,
+                        baseMipLevel: 0,
+                        levelCount: 1,
+                        baseArrayLayer: 0,
+                        layerCount: api::VK_REMAINING_ARRAY_LAYERS as u32,
+                    },
+                });
+                end_image_memory_barriers.push(api::VkImageMemoryBarrier {
+                    sType: api::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    pNext: null(),
+                    srcAccessMask: api::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    dstAccessMask: api::VK_ACCESS_SHADER_READ_BIT,
+                    oldLayout: api::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    newLayout: api::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    srcQueueFamilyIndex: self.0.command_buffer.queue_family_index,
+                    dstQueueFamilyIndex: self.0.command_buffer.queue_family_index,
+                    image: image.image.image,
+                    subresourceRange: api::VkImageSubresourceRange {
+                        aspectMask: api::VK_IMAGE_ASPECT_COLOR_BIT,
+                        baseMipLevel: 0,
+                        levelCount: 1,
+                        baseArrayLayer: 0,
+                        layerCount: api::VK_REMAINING_ARRAY_LAYERS as u32,
+                    },
+                });
+            }
+            device.vkCmdPipelineBarrier.unwrap()(
+                command_buffer.command_buffer,
+                api::VK_PIPELINE_STAGE_HOST_BIT,
+                api::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                start_image_memory_barriers.len() as u32,
+                start_image_memory_barriers.as_ptr(),
+            );
+            self.0
+                .referenced_objects
+                .shared_image_view_vecs
+                .push(device_image_set.images.clone());
+            let width = device_image_set.width as usize;
+            let height = device_image_set.height as usize;
+            let image_size = width * height * mem::size_of::<Pixel>();
+            let mut buffer_image_copy_structs = Vec::new();
+            for (image_index, image) in device_image_set.images.iter().enumerate() {
+                if image_index as u32 >= device_image_set.valid_image_count {
+                    device.vkCmdClearColorImage.unwrap()(
+                        command_buffer.command_buffer,
+                        image.image.image,
+                        api::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        &api::VkClearColorValue { float32: [0.0; 4] },
+                        1,
+                        &api::VkImageSubresourceRange {
+                            aspectMask: api::VK_IMAGE_ASPECT_COLOR_BIT,
+                            baseMipLevel: 0,
+                            levelCount: 1,
+                            baseArrayLayer: 0,
+                            layerCount: 1,
+                        },
+                    );
+                } else {
+                    buffer_image_copy_structs.clear();
+                    let image_layer_count =
+                        if image_index + 1 == device_image_set.valid_image_count as usize {
+                            device_image_set.last_image_layer_count
+                        } else {
+                            device_image_set.image_layer_count
+                        };
+                    for layer in 0..image_layer_count {
+                        buffer_image_copy_structs.push(api::VkBufferImageCopy {
+                            bufferOffset: (image_size
+                                * (image_index * device_image_set.image_layer_count as usize
+                                    + layer as usize))
+                                as api::VkDeviceSize,
+                            bufferRowLength: 0,
+                            bufferImageHeight: 0,
+                            imageSubresource: api::VkImageSubresourceLayers {
+                                aspectMask: api::VK_IMAGE_ASPECT_COLOR_BIT,
+                                mipLevel: 0,
+                                baseArrayLayer: layer,
+                                layerCount: 1,
+                            },
+                            imageOffset: api::VkOffset3D { x: 0, y: 0, z: 0 },
+                            imageExtent: api::VkExtent3D {
+                                width: width as u32,
+                                height: height as u32,
+                                depth: 1,
+                            },
+                        });
+                    }
+                    device.vkCmdCopyBufferToImage.unwrap()(
+                        command_buffer.command_buffer,
+                        staging_buffer.buffer,
+                        image.image.image,
+                        api::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        buffer_image_copy_structs.len() as u32,
+                        buffer_image_copy_structs.as_ptr(),
+                    );
+                }
+            }
+            self.0.referenced_objects.buffers.push(staging_buffer);
+            self.0
+                .referenced_objects
+                .device_memory_allocations
+                .push(staging_buffer_allocation);
+            device.vkCmdPipelineBarrier.unwrap()(
+                command_buffer.command_buffer,
+                api::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                api::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                end_image_memory_barriers.len() as u32,
+                end_image_memory_barriers.as_ptr(),
+            );
+        }
+        Ok(create_device_image_set(device_image_set))
     }
     fn finish(self) -> Result<VulkanLoaderCommandBuffer> {
         let mut retval = self.0;
@@ -373,6 +524,9 @@ impl LoaderCommandBufferBuilder for VulkanLoaderCommandBufferBuilder {
 
 #[derive(Clone)]
 enum RenderCommand {
+    SetImageSet {
+        image_set: VulkanDeviceImageSet,
+    },
     SetBuffers {
         vertex_buffer: VulkanDeviceVertexBuffer,
         index_buffer: VulkanDeviceIndexBuffer,
@@ -511,6 +665,36 @@ impl VulkanRenderCommandBufferState {
         let mut referenced_objects: CommandBufferReferencedObjects = Default::default();
         for render_command in &self.render_commands {
             match render_command.clone() {
+                RenderCommand::SetImageSet { image_set } => {
+                    let VulkanDeviceImageSetImplementation {
+                        images,
+                        submit_tracker,
+                        width: _,
+                        height: _,
+                        total_layer_count: _,
+                        image_layer_count: _,
+                        last_image_layer_count: _,
+                        valid_image_count: _,
+                        descriptor_set,
+                    } = into_vulkan_device_image_set_implementation(image_set);
+                    self.device.vkCmdBindDescriptorSets.unwrap()(
+                        command_buffer.command_buffer,
+                        api::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        self.pipeline_layout.pipeline_layout,
+                        SAMPLERS_DESCRIPTOR_SET_INDEX,
+                        1,
+                        &descriptor_set.descriptor_set,
+                        0,
+                        null(),
+                    );
+                    referenced_objects.shared_image_view_vecs.push(images);
+                    referenced_objects
+                        .required_command_buffers
+                        .push(submit_tracker.unwrap());
+                    referenced_objects
+                        .shared_descriptor_sets
+                        .push(descriptor_set);
+                }
                 RenderCommand::SetBuffers {
                     vertex_buffer,
                     index_buffer,
@@ -609,6 +793,7 @@ pub struct VulkanRenderCommandBufferBuilder {
     did_set_initial_transform: bool,
     index_buffer_length: usize,
     vertex_buffer_length: usize,
+    did_set_image_set: bool,
 }
 
 impl VulkanRenderCommandBufferBuilder {
@@ -629,6 +814,7 @@ impl VulkanRenderCommandBufferBuilder {
             did_set_initial_transform: false,
             index_buffer_length: 0,
             vertex_buffer_length: 0,
+            did_set_image_set: false,
         }
     }
 }
@@ -651,8 +837,11 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
             index_buffer: index_buffer,
         });
     }
-    fn set_image_set(&mut self, image_set: Self::DeviceImageSet) {
-        unimplemented!()
+    fn set_image_set(&mut self, image_set: VulkanDeviceImageSet) {
+        self.render_commands.push(RenderCommand::SetImageSet {
+            image_set: image_set,
+        });
+        self.did_set_image_set = true;
     }
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
         self.did_set_initial_transform = true;
@@ -666,6 +855,7 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
         assert!(index_count as usize + first_index as usize <= self.index_buffer_length);
         assert!((vertex_offset as usize) < self.vertex_buffer_length);
         assert!(index_count % 3 == 0, "must be whole number of triangles");
+        assert!(self.did_set_image_set);
         if index_count > 0 {
             if !self.did_set_initial_transform {
                 self.did_set_initial_transform = true;

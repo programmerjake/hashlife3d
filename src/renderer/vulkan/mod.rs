@@ -16,6 +16,7 @@
 mod instance_functions;
 mod buffer;
 mod command_buffer;
+mod descriptor_set;
 mod device;
 mod device_memory;
 mod error;
@@ -26,6 +27,7 @@ mod semaphore;
 mod surface;
 use self::buffer::*;
 use self::command_buffer::*;
+use self::descriptor_set::*;
 use self::device::*;
 use self::device_memory::*;
 use self::error::*;
@@ -96,6 +98,8 @@ pub struct VulkanDeviceReference {
     device_memory_pools: Arc<DeviceMemoryPools>,
     pipeline_layout: Arc<PipelineLayoutWrapper>,
     graphics_pipeline: Option<Arc<GraphicsPipelineWrapper>>,
+    image_set_image_format_properties: api::VkImageFormatProperties,
+    samplers_descriptor_set_layout: Arc<DescriptorSetLayoutWrapper>,
 }
 
 pub struct VulkanPausedDevice {
@@ -228,7 +232,7 @@ mod pipeline_layout {
     pub struct PipelineLayoutWrapper {
         pub device: Arc<DeviceWrapper>,
         pub pipeline_layout: api::VkPipelineLayout,
-        pub _descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper>,
+        pub _descriptor_set_layouts: Vec<Arc<DescriptorSetLayoutWrapper>>,
     }
 
     impl Drop for PipelineLayoutWrapper {
@@ -344,11 +348,14 @@ impl DeviceReference for VulkanDeviceReference {
     fn create_staging_index_buffer(&self, len: usize) -> Result<VulkanStagingIndexBuffer> {
         unsafe { create_staging_index_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
-    fn get_max_image_dimension_size(&self) -> u32 {
-        unimplemented!()
+    fn get_max_image_width(&self) -> u32 {
+        self.image_set_image_format_properties.maxExtent.width
+    }
+    fn get_max_image_height(&self) -> u32 {
+        self.image_set_image_format_properties.maxExtent.height
     }
     fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
-        unimplemented!()
+        get_image_set_max_total_layer_count(&self.image_set_image_format_properties, width, height)
     }
     fn create_staging_image_set(
         &self,
@@ -356,7 +363,17 @@ impl DeviceReference for VulkanDeviceReference {
         height: u32,
         count: u32,
     ) -> Result<VulkanStagingImageSet> {
-        unimplemented!()
+        unsafe {
+            create_staging_image_set(
+                self.device.clone(),
+                &*self.device_memory_pools,
+                &self.image_set_image_format_properties,
+                width,
+                height,
+                count,
+                self.samplers_descriptor_set_layout.clone(),
+            )
+        }
     }
 }
 
@@ -367,8 +384,9 @@ impl PausedDevice for VulkanPausedDevice {
     }
 }
 
-const FRAGMENT_TEXTURES_BINDING: u32 = 0;
-const FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT: u32 = 8;
+const FRAGMENT_SAMPLERS_BINDING: u32 = 0;
+const SAMPLERS_DESCRIPTOR_SET_INDEX: u32 = 0;
+const FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT: u32 = 8;
 
 #[repr(C)]
 #[repr(align(16))]
@@ -606,11 +624,13 @@ fn create_render_pass(
     }
 }
 
-fn create_descriptor_set_layout(device: Arc<DeviceWrapper>) -> Result<DescriptorSetLayoutWrapper> {
+fn create_samplers_descriptor_set_layout(
+    device: Arc<DeviceWrapper>,
+) -> Result<DescriptorSetLayoutWrapper> {
     let bindings = [api::VkDescriptorSetLayoutBinding {
-        binding: FRAGMENT_TEXTURES_BINDING,
+        binding: FRAGMENT_SAMPLERS_BINDING,
         descriptorType: api::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        descriptorCount: FRAGMENT_TEXTURES_BINDING_DESCRIPTOR_COUNT,
+        descriptorCount: FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT,
         stageFlags: api::VK_SHADER_STAGE_FRAGMENT_BIT,
         pImmutableSamplers: null(),
     }];
@@ -637,9 +657,18 @@ fn create_descriptor_set_layout(device: Arc<DeviceWrapper>) -> Result<Descriptor
     }
 }
 
-fn create_pipeline_layout(device: Arc<DeviceWrapper>) -> Result<PipelineLayoutWrapper> {
-    let descriptor_set_layouts = vec![create_descriptor_set_layout(device.clone())?];
-    //let descriptor_set_layouts: Vec<DescriptorSetLayoutWrapper> = vec![];
+fn create_pipeline_layout(
+    samplers_descriptor_set_layout: Arc<DescriptorSetLayoutWrapper>,
+) -> Result<PipelineLayoutWrapper> {
+    let device = samplers_descriptor_set_layout.device.clone();
+    let mut descriptor_set_layouts: Vec<Option<_>> = Vec::new();
+    descriptor_set_layouts.resize_with(1, || None);
+    descriptor_set_layouts[SAMPLERS_DESCRIPTOR_SET_INDEX as usize] =
+        Some(samplers_descriptor_set_layout);
+    let descriptor_set_layouts: Vec<_> = descriptor_set_layouts
+        .drain(..)
+        .map(|v| v.unwrap())
+        .collect();
     let mut pipeline_layout = null_or_zero();
     let vk_descriptor_set_layouts: Vec<_> = descriptor_set_layouts
         .iter()
@@ -1158,6 +1187,7 @@ impl Device for VulkanDevice {
             swapchain_pre_transform,
             swapchain_composite_alpha,
             physical_device_memory_properties,
+            image_set_image_format_properties,
         } = paused_device.surface_state;
         let device_queue_create_infos = [
             api::VkDeviceQueueCreateInfo {
@@ -1226,7 +1256,10 @@ impl Device for VulkanDevice {
             swapchain_pre_transform: swapchain_pre_transform,
             swapchain_composite_alpha: swapchain_composite_alpha,
             physical_device_memory_properties: physical_device_memory_properties,
+            image_set_image_format_properties: image_set_image_format_properties,
         };
+        let samplers_descriptor_set_layout =
+            Arc::new(create_samplers_descriptor_set_layout(device.clone())?);
         let mut retval = VulkanDevice {
             device_reference: VulkanDeviceReference {
                 device: device.clone(),
@@ -1234,9 +1267,13 @@ impl Device for VulkanDevice {
                 device_memory_pools: Arc::new(unsafe {
                     DeviceMemoryPools::new(device.clone(), physical_device_memory_properties)
                 }),
-                render_pass: Arc::new(create_render_pass(device.clone(), &surface_state)?),
-                pipeline_layout: Arc::new(create_pipeline_layout(device)?),
+                render_pass: Arc::new(create_render_pass(device, &surface_state)?),
+                pipeline_layout: Arc::new(create_pipeline_layout(
+                    samplers_descriptor_set_layout.clone(),
+                )?),
                 graphics_pipeline: None,
+                image_set_image_format_properties: image_set_image_format_properties,
+                samplers_descriptor_set_layout: samplers_descriptor_set_layout,
             },
             surface_state: Some(surface_state),
             render_queue: render_queue,
@@ -1646,6 +1683,21 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                     &mut physical_device_memory_properties,
                 );
             }
+            let mut image_set_image_format_properties = unsafe { mem::zeroed() };
+            match unsafe {
+                instance.vkGetPhysicalDeviceImageFormatProperties.unwrap()(
+                    physical_device,
+                    IMAGE_SET_FORMAT,
+                    IMAGE_SET_IMAGE_TYPE,
+                    IMAGE_SET_IMAGE_TILING,
+                    IMAGE_SET_IMAGE_USAGE,
+                    IMAGE_SET_IMAGE_CREATE_FLAGS,
+                    &mut image_set_image_format_properties,
+                )
+            } {
+                api::VK_SUCCESS => (),
+                result => return Err(VulkanError::VulkanError(result)),
+            }
             match (
                 present_queue_index,
                 render_queue_index,
@@ -1671,6 +1723,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                             swapchain_pre_transform: swapchain_pre_transform,
                             swapchain_composite_alpha: swapchain_composite_alpha,
                             physical_device_memory_properties: physical_device_memory_properties,
+                            image_set_image_format_properties: image_set_image_format_properties,
                         },
                     });
                 }

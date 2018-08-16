@@ -23,6 +23,9 @@ pub enum VulkanError {
     SDLError(sdl::SDLError),
     NoMatchingPhysicalDevice,
     NoMatchingMemoryType,
+    ImageIsTooBig,
+    ImageMustHavePowerOfTwoDimensions,
+    ImageSetHasTooManyImages,
 }
 
 impl From<sdl::SDLError> for VulkanError {
@@ -79,6 +82,11 @@ impl fmt::Display for VulkanError {
             VulkanError::SDLError(error) => (error as &fmt::Display).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("no matching physical device"),
             VulkanError::NoMatchingMemoryType => f.write_str("no matching memory type"),
+            VulkanError::ImageIsTooBig => f.write_str("image is too big"),
+            VulkanError::ImageMustHavePowerOfTwoDimensions => {
+                f.write_str("image must have power-of-two dimensions")
+            }
+            VulkanError::ImageSetHasTooManyImages => f.write_str("image set has too many images"),
         }
     }
 }
@@ -90,6 +98,11 @@ impl fmt::Debug for VulkanError {
             VulkanError::VulkanError(_) => (self as &fmt::Display).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("NoMatchingPhysicalDevice"),
             VulkanError::NoMatchingMemoryType => f.write_str("NoMatchingMemoryType"),
+            VulkanError::ImageIsTooBig => f.write_str("ImageIsTooBig"),
+            VulkanError::ImageMustHavePowerOfTwoDimensions => {
+                f.write_str("ImageMustHavePowerOfTwoDimensions")
+            }
+            VulkanError::ImageSetHasTooManyImages => f.write_str("ImageSetHasTooManyImages"),
         }
     }
 }

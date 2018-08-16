@@ -958,7 +958,10 @@ impl DeviceReference for GLES2DeviceReference {
     fn create_staging_index_buffer(&self, len: usize) -> Result<GLES2StagingIndexBuffer> {
         Ok(GLES2StagingIndexBuffer::new(len))
     }
-    fn get_max_image_dimension_size(&self) -> u32 {
+    fn get_max_image_width(&self) -> u32 {
+        self.max_image_size
+    }
+    fn get_max_image_height(&self) -> u32 {
         self.max_image_size
     }
     fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
