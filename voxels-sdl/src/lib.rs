@@ -22,6 +22,7 @@ pub use self::sdl_main::SDL_main;
 use std::error::Error;
 use std::ffi::*;
 use std::fmt;
+#[allow(unused_imports)]
 use std::os::raw::{c_char, c_int};
 
 #[allow(dead_code)]
