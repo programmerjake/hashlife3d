@@ -17,11 +17,8 @@ name = "hashlife3d"
 version = "0.1.0"
 authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
-[build-dependencies]
-bindgen = "0.29.1"
-pkg-config = "0.3.12"
-glsl-to-spirv = "0.1.6"
-
 [dependencies]
-libc = "0.2"
-inflate = "0.4.3"
+voxels-sdl = { path = "voxels-sdl" }
+voxels-math = { path = "voxels-math" }
+voxels-image = { path = "voxels-image" }
+voxels-renderer = { path = "voxels-renderer" }

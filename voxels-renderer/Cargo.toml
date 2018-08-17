@@ -1,0 +1,13 @@
+[package]
+name = "voxels-renderer"
+version = "0.1.0"
+authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+voxels-renderer-base = { path = "../voxels-renderer-base" }
+voxels-renderer-gles2 = { path = "../voxels-renderer-gles2" }
+voxels-renderer-vulkan = { path = "../voxels-renderer-vulkan" }
+voxels-sdl = { path = "../voxels-sdl" }

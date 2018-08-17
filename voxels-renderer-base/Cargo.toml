@@ -1,0 +1,12 @@
+[package]
+name = "voxels-renderer-base"
+version = "0.1.0"
+authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+voxels-math = { path = "../voxels-math" }
+voxels-image = { path = "../voxels-image" }
+voxels-sdl = { path = "../voxels-sdl" }

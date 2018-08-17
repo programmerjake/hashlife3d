@@ -1,0 +1,17 @@
+[package]
+name = "voxels-renderer-vulkan"
+version = "0.1.0"
+authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+voxels-math = { path = "../voxels-math" }
+voxels-image = { path = "../voxels-image" }
+voxels-renderer-base = { path = "../voxels-renderer-base" }
+voxels-sdl = { path = "../voxels-sdl" }
+
+[build-dependencies]
+bindgen = "0.29.1"
+glsl-to-spirv = "0.1.6"

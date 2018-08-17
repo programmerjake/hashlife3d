@@ -12,38 +12,23 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-#![feature(termination_trait_lib)]
-#![feature(concat_idents)]
-#![feature(vec_resize_with)]
 #![cfg_attr(not(test), no_main)]
-extern crate inflate;
-extern crate libc;
+extern crate voxels_image as image;
+extern crate voxels_math as math;
+extern crate voxels_renderer as renderer;
+extern crate voxels_sdl as sdl;
+
 mod hashtable;
-mod renderer;
-mod sdl;
 mod world3d;
-use self::math::Dot;
-use self::math::Mappable;
-#[cfg(not(test))]
-pub use self::sdl::SDL_main;
-use renderer::image::Image;
-use renderer::math;
+//#[cfg(not(test))]
+//pub use self::sdl::SDL_main;
+use image::Image;
+use math::{Dot, Mappable};
 use renderer::*;
 use sdl::event::Event;
 use std::error;
 use std::time;
 use world3d::{State, World};
-
-#[no_mangle]
-#[cfg(not(any(
-    target_os = "windows",
-    target_os = "ios",
-    target_os = "android",
-    test
-)))]
-pub extern "C" fn main(argc: libc::c_int, argv: *mut *mut libc::c_char) -> libc::c_int {
-    SDL_main(argc, argv)
-}
 
 type Block = u32;
 
@@ -80,7 +65,7 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                 macro_rules! load_texture {
                     ($texture:expr) => {{
                         textures.push(
-                            renderer::image::load_image_bytes(include_bytes!(concat!(
+                            image::load_image_bytes(include_bytes!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/textures/",
                                 $texture
@@ -436,7 +421,8 @@ fn render_main_loop<PD: renderer::PausedDevice>(
 }
 
 #[allow(dead_code)]
-fn rust_main(event_source: &sdl::event::EventSource) {
+#[no_mangle]
+pub fn rust_main(event_source: sdl::event::EventSource) {
     let world_thread = std::thread::spawn(|| {
         if false {
             let mut world = World::new(
@@ -533,7 +519,7 @@ fn rust_main(event_source: &sdl::event::EventSource) {
     if let BackendVisitorResult::Continue = renderer::for_each_backend(&mut BackendVisitor {
         main_loop: Some(MainLoop {}),
         selected_backend: &mut selected_backend,
-        event_source: event_source,
+        event_source: &event_source,
     }) {
         if let Some(name) = selected_backend {
             panic!("unknown backend: {}", name);
@@ -542,4 +528,9 @@ fn rust_main(event_source: &sdl::event::EventSource) {
         }
     }
     world_thread.join().unwrap()
+}
+
+#[allow(dead_code)]
+fn assert_rust_main_is_right_type() -> sdl::RustMainType {
+    rust_main
 }
