@@ -689,8 +689,7 @@ impl StagingImageSet for GLES2StagingImageSet {
         assert!(image.height() == self.layout.base.sub_image_height);
         let x_sub_image_index = image_index % self.layout.sub_image_count_x;
         image_index /= self.layout.sub_image_count_x;
-        let y_sub_image_index =
-            self.layout.sub_image_count_y - image_index % self.layout.sub_image_count_y - 1;
+        let y_sub_image_index = image_index % self.layout.sub_image_count_y;
         image_index /= self.layout.sub_image_count_y;
         self.images[image_index as usize]
             .as_mut()

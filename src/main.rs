@@ -94,116 +94,193 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                     vertices.push(vertex);
                     index as IndexBufferElement
                 };
-                let mut render_quad =
-                    |v0: math::Vec3<f32>,
-                     v1: math::Vec3<f32>,
-                     v2: math::Vec3<f32>,
-                     v3: math::Vec3<f32>,
-                     color: math::Vec4<u8>,
-                     texture: TextureIndex| {
-                        let v0 = append_vertex(VertexBufferElement::new(
-                            v0,
-                            color,
-                            math::Vec2::new(1.0, 1.0),
-                            texture,
-                        ));
-                        let v1 = append_vertex(VertexBufferElement::new(
-                            v1,
-                            color,
-                            math::Vec2::new(1.0, 0.0),
-                            texture,
-                        ));
-                        let v2 = append_vertex(VertexBufferElement::new(
-                            v2,
-                            color,
-                            math::Vec2::new(0.0, 0.0),
-                            texture,
-                        ));
-                        let v3 = append_vertex(VertexBufferElement::new(
-                            v3,
-                            color,
-                            math::Vec2::new(0.0, 1.0),
-                            texture,
-                        ));
+                let mut render_quad = |v0: math::Vec3<f32>,
+                                       v1: math::Vec3<f32>,
+                                       v2: math::Vec3<f32>,
+                                       v3: math::Vec3<f32>,
+                                       color: math::Vec4<u8>,
+                                       texture: TextureIndex,
+                                       reversed: bool| {
+                    let v0 = append_vertex(VertexBufferElement::new(
+                        v0,
+                        color,
+                        math::Vec2::new(1.0, 1.0),
+                        texture,
+                    ));
+                    let v1 = append_vertex(VertexBufferElement::new(
+                        v1,
+                        color,
+                        math::Vec2::new(1.0, 0.0),
+                        texture,
+                    ));
+                    let v2 = append_vertex(VertexBufferElement::new(
+                        v2,
+                        color,
+                        math::Vec2::new(0.0, 0.0),
+                        texture,
+                    ));
+                    let v3 = append_vertex(VertexBufferElement::new(
+                        v3,
+                        color,
+                        math::Vec2::new(0.0, 1.0),
+                        texture,
+                    ));
+                    if reversed {
+                        indices.push(v0);
+                        indices.push(v3);
+                        indices.push(v2);
+                        indices.push(v2);
+                        indices.push(v1);
+                        indices.push(v0);
+                    } else {
                         indices.push(v0);
                         indices.push(v1);
                         indices.push(v2);
                         indices.push(v2);
                         indices.push(v3);
                         indices.push(v0);
-                    };
-                let lights: &[(math::Vec3<f32>, math::Vec3<f32>)] = &[
-                    (
-                        math::Vec3::<f32>::new(1.0, -0.3, -0.3).normalize().unwrap(),
-                        math::Vec3::<f32>::new(1.0, 0.0, 0.0),
-                    ),
-                    (
-                        math::Vec3::<f32>::new(-0.3, 1.0, -0.3).normalize().unwrap(),
-                        math::Vec3::<f32>::new(0.0, 1.0, 0.0),
-                    ),
-                    (
-                        math::Vec3::<f32>::new(-0.3, -0.3, 1.0).normalize().unwrap(),
-                        math::Vec3::<f32>::new(0.0, 0.0, 1.0),
-                    ),
-                ];
-                let get_color = |normal: math::Vec3<f32>| {
-                    let mut retval = math::Vec3::splat(0.3);
-                    for light in lights {
-                        let amount = normal.dot(light.0).max(0.0);
-                        retval += math::Vec3::splat(amount) * light.1;
                     }
-                    let retval = retval.map(|v| (v * 255.0).max(0.0).min(255.0) as u8);
-                    math::Vec4::new(retval.x, retval.y, retval.z, 255)
                 };
-                let test_texture = load_texture!("test.png");
-                render_quad(
-                    math::Vec3::new(1.0, -1.0, -1.0),
-                    math::Vec3::new(1.0, -1.0, 1.0),
-                    math::Vec3::new(-1.0, -1.0, 1.0),
-                    math::Vec3::new(-1.0, -1.0, -1.0),
-                    get_color(math::Vec3::new(0.0, -1.0, 0.0)),
-                    test_texture,
-                );
-                render_quad(
-                    math::Vec3::new(1.0, 1.0, -1.0),
-                    math::Vec3::new(-1.0, 1.0, -1.0),
-                    math::Vec3::new(-1.0, 1.0, 1.0),
-                    math::Vec3::new(1.0, 1.0, 1.0),
-                    get_color(math::Vec3::new(0.0, 1.0, 0.0)),
-                    test_texture,
-                );
-                render_quad(
-                    math::Vec3::new(1.0, -1.0, -1.0),
-                    math::Vec3::new(1.0, 1.0, -1.0),
-                    math::Vec3::new(1.0, 1.0, 1.0),
-                    math::Vec3::new(1.0, -1.0, 1.0),
-                    get_color(math::Vec3::new(1.0, 0.0, 0.0)),
-                    test_texture,
-                );
-                render_quad(
-                    math::Vec3::new(1.0, -1.0, 1.0),
-                    math::Vec3::new(1.0, 1.0, 1.0),
-                    math::Vec3::new(-1.0, 1.0, 1.0),
-                    math::Vec3::new(-1.0, -1.0, 1.0),
-                    get_color(math::Vec3::new(0.0, 0.0, 1.0)),
-                    test_texture,
-                );
-                render_quad(
-                    math::Vec3::new(-1.0, -1.0, 1.0),
-                    math::Vec3::new(-1.0, 1.0, 1.0),
-                    math::Vec3::new(-1.0, 1.0, -1.0),
-                    math::Vec3::new(-1.0, -1.0, -1.0),
-                    get_color(math::Vec3::new(-1.0, 0.0, 0.0)),
-                    test_texture,
-                );
-                render_quad(
-                    math::Vec3::new(1.0, 1.0, -1.0),
-                    math::Vec3::new(1.0, -1.0, -1.0),
-                    math::Vec3::new(-1.0, -1.0, -1.0),
-                    math::Vec3::new(-1.0, 1.0, -1.0),
-                    get_color(math::Vec3::new(0.0, 0.0, -1.0)),
-                    test_texture,
-                );
+                if false {
+                    let lights: &[(math::Vec3<f32>, math::Vec3<f32>)] = &[
+                        (
+                            math::Vec3::<f32>::new(1.0, -0.3, -0.3).normalize().unwrap(),
+                            math::Vec3::<f32>::new(1.0, 0.0, 0.0),
+                        ),
+                        (
+                            math::Vec3::<f32>::new(-0.3, 1.0, -0.3).normalize().unwrap(),
+                            math::Vec3::<f32>::new(0.0, 1.0, 0.0),
+                        ),
+                        (
+                            math::Vec3::<f32>::new(-0.3, -0.3, 1.0).normalize().unwrap(),
+                            math::Vec3::<f32>::new(0.0, 0.0, 1.0),
+                        ),
+                    ];
+                    let get_color = |normal: math::Vec3<f32>| {
+                        let mut retval = math::Vec3::splat(0.3);
+                        for light in lights {
+                            let amount = normal.dot(light.0).max(0.0);
+                            retval += math::Vec3::splat(amount) * light.1;
+                        }
+                        let retval = retval.map(|v| (v * 255.0).max(0.0).min(255.0) as u8);
+                        math::Vec4::new(retval.x, retval.y, retval.z, 255)
+                    };
+                    let test_texture = load_texture!("test.png");
+                    render_quad(
+                        math::Vec3::new(1.0, -1.0, -1.0),
+                        math::Vec3::new(1.0, -1.0, 1.0),
+                        math::Vec3::new(-1.0, -1.0, 1.0),
+                        math::Vec3::new(-1.0, -1.0, -1.0),
+                        get_color(math::Vec3::new(0.0, -1.0, 0.0)),
+                        test_texture,
+                        false,
+                    );
+                    render_quad(
+                        math::Vec3::new(1.0, 1.0, -1.0),
+                        math::Vec3::new(-1.0, 1.0, -1.0),
+                        math::Vec3::new(-1.0, 1.0, 1.0),
+                        math::Vec3::new(1.0, 1.0, 1.0),
+                        get_color(math::Vec3::new(0.0, 1.0, 0.0)),
+                        test_texture,
+                        false,
+                    );
+                    render_quad(
+                        math::Vec3::new(1.0, -1.0, -1.0),
+                        math::Vec3::new(1.0, 1.0, -1.0),
+                        math::Vec3::new(1.0, 1.0, 1.0),
+                        math::Vec3::new(1.0, -1.0, 1.0),
+                        get_color(math::Vec3::new(1.0, 0.0, 0.0)),
+                        test_texture,
+                        false,
+                    );
+                    render_quad(
+                        math::Vec3::new(1.0, -1.0, 1.0),
+                        math::Vec3::new(1.0, 1.0, 1.0),
+                        math::Vec3::new(-1.0, 1.0, 1.0),
+                        math::Vec3::new(-1.0, -1.0, 1.0),
+                        get_color(math::Vec3::new(0.0, 0.0, 1.0)),
+                        test_texture,
+                        false,
+                    );
+                    render_quad(
+                        math::Vec3::new(-1.0, -1.0, 1.0),
+                        math::Vec3::new(-1.0, 1.0, 1.0),
+                        math::Vec3::new(-1.0, 1.0, -1.0),
+                        math::Vec3::new(-1.0, -1.0, -1.0),
+                        get_color(math::Vec3::new(-1.0, 0.0, 0.0)),
+                        test_texture,
+                        false,
+                    );
+                    render_quad(
+                        math::Vec3::new(1.0, 1.0, -1.0),
+                        math::Vec3::new(1.0, -1.0, -1.0),
+                        math::Vec3::new(-1.0, -1.0, -1.0),
+                        math::Vec3::new(-1.0, 1.0, -1.0),
+                        get_color(math::Vec3::new(0.0, 0.0, -1.0)),
+                        test_texture,
+                        false,
+                    );
+                } else {
+                    let textures = [
+                        load_texture!("0.png"),
+                        load_texture!("1.png"),
+                        load_texture!("2.png"),
+                        load_texture!("3.png"),
+                        load_texture!("4.png"),
+                        load_texture!("5.png"),
+                        load_texture!("6.png"),
+                        load_texture!("7.png"),
+                        load_texture!("8.png"),
+                        load_texture!("9.png"),
+                        load_texture!("10.png"),
+                        load_texture!("11.png"),
+                        load_texture!("12.png"),
+                        load_texture!("13.png"),
+                        load_texture!("14.png"),
+                        load_texture!("15.png"),
+                        load_texture!("16.png"),
+                        load_texture!("17.png"),
+                        load_texture!("18.png"),
+                        load_texture!("19.png"),
+                        load_texture!("20.png"),
+                        load_texture!("21.png"),
+                        load_texture!("22.png"),
+                        load_texture!("23.png"),
+                        load_texture!("24.png"),
+                        load_texture!("25.png"),
+                        load_texture!("26.png"),
+                        load_texture!("27.png"),
+                        load_texture!("28.png"),
+                        load_texture!("29.png"),
+                        load_texture!("30.png"),
+                        load_texture!("31.png"),
+                    ];
+                    for (index, &texture) in textures.iter().enumerate() {
+                        let position = math::Vec3::new(
+                            (index % 8) as f32 - 3.5,
+                            (index / 8) as f32 - 1.5,
+                            0.0,
+                        ) * math::Vec3::splat(0.75);
+                        render_quad(
+                            position + math::Vec3::new(0.25, -0.25, 0.0),
+                            position + math::Vec3::new(0.25, 0.25, 0.0),
+                            position + math::Vec3::new(-0.25, 0.25, 0.0),
+                            position + math::Vec3::new(-0.25, -0.25, 0.0),
+                            math::Vec4::new(0xFF, 0xFF, 0xFF, 0xFF),
+                            texture,
+                            false,
+                        );
+                        render_quad(
+                            position + math::Vec3::new(0.25, -0.25, 0.0),
+                            position + math::Vec3::new(0.25, 0.25, 0.0),
+                            position + math::Vec3::new(-0.25, 0.25, 0.0),
+                            position + math::Vec3::new(-0.25, -0.25, 0.0),
+                            math::Vec4::new(0x7F, 0x7F, 0xFF, 0xFF),
+                            texture,
+                            true,
+                        );
+                    }
+                }
             }
             let mut loader_command_buffer_builder =
                 device.create_loader_command_buffer_builder()?;
