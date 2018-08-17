@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 #![feature(termination_trait_lib)]
+#![feature(linkage)]
 
 pub mod event;
 mod sdl_main;
@@ -65,6 +66,7 @@ impl Error for SDLError {}
     target_os = "android",
     test
 )))]
+#[linkage = "weak"]
 pub unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
     SDL_main(argc, argv)
 }

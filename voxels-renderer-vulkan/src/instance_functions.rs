@@ -25,7 +25,7 @@ pub unsafe fn get_instance_fn(
 ) -> api::PFN_vkVoidFunction {
     let name = CStr::from_bytes_with_nul(name).unwrap();
     match vk_get_instance_proc_addr.unwrap()(instance, name.as_ptr()) {
-        Some(retval) => Some(retval),
+        Some(retval) => Some(mem::transmute(retval)),
         None => panic!(
             "vkGetInstanceProcAddr failed: function not found: {}",
             name.to_string_lossy()

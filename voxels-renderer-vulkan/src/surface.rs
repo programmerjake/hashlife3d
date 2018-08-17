@@ -12,9 +12,9 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-use super::{api, InstanceWrapper, Result};
+use super::{api, null_or_zero, InstanceWrapper, Result};
 use sdl;
-use std::ptr::{null, null_mut};
+use std::ptr::null;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ impl Drop for SurfaceWrapper {
 
 impl SurfaceWrapper {
     pub unsafe fn new(window: sdl::window::Window, instance: Arc<InstanceWrapper>) -> Result<Self> {
-        let mut surface = null_mut();
+        let mut surface = null_or_zero();
         if sdl::api::SDL_Vulkan_CreateSurface(
             window.get(),
             instance.instance as sdl::api::VkInstance,

@@ -26,7 +26,7 @@ unsafe fn get_device_fn(
 ) -> api::PFN_vkVoidFunction {
     let name = CStr::from_bytes_with_nul(name).unwrap();
     match vk_get_device_proc_addr.unwrap()(device, name.as_ptr()) {
-        Some(retval) => Some(retval),
+        Some(retval) => Some(mem::transmute(retval)),
         None => panic!(
             "vkGetDeviceProcAddr failed: function not found: {}",
             name.to_string_lossy()
