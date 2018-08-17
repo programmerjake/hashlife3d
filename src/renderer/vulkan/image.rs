@@ -432,6 +432,7 @@ pub unsafe fn create_staging_image_set(
             image_layer_count: image_layer_count,
             last_image_layer_count: last_image_layer_count,
             valid_image_count: valid_image_count,
+            samplers: Arc::new(samplers),
             descriptor_set: Arc::new(descriptor_set),
         },
         mapped_memory: mapped_memory,
@@ -476,6 +477,7 @@ pub struct VulkanDeviceImageSetImplementation {
     pub image_layer_count: u32,
     pub last_image_layer_count: u32,
     pub valid_image_count: u32,
+    pub samplers: Arc<Vec<SamplerWrapper>>,
     pub descriptor_set: Arc<DescriptorSetWrapper>,
 }
 

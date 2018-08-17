@@ -22,8 +22,9 @@ use super::{
     set_push_constants_initial_transform, BufferWrapper, DescriptorSetWrapper,
     DeviceMemoryPoolAllocation, DeviceWrapper, FenceState, FenceWrapper, GraphicsPipelineWrapper,
     ImageViewWrapper, PipelineLayoutWrapper, PushConstants, RenderPassWrapper, Result,
-    SemaphoreWrapper, VulkanDevice, VulkanDeviceImageSet, VulkanDeviceImageSetImplementation,
-    VulkanDeviceIndexBuffer, VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
+    SamplerWrapper, SemaphoreWrapper, VulkanDevice, VulkanDeviceImageSet,
+    VulkanDeviceImageSetImplementation, VulkanDeviceIndexBuffer,
+    VulkanDeviceIndexBufferImplementation, VulkanDeviceVertexBuffer,
     VulkanDeviceVertexBufferImplementation, VulkanError, VulkanStagingImageSet,
     VulkanStagingImageSetImplementation, VulkanStagingIndexBuffer,
     VulkanStagingIndexBufferImplementation, VulkanStagingVertexBuffer,
@@ -183,6 +184,7 @@ pub struct CommandBufferReferencedObjects {
     buffers: Vec<BufferWrapper>,
     shared_buffers: Vec<Arc<BufferWrapper>>,
     shared_image_view_vecs: Vec<Arc<Vec<ImageViewWrapper>>>,
+    shared_sampler_vecs: Vec<Arc<Vec<SamplerWrapper>>>,
     shared_descriptor_sets: Vec<Arc<DescriptorSetWrapper>>,
 }
 
@@ -195,6 +197,7 @@ impl Default for CommandBufferReferencedObjects {
             buffers: Vec::new(),
             shared_buffers: Vec::new(),
             shared_image_view_vecs: Vec::new(),
+            shared_sampler_vecs: Vec::new(),
             shared_descriptor_sets: Vec::new(),
         }
     }
@@ -675,6 +678,7 @@ impl VulkanRenderCommandBufferState {
                         image_layer_count: _,
                         last_image_layer_count: _,
                         valid_image_count: _,
+                        samplers,
                         descriptor_set,
                     } = into_vulkan_device_image_set_implementation(image_set);
                     self.device.vkCmdBindDescriptorSets.unwrap()(
@@ -691,6 +695,7 @@ impl VulkanRenderCommandBufferState {
                     referenced_objects
                         .required_command_buffers
                         .push(submit_tracker.unwrap());
+                    referenced_objects.shared_sampler_vecs.push(samplers);
                     referenced_objects
                         .shared_descriptor_sets
                         .push(descriptor_set);
