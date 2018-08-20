@@ -17,7 +17,10 @@ extern crate voxels_math as math;
 extern crate voxels_sdl as sdl;
 use std::error;
 
-pub type TextureIndex = u16;
+/// for N textures, ranges from 1 to N, with 0 reserved for not using a texture
+pub type TextureId = u16;
+
+pub const NO_TEXTURE: TextureId = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -25,7 +28,7 @@ pub struct VertexBufferElement {
     pub position: [f32; 3],
     pub color: [u8; 4],
     pub texture_coord: [f32; 2],
-    pub texture_index: TextureIndex,
+    pub texture_id: TextureId,
 }
 
 impl VertexBufferElement {
@@ -33,13 +36,13 @@ impl VertexBufferElement {
         position: math::Vec3,
         color: math::Vec4<u8>,
         texture_coord: math::Vec2,
-        texture_index: TextureIndex,
+        texture_id: TextureId,
     ) -> Self {
         Self {
             position: position.into(),
             color: color.into(),
             texture_coord: texture_coord.into(),
-            texture_index: texture_index,
+            texture_id: texture_id,
         }
     }
 }
@@ -68,7 +71,7 @@ pub trait StagingImageSet: Sized + Send {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn count(&self) -> u32;
-    fn write(&mut self, image_index: TextureIndex, image: &image::Image);
+    fn write(&mut self, texture_id: TextureId, image: &image::Image);
 }
 
 pub trait DeviceImageSet: Sized + Send + Clone {

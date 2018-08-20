@@ -126,7 +126,7 @@ pub unsafe fn create_staging_vertex_buffer(
 ) -> Result<VulkanStagingVertexBuffer> {
     let buffer = BufferWrapper::new(
         device.clone(),
-        element_count as u64 * mem::size_of::<VertexBufferElement>() as u64,
+        cmp::max(1, element_count) as u64 * mem::size_of::<VertexBufferElement>() as u64,
         STAGING_VERTEX_BUFFER_USAGE_FLAGS,
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
@@ -204,7 +204,7 @@ pub unsafe fn create_device_vertex_buffer(
 ) -> Result<VulkanDeviceVertexBuffer> {
     let buffer = BufferWrapper::new(
         device,
-        element_count as u64 * mem::size_of::<VertexBufferElement>() as u64,
+        cmp::max(1, element_count) as u64 * mem::size_of::<VertexBufferElement>() as u64,
         DEVICE_VERTEX_BUFFER_USAGE_FLAGS,
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
@@ -255,7 +255,7 @@ pub unsafe fn create_staging_index_buffer(
 ) -> Result<VulkanStagingIndexBuffer> {
     let buffer = BufferWrapper::new(
         device.clone(),
-        element_count as u64 * mem::size_of::<IndexBufferElement>() as u64,
+        cmp::max(1, element_count) as u64 * mem::size_of::<IndexBufferElement>() as u64,
         STAGING_INDEX_BUFFER_USAGE_FLAGS,
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
@@ -333,7 +333,7 @@ pub unsafe fn create_device_index_buffer(
 ) -> Result<VulkanDeviceIndexBuffer> {
     let buffer = BufferWrapper::new(
         device,
-        element_count as u64 * mem::size_of::<IndexBufferElement>() as u64,
+        cmp::max(1, element_count) as u64 * mem::size_of::<IndexBufferElement>() as u64,
         DEVICE_INDEX_BUFFER_USAGE_FLAGS,
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],

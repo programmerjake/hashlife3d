@@ -1,0 +1,11 @@
+[package]
+name = "voxels-resources"
+version = "0.1.0"
+authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+voxels-renderer = { path = "../voxels-renderer" }
+voxels-image = { path = "../voxels-image" }

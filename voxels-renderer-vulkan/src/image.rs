@@ -15,7 +15,7 @@
 use super::{
     api, null_or_zero, BufferWrapper, CommandBufferSubmitTracker, DescriptorPoolWrapper,
     DescriptorSetLayoutWrapper, DescriptorSetWrapper, DeviceImageSet, DeviceMemoryPoolAllocation,
-    DeviceMemoryPools, DeviceWrapper, Result, StagingImageSet, TextureIndex, VulkanError,
+    DeviceMemoryPools, DeviceWrapper, Result, StagingImageSet, TextureId, VulkanError,
     FRAGMENT_SAMPLERS_BINDING, FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT,
 };
 use math;
@@ -273,7 +273,7 @@ pub fn get_image_set_max_total_layer_count(
     {
         return Err(VulkanError::ImageIsTooBig);
     }
-    let max = TextureIndex::max_value() as u32;
+    let max = TextureId::max_value() as u32;
     match image_set_image_format_properties
         .maxArrayLayers
         .checked_mul(FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT)
@@ -449,9 +449,9 @@ impl StagingImageSet for VulkanStagingImageSet {
     fn count(&self) -> u32 {
         self.0.device_image_set.total_layer_count
     }
-    fn write(&mut self, image_index: TextureIndex, image: &Image) {
-        assert_ne!(image_index, 0);
-        let image_index = (image_index as usize) - 1;
+    fn write(&mut self, texture_id: TextureId, image: &Image) {
+        assert_ne!(texture_id, 0);
+        let image_index = (texture_id as usize) - 1;
         assert!(image_index < self.0.device_image_set.total_layer_count as usize);
         let width = self.0.device_image_set.width;
         let height = self.0.device_image_set.height;

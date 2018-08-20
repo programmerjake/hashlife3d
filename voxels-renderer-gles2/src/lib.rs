@@ -684,9 +684,9 @@ impl StagingImageSet for GLES2StagingImageSet {
     fn count(&self) -> u32 {
         self.layout.sub_image_count
     }
-    fn write(&mut self, image_index: TextureIndex, image: &image::Image) {
-        assert!(image_index != 0);
-        let mut image_index = image_index as u32 - 1;
+    fn write(&mut self, texture_id: TextureId, image: &image::Image) {
+        assert!(texture_id != 0);
+        let mut image_index = texture_id as u32 - 1;
         assert!(image_index < self.layout.sub_image_count);
         assert!(image.width() == self.layout.base.sub_image_width);
         assert!(image.height() == self.layout.base.sub_image_height);
@@ -916,7 +916,7 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
             .expect("can't draw without image set bound");
         assert!(index_count as usize <= index_buffer.len());
         assert!(index_count as usize + first_index as usize <= index_buffer.len());
-        assert!((vertex_offset as usize) < vertex_buffer.len());
+        assert!((vertex_offset as usize) < vertex_buffer.len() || index_count == 0);
         assert!(index_count % 3 == 0, "must be whole number of triangles");
         if index_count == 0 {
             return;
@@ -1200,7 +1200,7 @@ impl Device for GLES2Device {
                         &mut length,
                         buffer.as_mut_ptr() as *mut c_char,
                     );
-                    buffer.resize(length as usize + 1, 0);
+                    buffer.resize(length as usize, 0);
                     CString::from_vec_unchecked(buffer)
                 };
                 let write_shader_info_log = |shader: api::GLuint, name: &str| {
@@ -1222,7 +1222,7 @@ impl Device for GLES2Device {
                         &mut length,
                         buffer.as_mut_ptr() as *mut c_char,
                     );
-                    buffer.resize(length as usize + 1, 0);
+                    buffer.resize(length as usize, 0);
                     CString::from_vec_unchecked(buffer)
                 };
                 let write_program_info_log = |program: api::GLuint| {
@@ -1649,7 +1649,7 @@ impl Device for GLES2Device {
                                     ),
                                     (
                                         input_texture_index,
-                                        texture_index,
+                                        texture_id,
                                         1,
                                         api::GL_UNSIGNED_SHORT,
                                         api::GL_FALSE

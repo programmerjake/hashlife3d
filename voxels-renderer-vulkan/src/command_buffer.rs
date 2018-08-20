@@ -860,7 +860,7 @@ impl RenderCommandBufferBuilder for VulkanRenderCommandBufferBuilder {
     fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
         assert!(index_count as usize <= self.index_buffer_length);
         assert!(index_count as usize + first_index as usize <= self.index_buffer_length);
-        assert!((vertex_offset as usize) < self.vertex_buffer_length);
+        assert!((vertex_offset as usize) < self.vertex_buffer_length || index_count == 0);
         assert!(index_count % 3 == 0, "must be whole number of triangles");
         assert!(self.did_set_image_set);
         if index_count > 0 {

@@ -747,7 +747,7 @@ impl VulkanDevice {
             get_vertex_input_attribute_description!(0, 0, FormatKind::FullRange, position),
             get_vertex_input_attribute_description!(1, 0, FormatKind::Normalized, color),
             get_vertex_input_attribute_description!(2, 0, FormatKind::FullRange, texture_coord),
-            get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_index),
+            get_vertex_input_attribute_description!(3, 0, FormatKind::FullRange, texture_id),
         ];
         let attachments = [api::VkPipelineColorBlendAttachmentState {
             blendEnable: api::VK_TRUE,

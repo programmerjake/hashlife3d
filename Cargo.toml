@@ -22,3 +22,4 @@ voxels-sdl = { path = "voxels-sdl" }
 voxels-math = { path = "voxels-math" }
 voxels-image = { path = "voxels-image" }
 voxels-renderer = { path = "voxels-renderer" }
+voxels-resources = { path = "voxels-resources" }

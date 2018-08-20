@@ -219,7 +219,6 @@ impl DeviceMemoryPoolRef {
         mut size: api::VkDeviceSize,
         alignment: api::VkDeviceSize,
     ) -> Result<DeviceMemoryPoolAllocation> {
-        assert!(size != 0 && alignment != 0);
         assert!(alignment.is_power_of_two());
         size = cmp::max(size, alignment);
         size = size.checked_next_power_of_two().unwrap();

@@ -19,7 +19,7 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub trait BlockType: Copy + Default + Eq + PartialEq + Hash + fmt::Debug {}
 
@@ -112,8 +112,7 @@ impl<Block: BlockType> Node<Block> {
                 .get(NodeKey::Nonleaf(NodeKeyNonleaf {
                     children: [[[child; 2]; 2]; 2],
                     children_level: level - 1,
-                }))
-                .into()
+                })).into()
         }
     }
     fn get_empty_node<Step: StepFn<Block>, H: BuildHasher>(
@@ -218,8 +217,8 @@ impl<Block: BlockType> Node<Block> {
                                                 key.children[kx][ky][kz] = unsafe {
                                                     children[x / 2][y / 2][z / 2].as_ref()
                                                 }.key
-                                                    .as_nonleaf()
-                                                    .children[x % 2][y % 2][z % 2];
+                                                .as_nonleaf()
+                                                .children[x % 2][y % 2][z % 2];
                                             }
                                         }
                                     }
@@ -294,8 +293,8 @@ impl<Block: BlockType> Node<Block> {
                                                 key.children[kx][ky][kz] = unsafe {
                                                     children[x / 2][y / 2][z / 2].as_ref()
                                                 }.key
-                                                    .as_nonleaf()
-                                                    .children[x % 2][y % 2][z % 2];
+                                                .as_nonleaf()
+                                                .children[x % 2][y % 2][z % 2];
                                             }
                                         }
                                     }
@@ -331,7 +330,7 @@ impl<Block: BlockType> Node<Block> {
                                                         .unwrap()
                                                         .as_ref()
                                                 }.key
-                                                    .as_leaf()[x % 2][y % 2][z % 2];
+                                                .as_leaf()[x % 2][y % 2][z % 2];
                                             }
                                         }
                                     }
@@ -353,8 +352,8 @@ impl<Block: BlockType> Node<Block> {
                                                         .unwrap()
                                                         .as_ref()
                                                 }.key
-                                                    .as_nonleaf()
-                                                    .children[x % 2][y % 2][z % 2];
+                                                .as_nonleaf()
+                                                .children[x % 2][y % 2][z % 2];
                                             }
                                         }
                                     }
@@ -494,6 +493,79 @@ impl<Block: BlockType> Node<Block> {
             }
         }
     }
+    fn get_cube_pow2(
+        root: NonNull<Node<Block>>,
+        x: u32,
+        y: u32,
+        z: u32,
+        result_size: u32,
+        x_stride: usize,
+        y_stride: usize,
+        z_stride: usize,
+        result: &mut [Block],
+    ) {
+        let root = unsafe { root.as_ref() };
+        let size = Node::<Block>::get_size_from_level(root.key.level());
+        assert!(x < size && y < size && z < size);
+        assert!(x + result_size <= size && y + result_size <= size && z + result_size <= size);
+        match &root.key {
+            NodeKey::Leaf(key) => if result_size == 1 {
+                result[0] = key[x as usize][y as usize][z as usize]
+            } else {
+                assert_eq!(x, 0);
+                assert_eq!(y, 0);
+                assert_eq!(z, 0);
+                for z in 0..1 {
+                    for y in 0..1 {
+                        for x in 0..1 {
+                            result[x * x_stride + y * y_stride + z * z_stride] = key[x][y][z];
+                        }
+                    }
+                }
+            },
+            NodeKey::Nonleaf(key) => if result_size == size {
+                assert_eq!(x, 0);
+                assert_eq!(y, 0);
+                assert_eq!(z, 0);
+                for zi in 0..1 {
+                    for yi in 0..1 {
+                        for xi in 0..1 {
+                            let offset = x_stride * (xi * (size / 2) as usize)
+                                + y_stride * (yi * (size / 2) as usize)
+                                + z_stride * (zi * (size / 2) as usize);
+                            Self::get_cube_pow2(
+                                key.children[xi][yi][zi],
+                                0,
+                                0,
+                                0,
+                                size / 2,
+                                x_stride,
+                                y_stride,
+                                z_stride,
+                                &mut result[offset..],
+                            );
+                        }
+                    }
+                }
+            } else {
+                assert!(result_size <= size / 2);
+                let xi = (x / (size / 2)) as usize;
+                let yi = (y / (size / 2)) as usize;
+                let zi = (z / (size / 2)) as usize;
+                Self::get_cube_pow2(
+                    key.children[xi][yi][zi],
+                    x % (size / 2),
+                    y % (size / 2),
+                    z % (size / 2),
+                    result_size,
+                    x_stride,
+                    y_stride,
+                    z_stride,
+                    result,
+                );
+            },
+        }
+    }
     fn set_block_without_expanding<Step: StepFn<Block>, H: BuildHasher>(
         root: NonNull<Node<Block>>,
         x: u32,
@@ -573,10 +645,26 @@ impl<Block: BlockType> Hash for Node<Block> {
 pub struct State<Block: BlockType, H: BuildHasher> {
     root: Arc<NonNull<Node<Block>>>,
     world_nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
+    snapshots: Arc<Mutex<HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>>>,
 }
 
 impl<Block: BlockType, H: BuildHasher> State<Block, H> {
     const MAX_LEVEL: u32 = 20;
+    fn new_from(state: &Self, root: NonNull<Node<Block>>) -> Self {
+        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, H>::MAX_LEVEL);
+        let value = state
+            .snapshots
+            .lock()
+            .unwrap()
+            .entry(root)
+            .or_insert_with(|| Arc::new(root))
+            .clone();
+        Self {
+            root: value,
+            world_nodes: state.world_nodes.clone(),
+            snapshots: state.snapshots.clone(),
+        }
+    }
     fn new<Step: StepFn<Block>>(
         world: &mut World<Block, Step, H>,
         root: NonNull<Node<Block>>,
@@ -584,11 +672,15 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, H>::MAX_LEVEL);
         let value = world
             .snapshots
+            .lock()
+            .unwrap()
             .entry(root)
-            .or_insert_with(|| Arc::new(root));
+            .or_insert_with(|| Arc::new(root))
+            .clone();
         Self {
-            root: value.clone(),
+            root: value,
             world_nodes: world.nodes.clone(),
+            snapshots: world.snapshots.clone(),
         }
     }
     pub fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
@@ -607,6 +699,47 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         } else {
             Node::get_block(*self.root, x, y, z)
         }
+    }
+    pub fn get_cube_pow2(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        result_size: u32,
+        x_stride: usize,
+        y_stride: usize,
+        z_stride: usize,
+        result: &mut [Block],
+    ) {
+        assert!(result_size.is_power_of_two());
+        assert_eq!(x as u32 % result_size, 0);
+        assert_eq!(y as u32 % result_size, 0);
+        assert_eq!(z as u32 % result_size, 0);
+        let key = &unsafe { (*self.root).as_ref() }.key;
+        let level = key.level();
+        let size = Node::<Block>::get_size_from_level(level);
+        let x = (x as u32).wrapping_add(size / 2);
+        let y = (y as u32).wrapping_add(size / 2);
+        let z = (z as u32).wrapping_add(size / 2);
+        for rz in 0..result_size {
+            if rz.wrapping_add(z) < size {
+                continue;
+            }
+            for ry in 0..result_size {
+                if ry.wrapping_add(y) < size {
+                    continue;
+                }
+                for rx in 0..result_size {
+                    if rx.wrapping_add(x) < size {
+                        continue;
+                    }
+                    result[rx as usize * x_stride
+                               + ry as usize * y_stride
+                               + rz as usize * z_stride] = Default::default();
+                }
+            }
+        }
+        unimplemented!()
     }
     fn set_helper<Step: StepFn<Block>>(
         &self,
@@ -677,10 +810,24 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
     }
 }
 
+impl<Block: BlockType, H: BuildHasher> PartialEq for State<Block, H> {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.root == rhs.root
+    }
+}
+
+impl<Block: BlockType, H: BuildHasher> Eq for State<Block, H> {}
+
+impl<Block: BlockType, BH: BuildHasher> Hash for State<Block, BH> {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.root.hash(hasher)
+    }
+}
+
 #[derive(Debug)]
 pub struct World<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
     nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
-    snapshots: HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>,
+    snapshots: Arc<Mutex<HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>>>,
     step: Step,
 }
 
@@ -735,7 +882,7 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
             node.gc_state = GcState::Unreachable;
         }
         let mut work_queue = Default::default();
-        self.snapshots.retain(|k, v| {
+        self.snapshots.lock().unwrap().retain(|k, v| {
             if Arc::get_mut(v).is_none() {
                 Self::mark_node(*k, &mut work_queue);
                 true
@@ -768,3 +915,11 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
         });
     }
 }
+
+unsafe impl<Block: BlockType + Send + Sync, Step: StepFn<Block> + Send, H: BuildHasher + Send> Send
+    for World<Block, Step, H>
+{}
+
+unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Send for State<Block, H> {}
+
+unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Sync for State<Block, H> {}
