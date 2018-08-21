@@ -61,12 +61,12 @@ fn render_main_loop<PD: renderer::PausedDevice>(
     impl<D: renderer::Device> Running<D> {
         fn new(mut device: D) -> Result<Self, D::Error> {
             let mut mesh = geometry::Mesh::new();
-            let nx_texture_id = resources::images::TEST_NX.texture_id();
-            let px_texture_id = resources::images::TEST_PX.texture_id();
-            let ny_texture_id = resources::images::TEST_NY.texture_id();
-            let py_texture_id = resources::images::TEST_PY.texture_id();
-            let nz_texture_id = resources::images::TEST_NZ.texture_id();
-            let pz_texture_id = resources::images::TEST_PZ.texture_id();
+            let nx_texture_id = resources::images::tiles::TEST_NX.texture_id().unwrap();
+            let px_texture_id = resources::images::tiles::TEST_PX.texture_id().unwrap();
+            let ny_texture_id = resources::images::tiles::TEST_NY.texture_id().unwrap();
+            let py_texture_id = resources::images::tiles::TEST_PY.texture_id().unwrap();
+            let nz_texture_id = resources::images::tiles::TEST_NZ.texture_id().unwrap();
+            let pz_texture_id = resources::images::tiles::TEST_PZ.texture_id().unwrap();
             fn get_color(x: i32, y: i32, z: i32) -> math::Vec4<u8> {
                 math::Vec4::new(
                     if x != 2 { 0xFF } else { 0x80 },
@@ -121,7 +121,8 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                 loader_command_buffer_builder.copy_index_buffer_to_device(index_buffer)?;
             let vertex_buffer =
                 loader_command_buffer_builder.copy_vertex_buffer_to_device(vertex_buffer)?;
-            let image_set = resources::images::create_tiles_image_set(device.get_device_ref())?;
+            let image_set =
+                resources::images::tiles::create_tiles_image_set(device.get_device_ref())?;
             let image_set = loader_command_buffer_builder.copy_image_set_to_device(image_set)?;
             render_command_buffer_builder.set_image_set(image_set);
             render_command_buffer_builder.set_buffers(vertex_buffer, index_buffer.clone());
