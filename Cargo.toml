@@ -17,6 +17,20 @@ name = "hashlife3d"
 version = "0.1.0"
 authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
+[workspace]
+members = [
+    "voxels-image",
+    "voxels-image-base",
+    "voxels-image-png",
+    "voxels-math",
+    "voxels-renderer",
+    "voxels-renderer-base",
+    "voxels-renderer-gles2",
+    "voxels-renderer-vulkan",
+    "voxels-resources",
+    "voxels-sdl",
+]
+
 [dependencies]
 voxels-sdl = { path = "voxels-sdl" }
 voxels-math = { path = "voxels-math" }
