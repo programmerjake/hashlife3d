@@ -72,72 +72,86 @@ impl InstanceWrapper {
                     vkDestroyInstance: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkDestroyInstance
+                        vkDestroyInstance,
+                        PFN_vkDestroyInstance
                     ),
                     vkCreateDevice: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkCreateDevice
+                        vkCreateDevice,
+                        PFN_vkCreateDevice
                     ),
                     vkGetDeviceProcAddr: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetDeviceProcAddr
+                        vkGetDeviceProcAddr,
+                        PFN_vkGetDeviceProcAddr
                     ),
                     vkDestroySurfaceKHR: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkDestroySurfaceKHR
+                        vkDestroySurfaceKHR,
+                        PFN_vkDestroySurfaceKHR
                     ),
                     vkEnumeratePhysicalDevices: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkEnumeratePhysicalDevices
+                        vkEnumeratePhysicalDevices,
+                        PFN_vkEnumeratePhysicalDevices
                     ),
                     vkGetPhysicalDeviceSurfaceSupportKHR: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceSurfaceSupportKHR
+                        vkGetPhysicalDeviceSurfaceSupportKHR,
+                        PFN_vkGetPhysicalDeviceSurfaceSupportKHR
                     ),
                     vkGetPhysicalDeviceQueueFamilyProperties: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceQueueFamilyProperties
+                        vkGetPhysicalDeviceQueueFamilyProperties,
+                        PFN_vkGetPhysicalDeviceQueueFamilyProperties
                     ),
                     vkEnumerateDeviceExtensionProperties: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkEnumerateDeviceExtensionProperties
+                        vkEnumerateDeviceExtensionProperties,
+                        PFN_vkEnumerateDeviceExtensionProperties
                     ),
                     vkGetPhysicalDeviceSurfaceCapabilitiesKHR: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+                        vkGetPhysicalDeviceSurfaceCapabilitiesKHR,
+                        PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
                     ),
                     vkGetPhysicalDeviceSurfaceFormatsKHR: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceSurfaceFormatsKHR
+                        vkGetPhysicalDeviceSurfaceFormatsKHR,
+                        PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
                     ),
                     vkGetPhysicalDeviceFormatProperties: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceFormatProperties
+                        vkGetPhysicalDeviceFormatProperties,
+                        PFN_vkGetPhysicalDeviceFormatProperties
                     ),
                     vkGetPhysicalDeviceSurfacePresentModesKHR: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceSurfacePresentModesKHR
+                        vkGetPhysicalDeviceSurfacePresentModesKHR,
+                        PFN_vkGetPhysicalDeviceSurfacePresentModesKHR
                     ),
                     vkGetPhysicalDeviceMemoryProperties: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceMemoryProperties
+                        vkGetPhysicalDeviceMemoryProperties,
+                        PFN_vkGetPhysicalDeviceMemoryProperties
                     ),
                     vkGetPhysicalDeviceImageFormatProperties: get_instance_fn!(
                         vk_get_instance_proc_addr,
                         instance,
-                        vkGetPhysicalDeviceImageFormatProperties
+                        vkGetPhysicalDeviceImageFormatProperties,
+                        PFN_vkGetPhysicalDeviceImageFormatProperties
                     ),
                 })
             }

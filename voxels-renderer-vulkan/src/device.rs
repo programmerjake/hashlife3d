@@ -35,9 +35,10 @@ unsafe fn get_device_fn(
 }
 
 macro_rules! get_device_fn {
-    ($vk_get_device_proc_addr:expr, $device:expr, $name:ident) => {{
+    ($vk_get_device_proc_addr:expr, $device:expr, $name:ident, $pfn_name:ident) => {{
         use self::api::*;
-        mem::transmute::<api::PFN_vkVoidFunction, concat_idents!(PFN_, $name)>(self::get_device_fn(
+        assert_eq!(concat!("PFN_", stringify!($name)), stringify!($pfn_name));
+        mem::transmute::<api::PFN_vkVoidFunction, $pfn_name>(self::get_device_fn(
             $vk_get_device_proc_addr,
             $device,
             concat!(stringify!($name), "\0").as_bytes(),
@@ -46,12 +47,12 @@ macro_rules! get_device_fn {
 }
 
 macro_rules! make_device_wrapper {
-    ($($names:ident,)*) => {
+    ($(($names:ident, $pfn_names:ident),)*) => {
         #[allow(non_snake_case)]
         pub struct DeviceWrapper {
             pub device: api::VkDevice,
             pub instance: Arc<InstanceWrapper>,
-            $(pub $names: concat_idents!(PFN_, $names),)*
+            $(pub $names: $pfn_names,)*
         }
 
         unsafe impl Sync for DeviceWrapper {}
@@ -91,7 +92,7 @@ macro_rules! make_device_wrapper {
                         Ok(Self {
                             device: device,
                             instance: instance,
-                            $($names: get_device_fn!(vk_get_device_proc_addr, device, $names),)*
+                            $($names: get_device_fn!(vk_get_device_proc_addr, device, $names, $pfn_names),)*
                         })
                     }
                     result => Err(VulkanError::VulkanError(result)),
@@ -111,72 +112,81 @@ macro_rules! make_device_wrapper {
 }
 
 make_device_wrapper!(
-    vkAcquireNextImageKHR,
-    vkAllocateCommandBuffers,
-    vkAllocateDescriptorSets,
-    vkAllocateMemory,
-    vkBeginCommandBuffer,
-    vkBindBufferMemory,
-    vkBindImageMemory,
-    vkCmdBeginRenderPass,
-    vkCmdBindDescriptorSets,
-    vkCmdBindIndexBuffer,
-    vkCmdBindPipeline,
-    vkCmdBindVertexBuffers,
-    vkCmdClearColorImage,
-    vkCmdCopyBuffer,
-    vkCmdCopyBufferToImage,
-    vkCmdDrawIndexed,
-    vkCmdEndRenderPass,
-    vkCmdExecuteCommands,
-    vkCmdPipelineBarrier,
-    vkCmdPushConstants,
-    vkCmdSetScissor,
-    vkCmdSetViewport,
-    vkCreateBuffer,
-    vkCreateCommandPool,
-    vkCreateDescriptorPool,
-    vkCreateDescriptorSetLayout,
-    vkCreateFence,
-    vkCreateFramebuffer,
-    vkCreateGraphicsPipelines,
-    vkCreateImage,
-    vkCreateImageView,
-    vkCreatePipelineLayout,
-    vkCreateRenderPass,
-    vkCreateSampler,
-    vkCreateSemaphore,
-    vkCreateShaderModule,
-    vkCreateSwapchainKHR,
-    vkDestroyBuffer,
-    vkDestroyCommandPool,
-    vkDestroyDescriptorPool,
-    vkDestroyDescriptorSetLayout,
-    vkDestroyDevice,
-    vkDestroyFence,
-    vkDestroyFramebuffer,
-    vkDestroyImage,
-    vkDestroyImageView,
-    vkDestroyPipeline,
-    vkDestroyPipelineLayout,
-    vkDestroyRenderPass,
-    vkDestroySampler,
-    vkDestroySemaphore,
-    vkDestroyShaderModule,
-    vkDestroySwapchainKHR,
-    vkDeviceWaitIdle,
-    vkEndCommandBuffer,
-    vkFreeCommandBuffers,
-    vkFreeMemory,
-    vkGetBufferMemoryRequirements,
-    vkGetDeviceQueue,
-    vkGetFenceStatus,
-    vkGetImageMemoryRequirements,
-    vkGetSwapchainImagesKHR,
-    vkMapMemory,
-    vkQueuePresentKHR,
-    vkQueueSubmit,
-    vkUnmapMemory,
-    vkUpdateDescriptorSets,
-    vkWaitForFences,
+    (vkAcquireNextImageKHR, PFN_vkAcquireNextImageKHR),
+    (vkAllocateCommandBuffers, PFN_vkAllocateCommandBuffers),
+    (vkAllocateDescriptorSets, PFN_vkAllocateDescriptorSets),
+    (vkAllocateMemory, PFN_vkAllocateMemory),
+    (vkBeginCommandBuffer, PFN_vkBeginCommandBuffer),
+    (vkBindBufferMemory, PFN_vkBindBufferMemory),
+    (vkBindImageMemory, PFN_vkBindImageMemory),
+    (vkCmdBeginRenderPass, PFN_vkCmdBeginRenderPass),
+    (vkCmdBindDescriptorSets, PFN_vkCmdBindDescriptorSets),
+    (vkCmdBindIndexBuffer, PFN_vkCmdBindIndexBuffer),
+    (vkCmdBindPipeline, PFN_vkCmdBindPipeline),
+    (vkCmdBindVertexBuffers, PFN_vkCmdBindVertexBuffers),
+    (vkCmdClearColorImage, PFN_vkCmdClearColorImage),
+    (vkCmdCopyBuffer, PFN_vkCmdCopyBuffer),
+    (vkCmdCopyBufferToImage, PFN_vkCmdCopyBufferToImage),
+    (vkCmdDrawIndexed, PFN_vkCmdDrawIndexed),
+    (vkCmdEndRenderPass, PFN_vkCmdEndRenderPass),
+    (vkCmdExecuteCommands, PFN_vkCmdExecuteCommands),
+    (vkCmdPipelineBarrier, PFN_vkCmdPipelineBarrier),
+    (vkCmdPushConstants, PFN_vkCmdPushConstants),
+    (vkCmdSetScissor, PFN_vkCmdSetScissor),
+    (vkCmdSetViewport, PFN_vkCmdSetViewport),
+    (vkCreateBuffer, PFN_vkCreateBuffer),
+    (vkCreateCommandPool, PFN_vkCreateCommandPool),
+    (vkCreateDescriptorPool, PFN_vkCreateDescriptorPool),
+    (vkCreateDescriptorSetLayout, PFN_vkCreateDescriptorSetLayout),
+    (vkCreateFence, PFN_vkCreateFence),
+    (vkCreateFramebuffer, PFN_vkCreateFramebuffer),
+    (vkCreateGraphicsPipelines, PFN_vkCreateGraphicsPipelines),
+    (vkCreateImage, PFN_vkCreateImage),
+    (vkCreateImageView, PFN_vkCreateImageView),
+    (vkCreatePipelineLayout, PFN_vkCreatePipelineLayout),
+    (vkCreateRenderPass, PFN_vkCreateRenderPass),
+    (vkCreateSampler, PFN_vkCreateSampler),
+    (vkCreateSemaphore, PFN_vkCreateSemaphore),
+    (vkCreateShaderModule, PFN_vkCreateShaderModule),
+    (vkCreateSwapchainKHR, PFN_vkCreateSwapchainKHR),
+    (vkDestroyBuffer, PFN_vkDestroyBuffer),
+    (vkDestroyCommandPool, PFN_vkDestroyCommandPool),
+    (vkDestroyDescriptorPool, PFN_vkDestroyDescriptorPool),
+    (
+        vkDestroyDescriptorSetLayout,
+        PFN_vkDestroyDescriptorSetLayout
+    ),
+    (vkDestroyDevice, PFN_vkDestroyDevice),
+    (vkDestroyFence, PFN_vkDestroyFence),
+    (vkDestroyFramebuffer, PFN_vkDestroyFramebuffer),
+    (vkDestroyImage, PFN_vkDestroyImage),
+    (vkDestroyImageView, PFN_vkDestroyImageView),
+    (vkDestroyPipeline, PFN_vkDestroyPipeline),
+    (vkDestroyPipelineLayout, PFN_vkDestroyPipelineLayout),
+    (vkDestroyRenderPass, PFN_vkDestroyRenderPass),
+    (vkDestroySampler, PFN_vkDestroySampler),
+    (vkDestroySemaphore, PFN_vkDestroySemaphore),
+    (vkDestroyShaderModule, PFN_vkDestroyShaderModule),
+    (vkDestroySwapchainKHR, PFN_vkDestroySwapchainKHR),
+    (vkDeviceWaitIdle, PFN_vkDeviceWaitIdle),
+    (vkEndCommandBuffer, PFN_vkEndCommandBuffer),
+    (vkFreeCommandBuffers, PFN_vkFreeCommandBuffers),
+    (vkFreeMemory, PFN_vkFreeMemory),
+    (
+        vkGetBufferMemoryRequirements,
+        PFN_vkGetBufferMemoryRequirements
+    ),
+    (vkGetDeviceQueue, PFN_vkGetDeviceQueue),
+    (vkGetFenceStatus, PFN_vkGetFenceStatus),
+    (
+        vkGetImageMemoryRequirements,
+        PFN_vkGetImageMemoryRequirements
+    ),
+    (vkGetSwapchainImagesKHR, PFN_vkGetSwapchainImagesKHR),
+    (vkMapMemory, PFN_vkMapMemory),
+    (vkQueuePresentKHR, PFN_vkQueuePresentKHR),
+    (vkQueueSubmit, PFN_vkQueueSubmit),
+    (vkUnmapMemory, PFN_vkUnmapMemory),
+    (vkUpdateDescriptorSets, PFN_vkUpdateDescriptorSets),
+    (vkWaitForFences, PFN_vkWaitForFences),
 );

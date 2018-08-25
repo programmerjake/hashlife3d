@@ -34,9 +34,10 @@ pub unsafe fn get_instance_fn(
 }
 
 macro_rules! get_instance_fn {
-    ($vk_get_instance_proc_addr:expr, $instance:expr, $name:ident) => {{
+    ($vk_get_instance_proc_addr:expr, $instance:expr, $name:ident, $pfn_name:ident) => {{
         use api::*;
-        ::std::mem::transmute::<api::PFN_vkVoidFunction, concat_idents!(PFN_, $name)>(
+        assert_eq!(concat!("PFN_", stringify!($name)), stringify!($pfn_name));
+        ::std::mem::transmute::<api::PFN_vkVoidFunction, $pfn_name>(
             ::instance_functions::get_instance_fn(
                 $vk_get_instance_proc_addr,
                 $instance,
@@ -66,7 +67,8 @@ impl InstanceFunctions {
             vkCreateInstance: get_instance_fn!(
                 vk_get_instance_proc_addr,
                 null_mut(),
-                vkCreateInstance
+                vkCreateInstance,
+                PFN_vkCreateInstance
             ),
         }
     }

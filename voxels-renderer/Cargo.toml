@@ -8,6 +8,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 voxels-renderer-base = { path = "../voxels-renderer-base" }
-voxels-renderer-gles2 = { path = "../voxels-renderer-gles2" }
+# FIXME: reenable gles2
+# voxels-renderer-gles2 = { path = "../voxels-renderer-gles2" }
 voxels-renderer-vulkan = { path = "../voxels-renderer-vulkan" }
 voxels-sdl = { path = "../voxels-sdl" }

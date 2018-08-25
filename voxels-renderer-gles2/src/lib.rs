@@ -635,88 +635,89 @@ impl ImageSetLayout {
 }
 
 pub struct GLES2StagingImageSet {
+    device_image_set: GLES2DeviceImageSet,
     images: [Option<Image>; ShaderUniformLocations::SAMPLERS_LEN as usize],
-    layout: ImageSetLayout,
 }
 
 impl GLES2StagingImageSet {
-    fn make_images(
-        value: Option<Image>,
-    ) -> [Option<Image>; ShaderUniformLocations::SAMPLERS_LEN as usize] {
-        [
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value.clone(),
-            value,
-        ]
+    fn make_images<T, F: FnMut(usize) -> T>(
+        mut f: F,
+    ) -> [T; ShaderUniformLocations::SAMPLERS_LEN as usize] {
+        [f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7)]
     }
     fn new(layout: ImageSetLayout) -> Self {
-        let mut images = Self::make_images(None);
-        if layout.image_count != 0 {
-            let image = Image::new(
-                layout.base.sub_image_width * layout.sub_image_count_x,
-                layout.base.sub_image_height * layout.sub_image_count_y,
-                math::Vec4::new(0xFF, 0, 0xFF, 0xFF),
-            );
-            for i in 0..(layout.image_count as usize - 1) {
-                images[i] = Some(image.clone());
+        let images = Self::make_images(|index| {
+            if index < layout.image_count as usize {
+                Some(Image::new(
+                    layout.base.sub_image_width * layout.sub_image_count_x,
+                    layout.base.sub_image_height * layout.sub_image_count_y,
+                    math::Vec4::new(0xFF, 0, 0xFF, 0xFF),
+                ))
+            } else {
+                None
             }
-            images[layout.image_count as usize - 1] = Some(image);
-        }
+        });
+        let device_images = Self::make_images(|index| {
+            if index < layout.image_count as usize {
+                Some(None)
+            } else {
+                None
+            }
+        });
         Self {
+            device_image_set: GLES2DeviceImageSet(Arc::new(GLES2DeviceImageSetState {
+                images: Mutex::new(device_images),
+                load_submitted_flag: None,
+                layout: layout,
+            })),
             images: images,
-            layout: layout,
         }
     }
 }
 
 impl StagingImageSet for GLES2StagingImageSet {
-    fn width(&self) -> u32 {
-        self.layout.base.sub_image_width
-    }
-    fn height(&self) -> u32 {
-        self.layout.base.sub_image_height
-    }
-    fn count(&self) -> u32 {
-        self.layout.sub_image_count
+    type DeviceImageSet = GLES2DeviceImageSet;
+    fn get_device_image_set(&self) -> &GLES2DeviceImageSet {
+        &self.device_image_set
     }
     fn write(&mut self, texture_id: TextureId, image: &image::Image) {
+        let layout = &self.device_image_set.0.layout;
         assert!(texture_id != 0);
         let mut image_index = texture_id as u32 - 1;
-        assert!(image_index < self.layout.sub_image_count);
-        assert!(image.width() == self.layout.base.sub_image_width);
-        assert!(image.height() == self.layout.base.sub_image_height);
-        let x_sub_image_index = image_index % self.layout.sub_image_count_x;
-        image_index /= self.layout.sub_image_count_x;
-        let y_sub_image_index = image_index % self.layout.sub_image_count_y;
-        image_index /= self.layout.sub_image_count_y;
+        assert!(image_index < layout.sub_image_count);
+        assert!(image.width() == layout.base.sub_image_width);
+        assert!(image.height() == layout.base.sub_image_height);
+        let x_sub_image_index = image_index % layout.sub_image_count_x;
+        image_index /= layout.sub_image_count_x;
+        let y_sub_image_index = image_index % layout.sub_image_count_y;
+        image_index /= layout.sub_image_count_y;
         self.images[image_index as usize]
             .as_mut()
             .unwrap()
             .copy_area_from(
-                x_sub_image_index * self.layout.base.sub_image_width,
-                y_sub_image_index * self.layout.base.sub_image_height,
+                x_sub_image_index * layout.base.sub_image_width,
+                y_sub_image_index * layout.base.sub_image_height,
                 image,
                 0,
                 0,
-                self.layout.base.sub_image_width,
-                self.layout.base.sub_image_height,
+                layout.base.sub_image_width,
+                layout.base.sub_image_height,
             );
     }
 }
 
-struct GLES2DeviceImageSetState {
-    images: Mutex<[Option<Option<DeviceImage>>; ShaderUniformLocations::SAMPLERS_LEN as usize]>,
-    load_submitted_flag: Arc<atomic::AtomicBool>,
+struct DeviceImageSetLockedState {
+    images: [Option<Option<DeviceImage>>; ShaderUniformLocations::SAMPLERS_LEN as usize],
+    load_submitted_flag: Option<Arc<atomic::AtomicBool>>,
+}
+
+struct DeviceImageSetState {
+    locked_state: Mutex<DeviceImageSetLockedState>,
     layout: ImageSetLayout,
 }
 
 #[derive(Clone)]
-pub struct GLES2DeviceImageSet(Arc<GLES2DeviceImageSetState>);
+pub struct GLES2DeviceImageSet(Arc<DeviceImageSetState>);
 
 impl DeviceImageSet for GLES2DeviceImageSet {
     fn width(&self) -> u32 {
@@ -736,18 +737,9 @@ pub struct GLES2DeviceReference {
 }
 
 enum LoaderCommand {
-    CopyVertexBufferToDevice {
-        staging_vertex_buffer: GLES2StagingVertexBuffer,
-        device_vertex_buffer: GLES2DeviceVertexBuffer,
-    },
-    CopyIndexBufferToDevice {
-        staging_index_buffer: GLES2StagingIndexBuffer,
-        device_index_buffer: GLES2DeviceIndexBuffer,
-    },
-    CopyImageSetToDevice {
-        staging_image_set: GLES2StagingImageSet,
-        device_image_set: GLES2DeviceImageSet,
-    },
+    CopyVertexBufferToDevice(GLES2StagingVertexBuffer),
+    CopyIndexBufferToDevice(GLES2StagingIndexBuffer),
+    CopyImageSetToDevice(GLES2StagingImageSet),
 }
 
 pub struct GLES2LoaderCommandBuffer {
@@ -818,10 +810,7 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
             });
         Ok(device_buffer)
     }
-    fn copy_image_set_to_device(
-        &mut self,
-        staging_image_set: GLES2StagingImageSet,
-    ) -> Result<GLES2DeviceImageSet> {
+    fn copy_image_set_to_device(&mut self, staging_image_set: GLES2StagingImageSet) -> Result<()> {
         let mut images = [None, None, None, None, None, None, None, None];
         for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
             images[i] = if staging_image_set.images[i].is_some() {
@@ -830,18 +819,17 @@ impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
                 None
             };
         }
-        let device_image_set = GLES2DeviceImageSet(Arc::new(GLES2DeviceImageSetState {
-            images: Mutex::new(images),
-            layout: staging_image_set.layout,
-            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
-        }));
+        staging_image_set
+            .device_image_set
+            .0
+            .locked_state
+            .lock()
+            .unwrap()
+            .load_submitted_flag = Some(self.command_buffer.submitted_flag.clone());
         self.command_buffer
             .commands
-            .push(LoaderCommand::CopyImageSetToDevice {
-                staging_image_set: staging_image_set,
-                device_image_set: device_image_set.clone(),
-            });
-        Ok(device_image_set)
+            .push(LoaderCommand::CopyImageSetToDevice(staging_image_set));
+        Ok(())
     }
 }
 
@@ -1411,20 +1399,19 @@ impl Device for GLES2Device {
                         }
                         *buffer.lock().unwrap() = Some(new_buffer);
                     }
-                    LoaderCommand::CopyImageSetToDevice {
-                        staging_image_set:
-                            GLES2StagingImageSet {
-                                images: staging_images,
-                                layout: _,
-                            },
+                    LoaderCommand::CopyImageSetToDevice(GLES2StagingImageSet {
                         device_image_set: GLES2DeviceImageSet(device_image_set_state),
-                    } => {
-                        let GLES2DeviceImageSetState {
-                            images: device_images,
+                        images: staging_images,
+                    }) => {
+                        let DeviceImageSetState {
+                            locked_state: locked_state,
                             layout: _,
-                            load_submitted_flag: _,
                         } = &*device_image_set_state;
-                        let mut device_images = device_images.lock().unwrap();
+                        let mut locked_state = locked_state.lock().unwrap();
+                        let DeviceImageSetLockedState {
+                            images: device_images,
+                            load_submitted_flag: _,
+                        } = &mut *locked_state;
                         unsafe {
                             for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
                                 match (&staging_images[i], &mut device_images[i]) {
@@ -1549,11 +1536,15 @@ impl Device for GLES2Device {
                                 first_index,
                                 vertex_offset,
                             } => {
-                                let GLES2DeviceImageSetState {
-                                    images: image_set_images,
+                                let DeviceImageSetState {
+                                    locked_state: image_set_locked_state,
                                     layout: image_set_layout,
-                                    load_submitted_flag: image_set_load_submitted_flag,
                                 } = &**image_set_state;
+                                let image_set_locked_state = image_set_locked_state.lock();
+                                let DeviceImageSetLockedState {
+                                    images: image_set_images,
+                                    load_submitted_flag: image_set_load_submitted_flag,
+                                } = &*image_set_locked_state;
                                 assert!(
                                     vertex_buffer_load_submitted_flag
                                         .load(atomic::Ordering::Acquire)

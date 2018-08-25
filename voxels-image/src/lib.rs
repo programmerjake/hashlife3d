@@ -44,7 +44,10 @@ pub fn visit_image_loaders<ILV: ImageLoaderVisitor>(
     ImageLoaderVisitorResult::Continue
 }
 
-pub fn load_image<R: Read>(reader: &mut R) -> io::Result<Image> {
+pub fn load_image<R: Read, PBF: PixelBufferFactory>(
+    reader: &mut R,
+    pixel_buffer_factory: PBF,
+) -> io::Result<Image> {
     struct RestartableReader<R: Read> {
         underlying_reader: R,
         buffer: Vec<u8>,
@@ -88,17 +91,21 @@ pub fn load_image<R: Read>(reader: &mut R) -> io::Result<Image> {
             }
         }
     }
-    struct Visitor<R: Read> {
+    struct Visitor<R: Read, PBF: PixelBufferFactory> {
         result: Option<io::Result<Image>>,
         reader: Option<RestartableReader<R>>,
+        pixel_buffer_factory: Option<PBF>,
     }
-    impl<R: Read> ImageLoaderVisitor for Visitor<R> {
+    impl<R: Read, PBF: PixelBufferFactory> ImageLoaderVisitor for Visitor<R, PBF> {
         fn visit<IL: ImageLoader>(&mut self, image_loader: &IL) -> ImageLoaderVisitorResult {
             let mut reader = self.reader.take().unwrap();
             match image_loader.matches_signature(&mut reader) {
                 Ok(true) => {
                     reader.restart();
-                    self.result = Some(image_loader.load(&mut reader.into_nonrestartable_reader()));
+                    self.result = Some(image_loader.load(
+                        &mut reader.into_nonrestartable_reader(),
+                        self.pixel_buffer_factory.take().unwrap(),
+                    ));
                     ImageLoaderVisitorResult::Break
                 }
                 Ok(false) => {
@@ -116,6 +123,7 @@ pub fn load_image<R: Read>(reader: &mut R) -> io::Result<Image> {
     let mut visitor = Visitor {
         result: None,
         reader: Some(RestartableReader::new(reader)),
+        pixel_buffer_factory: Some(pixel_buffer_factory),
     };
     visit_image_loaders(&mut visitor);
     if let Some(result) = visitor.result {
@@ -128,6 +136,9 @@ pub fn load_image<R: Read>(reader: &mut R) -> io::Result<Image> {
     }
 }
 
-pub fn load_image_bytes(bytes: &[u8]) -> io::Result<Image> {
-    load_image(&mut io::Cursor::new(bytes))
+pub fn load_image_bytes<PBF: PixelBufferFactory>(
+    bytes: &[u8],
+    pixel_buffer_factory: PBF,
+) -> io::Result<Image> {
+    load_image(&mut io::Cursor::new(bytes), pixel_buffer_factory)
 }

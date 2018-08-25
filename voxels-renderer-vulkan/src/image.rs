@@ -13,16 +13,22 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use super::{
-    api, null_or_zero, BufferWrapper, CommandBufferSubmitTracker, DescriptorPoolWrapper,
-    DescriptorSetLayoutWrapper, DescriptorSetWrapper, DeviceImageSet, DeviceMemoryPoolAllocation,
-    DeviceMemoryPools, DeviceWrapper, Result, StagingImageSet, TextureId, VulkanError,
-    FRAGMENT_SAMPLERS_BINDING, FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT,
+    api, null_or_zero, transmute_from_byte_slice, ActiveCommandBufferSubmitTracker, BufferWrapper,
+    CommandBufferSubmitTracker, DescriptorPoolWrapper, DescriptorSetLayoutWrapper,
+    DescriptorSetWrapper, DeviceMemoryPoolAllocation, DeviceMemoryPools, DeviceWrapper,
+    InactiveCommandBufferSubmitTracker, Result, VulkanError, FRAGMENT_SAMPLERS_BINDING,
+    FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT,
 };
-use math;
+use math::{self, Mappable, Reducible};
+use renderer::{
+    DeviceGenericArray, DeviceImageSet, GenericArray, ImageSet, StagingGenericArray,
+    StagingImageSet, TextureId, UninitializedDeviceGenericArray, UninitializedDeviceImageSet,
+};
+use std::convert;
 use std::mem;
-use std::ptr::{copy_nonoverlapping, null, NonNull};
+use std::ptr::{null, NonNull};
 use std::sync::Arc;
-use voxels_image::{Image, Pixel};
+use voxels_image::{Image, Pixel, PixelBuffer};
 
 pub struct ImageWrapper {
     pub device: Arc<DeviceWrapper>,
@@ -78,8 +84,7 @@ impl ImageWrapper {
     }
     pub fn new_image_set_member(
         device: Arc<DeviceWrapper>,
-        width: u32,
-        height: u32,
+        dimensions: math::Vec2<u32>,
         layers: u32,
     ) -> Result<Self> {
         let mut image = null_or_zero();
@@ -93,8 +98,8 @@ impl ImageWrapper {
                     imageType: IMAGE_SET_IMAGE_TYPE,
                     format: IMAGE_SET_FORMAT,
                     extent: api::VkExtent3D {
-                        width: width,
-                        height: height,
+                        width: dimensions.x,
+                        height: dimensions.y,
                         depth: 1,
                     },
                     mipLevels: 1,
@@ -230,21 +235,36 @@ impl SamplerWrapper {
     }
 }
 
-pub struct VulkanStagingImageSetImplementation {
-    pub buffer: BufferWrapper,
-    pub buffer_allocation: DeviceMemoryPoolAllocation,
-    pub device_image_set: VulkanDeviceImageSetImplementation,
-    pub mapped_memory: NonNull<[u8]>,
+struct VulkanStagingImageSetBuffer {
+    _buffer: Arc<BufferWrapper>,
+    backing_memory: NonNull<[Pixel]>,
 }
 
-unsafe impl Send for VulkanStagingImageSetImplementation {}
+unsafe impl Send for VulkanStagingImageSetBuffer {}
+unsafe impl Sync for VulkanStagingImageSetBuffer {}
 
-pub struct VulkanStagingImageSet(VulkanStagingImageSetImplementation);
+impl convert::AsRef<[Pixel]> for VulkanStagingImageSetBuffer {
+    fn as_ref(&self) -> &[Pixel] {
+        unsafe { self.backing_memory.as_ref() }
+    }
+}
 
-pub fn into_vulkan_staging_image_set_implementation(
-    v: VulkanStagingImageSet,
-) -> VulkanStagingImageSetImplementation {
-    v.0
+impl convert::AsMut<[Pixel]> for VulkanStagingImageSetBuffer {
+    fn as_mut(&mut self) -> &mut [Pixel] {
+        unsafe { self.backing_memory.as_mut() }
+    }
+}
+
+impl PixelBuffer for VulkanStagingImageSetBuffer {}
+
+pub struct VulkanStagingImageSet {
+    buffer: Arc<BufferWrapper>,
+    images: Box<[Image]>,
+    dimensions: math::Vec2<u32>,
+}
+
+pub fn get_vulkan_staging_image_set_buffer(v: &VulkanStagingImageSet) -> &Arc<BufferWrapper> {
+    &v.buffer
 }
 
 pub const IMAGE_SET_FORMAT: api::VkFormat = api::VK_FORMAT_R8G8B8A8_SRGB;
@@ -262,23 +282,25 @@ pub const IMAGE_SET_IMAGE_CREATE_FLAGS: api::VkImageCreateFlags = 0;
 
 pub fn get_image_set_max_total_layer_count(
     image_set_image_format_properties: &api::VkImageFormatProperties,
-    width: u32,
-    height: u32,
-) -> Result<u32> {
-    if !width.is_power_of_two() || !height.is_power_of_two() {
+    dimensions: math::Vec2<u32>,
+) -> Result<usize> {
+    if dimensions
+        .map(|v| !v.is_power_of_two())
+        .reduce(|a, b| a || b)
+    {
         return Err(VulkanError::ImageMustHavePowerOfTwoDimensions);
     }
-    if width > image_set_image_format_properties.maxExtent.width
-        || height > image_set_image_format_properties.maxExtent.height
+    if dimensions.x > image_set_image_format_properties.maxExtent.width
+        || dimensions.y > image_set_image_format_properties.maxExtent.height
     {
         return Err(VulkanError::ImageIsTooBig);
     }
-    let max = TextureId::max_value() as u32;
+    let max = TextureId::max_value() as usize;
     match image_set_image_format_properties
         .maxArrayLayers
         .checked_mul(FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT)
     {
-        Some(retval) if retval <= max => Ok(retval),
+        Some(retval) if retval as usize <= max => Ok(retval as usize),
         _ => Ok(max),
     }
 }
@@ -287,26 +309,23 @@ pub unsafe fn create_staging_image_set(
     device: Arc<DeviceWrapper>,
     device_memory_pools: &DeviceMemoryPools,
     image_set_image_format_properties: &api::VkImageFormatProperties,
-    width: u32,
-    height: u32,
-    total_layer_count: u32,
-    samplers_descriptor_set_layout: Arc<DescriptorSetLayoutWrapper>,
+    dimensions: math::Vec2<u32>,
+    total_layer_count: usize,
 ) -> Result<VulkanStagingImageSet> {
     if total_layer_count
-        > get_image_set_max_total_layer_count(image_set_image_format_properties, width, height)?
+        > get_image_set_max_total_layer_count(image_set_image_format_properties, dimensions)?
     {
         return Err(VulkanError::ImageSetHasTooManyImages);
     }
     let image_layer_count = image_set_image_format_properties.maxArrayLayers;
-    let last_image_layer_count = total_layer_count % image_layer_count;
-    let valid_image_count =
-        total_layer_count / image_layer_count + if last_image_layer_count != 0 { 1 } else { 0 };
+    let last_image_layer_count = total_layer_count as u32 % image_layer_count;
+    let valid_image_count = total_layer_count as u32 / image_layer_count
+        + if last_image_layer_count != 0 { 1 } else { 0 };
     assert!(valid_image_count <= FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT);
-    let size = width as api::VkDeviceSize
-        * height as api::VkDeviceSize
-        * total_layer_count as api::VkDeviceSize
-        * mem::size_of::<Pixel>() as api::VkDeviceSize;
-    let (buffer, buffer_allocation) = BufferWrapper::new(
+    let image_size_in_pixels = dimensions.map(|v| v as usize).reduce(|a, b| a * b);
+    let image_size_in_bytes = image_size_in_pixels * mem::size_of::<Pixel>();
+    let size = image_size_in_bytes as api::VkDeviceSize * total_layer_count as api::VkDeviceSize;
+    let buffer = BufferWrapper::new(
         device.clone(),
         size,
         api::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -318,6 +337,101 @@ pub unsafe fn create_staging_image_set(
         None,
         api::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | api::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
     )?;
+    let buffer = Arc::new(buffer);
+    let mut images = Vec::with_capacity(total_layer_count);
+    {
+        let mut mapped_memory = buffer
+            .device_memory
+            .as_ref()
+            .unwrap()
+            .get_mapped_memory()
+            .unwrap();
+        for i in 0..total_layer_count {
+            let pixels = transmute_from_byte_slice(
+                (&mut mapped_memory.as_mut()[(i * image_size_in_bytes)..][..image_size_in_bytes])
+                    .into(),
+            );
+            images.push(
+                Image::from_pixels(
+                    dimensions,
+                    Box::new(VulkanStagingImageSetBuffer {
+                        _buffer: buffer.clone(),
+                        backing_memory: pixels,
+                    }),
+                ).unwrap(),
+            );
+        }
+    }
+    Ok(VulkanStagingImageSet {
+        buffer: buffer,
+        images: images.into_boxed_slice(),
+        dimensions: dimensions,
+    })
+}
+
+impl GenericArray<Image> for VulkanStagingImageSet {
+    fn len(&self) -> usize {
+        self.images.len()
+    }
+}
+
+impl convert::AsMut<[Image]> for VulkanStagingImageSet {
+    fn as_mut(&mut self) -> &mut [Image] {
+        self.images.as_mut()
+    }
+}
+
+impl convert::AsRef<[Image]> for VulkanStagingImageSet {
+    fn as_ref(&self) -> &[Image] {
+        self.images.as_ref()
+    }
+}
+
+impl StagingGenericArray<Image> for VulkanStagingImageSet {}
+
+impl ImageSet for VulkanStagingImageSet {
+    fn dimensions(&self) -> math::Vec2<u32> {
+        self.dimensions
+    }
+}
+
+impl StagingImageSet for VulkanStagingImageSet {}
+
+#[derive(Clone)]
+pub struct VulkanDeviceImageSetImplementation<CBST: CommandBufferSubmitTracker> {
+    pub images: Arc<Vec<ImageViewWrapper>>,
+    pub dimensions: math::Vec2<u32>,
+    pub total_layer_count: usize,
+    pub image_layer_count: u32,
+    pub last_image_layer_count: u32,
+    pub valid_image_count: u32,
+    pub samplers: Arc<Vec<SamplerWrapper>>,
+    pub descriptor_set: Arc<DescriptorSetWrapper>,
+    pub submit_tracker: CBST,
+}
+
+pub struct VulkanDeviceImageSet<CBST: CommandBufferSubmitTracker>(
+    VulkanDeviceImageSetImplementation<CBST>,
+);
+
+pub unsafe fn create_device_image_set(
+    device: Arc<DeviceWrapper>,
+    device_memory_pools: &DeviceMemoryPools,
+    image_set_image_format_properties: &api::VkImageFormatProperties,
+    dimensions: math::Vec2<u32>,
+    total_layer_count: usize,
+    samplers_descriptor_set_layout: Arc<DescriptorSetLayoutWrapper>,
+) -> Result<VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>> {
+    if total_layer_count
+        > get_image_set_max_total_layer_count(image_set_image_format_properties, dimensions)?
+    {
+        return Err(VulkanError::ImageSetHasTooManyImages);
+    }
+    let image_layer_count = image_set_image_format_properties.maxArrayLayers;
+    let last_image_layer_count = total_layer_count as u32 % image_layer_count;
+    let valid_image_count = total_layer_count as u32 / image_layer_count
+        + if last_image_layer_count != 0 { 1 } else { 0 };
+    assert!(valid_image_count <= FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT);
     let mut images = Vec::new();
     let mut samplers = Vec::new();
     let mut descriptor_image_infos = Vec::new();
@@ -325,8 +439,7 @@ pub unsafe fn create_staging_image_set(
         let image = Arc::new(
             ImageWrapper::new_image_set_member(
                 device.clone(),
-                width,
-                height,
+                dimensions,
                 if i >= valid_image_count {
                     1
                 } else if i + 1 == valid_image_count {
@@ -419,89 +532,60 @@ pub unsafe fn create_staging_image_set(
             null(),
         );
     }
-    let mapped_memory = buffer_allocation.get_mapped_memory().unwrap();
-    Ok(VulkanStagingImageSet(VulkanStagingImageSetImplementation {
-        buffer: buffer,
-        buffer_allocation: buffer_allocation,
-        device_image_set: VulkanDeviceImageSetImplementation {
-            images: Arc::new(images),
-            submit_tracker: None,
-            width: width,
-            height: height,
-            total_layer_count: total_layer_count,
-            image_layer_count: image_layer_count,
-            last_image_layer_count: last_image_layer_count,
-            valid_image_count: valid_image_count,
-            samplers: Arc::new(samplers),
-            descriptor_set: Arc::new(descriptor_set),
-        },
-        mapped_memory: mapped_memory,
+    Ok(VulkanDeviceImageSet(VulkanDeviceImageSetImplementation {
+        images: Arc::new(images),
+        dimensions: dimensions,
+        total_layer_count: total_layer_count,
+        image_layer_count: image_layer_count,
+        last_image_layer_count: last_image_layer_count,
+        valid_image_count: valid_image_count,
+        samplers: Arc::new(samplers),
+        descriptor_set: Arc::new(descriptor_set),
+        submit_tracker: InactiveCommandBufferSubmitTracker,
     }))
 }
 
-impl StagingImageSet for VulkanStagingImageSet {
-    fn width(&self) -> u32 {
-        self.0.device_image_set.width
-    }
-    fn height(&self) -> u32 {
-        self.0.device_image_set.height
-    }
-    fn count(&self) -> u32 {
-        self.0.device_image_set.total_layer_count
-    }
-    fn write(&mut self, texture_id: TextureId, image: &Image) {
-        assert_ne!(texture_id, 0);
-        let image_index = (texture_id as usize) - 1;
-        assert!(image_index < self.0.device_image_set.total_layer_count as usize);
-        let width = self.0.device_image_set.width;
-        let height = self.0.device_image_set.height;
-        assert!(image.width() == width);
-        assert!(image.height() == height);
-        unsafe {
-            let image_size = width as usize * height as usize * mem::size_of::<Pixel>();
-            let src = (image.get_pixels() as &[Pixel]).as_ptr() as *const u8;
-            let dest = self.0.mapped_memory.as_mut()[(image_size * image_index)..][..image_size]
-                .as_mut_ptr();
-            copy_nonoverlapping(src, dest, image_size);
-        }
-    }
+pub fn get_vulkan_device_image_set_implementation<CBST: CommandBufferSubmitTracker>(
+    v: &VulkanDeviceImageSet<CBST>,
+) -> &VulkanDeviceImageSetImplementation<CBST> {
+    &v.0
 }
 
-#[derive(Clone)]
-pub struct VulkanDeviceImageSetImplementation {
-    pub images: Arc<Vec<ImageViewWrapper>>,
-    pub submit_tracker: Option<CommandBufferSubmitTracker>,
-    pub width: u32,
-    pub height: u32,
-    pub total_layer_count: u32,
-    pub image_layer_count: u32,
-    pub last_image_layer_count: u32,
-    pub valid_image_count: u32,
-    pub samplers: Arc<Vec<SamplerWrapper>>,
-    pub descriptor_set: Arc<DescriptorSetWrapper>,
-}
-
-#[derive(Clone)]
-pub struct VulkanDeviceImageSet(VulkanDeviceImageSetImplementation);
-
-pub fn create_device_image_set(v: VulkanDeviceImageSetImplementation) -> VulkanDeviceImageSet {
-    VulkanDeviceImageSet(v)
-}
-
-pub fn into_vulkan_device_image_set_implementation(
-    v: VulkanDeviceImageSet,
-) -> VulkanDeviceImageSetImplementation {
-    v.0
-}
-
-impl DeviceImageSet for VulkanDeviceImageSet {
-    fn width(&self) -> u32 {
-        self.0.width
-    }
-    fn height(&self) -> u32 {
-        self.0.height
-    }
-    fn count(&self) -> u32 {
+impl<CBST: CommandBufferSubmitTracker> GenericArray<Image> for VulkanDeviceImageSet<CBST> {
+    fn len(&self) -> usize {
         self.0.total_layer_count
     }
+}
+
+impl UninitializedDeviceGenericArray<Image>
+    for VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>
+{}
+
+impl DeviceGenericArray<Image> for VulkanDeviceImageSet<ActiveCommandBufferSubmitTracker> {}
+
+impl<CBST: CommandBufferSubmitTracker> ImageSet for VulkanDeviceImageSet<CBST> {
+    fn dimensions(&self) -> math::Vec2<u32> {
+        self.0.dimensions
+    }
+}
+
+impl UninitializedDeviceImageSet for VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker> {}
+
+impl DeviceImageSet for VulkanDeviceImageSet<ActiveCommandBufferSubmitTracker> {}
+
+pub fn create_initialized_device_image_set(
+    device_image_set: VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>,
+    submit_tracker: ActiveCommandBufferSubmitTracker,
+) -> VulkanDeviceImageSet<ActiveCommandBufferSubmitTracker> {
+    VulkanDeviceImageSet(VulkanDeviceImageSetImplementation {
+        images: device_image_set.0.images,
+        dimensions: device_image_set.0.dimensions,
+        total_layer_count: device_image_set.0.total_layer_count,
+        image_layer_count: device_image_set.0.image_layer_count,
+        last_image_layer_count: device_image_set.0.last_image_layer_count,
+        valid_image_count: device_image_set.0.valid_image_count,
+        samplers: device_image_set.0.samplers,
+        descriptor_set: device_image_set.0.descriptor_set,
+        submit_tracker: submit_tracker,
+    })
 }

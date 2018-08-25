@@ -13,22 +13,26 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use super::{
-    api, null_or_zero, CommandBufferSubmitTracker, DeviceMemoryPoolAllocation, DeviceMemoryPools,
-    DeviceWrapper, Result, VulkanError,
+    api, null_or_zero, transmute_from_byte_slice, ActiveCommandBufferSubmitTracker,
+    CommandBufferSubmitTracker, DeviceMemoryPoolAllocation, DeviceMemoryPools, DeviceWrapper,
+    InactiveCommandBufferSubmitTracker, Result, VulkanError,
 };
 use renderer::{
-    DeviceIndexBuffer, DeviceVertexBuffer, IndexBufferElement, StagingIndexBuffer,
-    StagingVertexBuffer, VertexBufferElement,
+    Buffer, DeviceBuffer, DeviceGenericArray, GenericArray, IndexBufferElement, StagingBuffer,
+    StagingGenericArray, UninitializedDeviceBuffer, UninitializedDeviceGenericArray,
+    VertexBufferElement,
 };
 use std::cmp;
+use std::convert;
+use std::marker::PhantomData;
 use std::mem;
-use std::ptr::null;
-use std::slice;
+use std::ptr::{null, NonNull};
 use std::sync::Arc;
 
 pub struct BufferWrapper {
     pub device: Arc<DeviceWrapper>,
     pub buffer: api::VkBuffer,
+    pub device_memory: Option<DeviceMemoryPoolAllocation>,
 }
 
 impl Drop for BufferWrapper {
@@ -66,17 +70,19 @@ impl BufferWrapper {
             api::VK_SUCCESS => Ok(BufferWrapper {
                 device: device,
                 buffer: buffer,
+                device_memory: None,
             }),
             result => Err(VulkanError::VulkanError(result)),
         }
     }
     pub unsafe fn allocate_and_bind_memory(
-        self,
+        mut self,
         device_memory_pools: &DeviceMemoryPools,
         element_alignment: usize,
         preferred_properties: Option<api::VkMemoryPropertyFlags>,
         required_properties: api::VkMemoryPropertyFlags,
-    ) -> Result<(Self, DeviceMemoryPoolAllocation)> {
+    ) -> Result<Self> {
+        assert!(self.device_memory.is_none());
         let mut memory_requirements = mem::zeroed();
         self.device.vkGetBufferMemoryRequirements.unwrap()(
             self.device.device,
@@ -96,102 +102,160 @@ impl BufferWrapper {
             memory_allocation.get_device_memory().get_device_memory(),
             memory_allocation.get_offset(),
         ) {
-            api::VK_SUCCESS => Ok((self, memory_allocation)),
+            api::VK_SUCCESS => {
+                self.device_memory = Some(memory_allocation);
+                Ok(self)
+            }
             result => Err(VulkanError::VulkanError(result)),
         }
     }
 }
 
-pub struct VulkanStagingVertexBufferImplementation {
-    pub staging_buffer: BufferWrapper,
-    pub staging_device_memory: DeviceMemoryPoolAllocation,
-    pub device_buffer: VulkanDeviceVertexBuffer,
+unsafe impl Send for BufferWrapper {}
+unsafe impl Sync for BufferWrapper {}
+
+pub trait VulkanBuffer<T: Copy + Sync + Send + 'static>: Buffer<T> {
+    type SubmitTracker: CommandBufferSubmitTracker;
+    fn buffer(&self) -> &Arc<BufferWrapper>;
+    fn submit_tracker(&self) -> Self::SubmitTracker;
 }
 
-pub struct VulkanStagingVertexBuffer(VulkanStagingVertexBufferImplementation);
-
-pub fn into_vulkan_staging_vertex_buffer_implementation(
-    v: VulkanStagingVertexBuffer,
-) -> VulkanStagingVertexBufferImplementation {
-    v.0
+pub struct VulkanStagingBuffer<T: Copy + Sync + Send + 'static> {
+    buffer: Arc<BufferWrapper>,
+    mapped_memory: NonNull<[T]>,
 }
 
-const STAGING_VERTEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
-    api::VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+unsafe impl<T: Copy + Sync + Send + 'static> Sync for VulkanStagingBuffer<T> {}
 
-pub unsafe fn create_staging_vertex_buffer(
+unsafe impl<T: Copy + Sync + Send + 'static> Send for VulkanStagingBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> GenericArray<T> for VulkanStagingBuffer<T> {
+    fn len(&self) -> usize {
+        unsafe { self.mapped_memory.as_ref() }.len()
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> convert::AsRef<[T]> for VulkanStagingBuffer<T> {
+    fn as_ref(&self) -> &[T] {
+        unsafe { self.mapped_memory.as_ref() }
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> convert::AsMut<[T]> for VulkanStagingBuffer<T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        unsafe { self.mapped_memory.as_mut() }
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> StagingGenericArray<T> for VulkanStagingBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> Buffer<T> for VulkanStagingBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> StagingBuffer<T> for VulkanStagingBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> VulkanBuffer<T> for VulkanStagingBuffer<T> {
+    type SubmitTracker = InactiveCommandBufferSubmitTracker;
+    fn buffer(&self) -> &Arc<BufferWrapper> {
+        &self.buffer
+    }
+    fn submit_tracker(&self) -> InactiveCommandBufferSubmitTracker {
+        InactiveCommandBufferSubmitTracker
+    }
+}
+
+pub struct VulkanDeviceBuffer<T: Copy + Sync + Send + 'static, CBST: CommandBufferSubmitTracker> {
+    buffer: Arc<BufferWrapper>,
+    len: usize,
+    _phantom: PhantomData<&'static T>,
+    submit_tracker: CBST,
+}
+
+impl<T: Copy + Sync + Send + 'static, CBST: CommandBufferSubmitTracker> GenericArray<T>
+    for VulkanDeviceBuffer<T, CBST>
+{
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> DeviceGenericArray<T>
+    for VulkanDeviceBuffer<T, ActiveCommandBufferSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static> UninitializedDeviceGenericArray<T>
+    for VulkanDeviceBuffer<T, InactiveCommandBufferSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static, CBST: CommandBufferSubmitTracker> Buffer<T>
+    for VulkanDeviceBuffer<T, CBST>
+{}
+
+impl<T: Copy + Sync + Send + 'static> DeviceBuffer<T>
+    for VulkanDeviceBuffer<T, ActiveCommandBufferSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static> UninitializedDeviceBuffer<T>
+    for VulkanDeviceBuffer<T, InactiveCommandBufferSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static, CBST: CommandBufferSubmitTracker> VulkanBuffer<T>
+    for VulkanDeviceBuffer<T, CBST>
+{
+    type SubmitTracker = CBST;
+    fn buffer(&self) -> &Arc<BufferWrapper> {
+        &self.buffer
+    }
+    fn submit_tracker(&self) -> CBST {
+        self.submit_tracker.clone()
+    }
+}
+
+pub fn create_initialized_device_buffer<T: Copy + Sync + Send + 'static>(
+    device_buffer: VulkanDeviceBuffer<T, InactiveCommandBufferSubmitTracker>,
+    submit_tracker: ActiveCommandBufferSubmitTracker,
+) -> VulkanDeviceBuffer<T, ActiveCommandBufferSubmitTracker> {
+    VulkanDeviceBuffer {
+        buffer: device_buffer.buffer,
+        len: device_buffer.len,
+        _phantom: PhantomData,
+        submit_tracker: submit_tracker,
+    }
+}
+
+const STAGING_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags = api::VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+pub unsafe fn create_staging_buffer<T: Copy + Sync + Send + 'static>(
     device: Arc<DeviceWrapper>,
     device_memory_pools: &DeviceMemoryPools,
     element_count: usize,
-) -> Result<VulkanStagingVertexBuffer> {
+) -> Result<VulkanStagingBuffer<T>> {
     let buffer = BufferWrapper::new(
         device.clone(),
-        cmp::max(1, element_count) as u64 * mem::size_of::<VertexBufferElement>() as u64,
-        STAGING_VERTEX_BUFFER_USAGE_FLAGS,
+        cmp::max(1, element_count) as u64 * mem::size_of::<T>() as u64,
+        STAGING_BUFFER_USAGE_FLAGS,
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
     )?;
-    let (buffer, device_memory) = buffer.allocate_and_bind_memory(
+    let buffer = buffer.allocate_and_bind_memory(
         device_memory_pools,
-        mem::align_of::<VertexBufferElement>(),
+        mem::align_of::<T>(),
         None,
         api::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | api::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
     )?;
-    Ok(VulkanStagingVertexBuffer(
-        VulkanStagingVertexBufferImplementation {
-            staging_buffer: buffer,
-            staging_device_memory: device_memory,
-            device_buffer: create_device_vertex_buffer(device, device_memory_pools, element_count)?,
-        },
-    ))
-}
-
-impl StagingVertexBuffer for VulkanStagingVertexBuffer {
-    fn len(&self) -> usize {
-        self.0.device_buffer.0.element_count
-    }
-    fn write(&mut self, index: usize, value: VertexBufferElement) {
-        let memory_slice = self
-            .0
-            .staging_device_memory
-            .get_mapped_memory()
-            .unwrap()
-            .as_ptr();
-        assert!(
-            unsafe { &*memory_slice }.len()
-                >= self.0.device_buffer.0.element_count * mem::size_of::<VertexBufferElement>()
-        );
-        let memory_slice = unsafe {
-            slice::from_raw_parts_mut(
-                memory_slice as *mut u8 as *mut VertexBufferElement,
-                self.0.device_buffer.0.element_count,
-            )
-        };
-        memory_slice[index] = value;
-    }
-}
-
-#[derive(Clone)]
-pub struct VulkanDeviceVertexBufferImplementation {
-    pub buffer: Arc<BufferWrapper>,
-    pub device_memory: Arc<DeviceMemoryPoolAllocation>,
-    pub submit_tracker: Option<CommandBufferSubmitTracker>,
-    pub element_count: usize,
-}
-
-#[derive(Clone)]
-pub struct VulkanDeviceVertexBuffer(VulkanDeviceVertexBufferImplementation);
-
-pub fn get_mut_vulkan_device_vertex_buffer_implementation(
-    v: &mut VulkanDeviceVertexBuffer,
-) -> &mut VulkanDeviceVertexBufferImplementation {
-    &mut v.0
-}
-
-pub fn into_vulkan_device_vertex_buffer_implementation(
-    v: VulkanDeviceVertexBuffer,
-) -> VulkanDeviceVertexBufferImplementation {
-    v.0
+    let mut mapped_memory = buffer
+        .device_memory
+        .as_ref()
+        .unwrap()
+        .get_mapped_memory()
+        .unwrap();
+    let mapped_memory = transmute_from_byte_slice(
+        (&mut mapped_memory.as_mut()[..(element_count as usize * mem::size_of::<T>())]).into(),
+    );
+    assert_eq!(mapped_memory.as_ref().len(), element_count);
+    Ok(VulkanStagingBuffer {
+        buffer: Arc::new(buffer),
+        mapped_memory: mapped_memory,
+    })
 }
 
 const DEVICE_VERTEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
@@ -201,7 +265,7 @@ pub unsafe fn create_device_vertex_buffer(
     device: Arc<DeviceWrapper>,
     device_memory_pools: &DeviceMemoryPools,
     element_count: usize,
-) -> Result<VulkanDeviceVertexBuffer> {
+) -> Result<VulkanDeviceBuffer<VertexBufferElement, InactiveCommandBufferSubmitTracker>> {
     let buffer = BufferWrapper::new(
         device,
         cmp::max(1, element_count) as u64 * mem::size_of::<VertexBufferElement>() as u64,
@@ -209,118 +273,18 @@ pub unsafe fn create_device_vertex_buffer(
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
     )?;
-    let (buffer, device_memory) = buffer.allocate_and_bind_memory(
+    let buffer = buffer.allocate_and_bind_memory(
         device_memory_pools,
         1,
         None,
         api::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )?;
-    Ok(VulkanDeviceVertexBuffer(
-        VulkanDeviceVertexBufferImplementation {
-            buffer: Arc::new(buffer),
-            device_memory: Arc::new(device_memory),
-            submit_tracker: None,
-            element_count: element_count,
-        },
-    ))
-}
-
-impl DeviceVertexBuffer for VulkanDeviceVertexBuffer {
-    fn len(&self) -> usize {
-        self.0.element_count
-    }
-}
-
-pub struct VulkanStagingIndexBufferImplementation {
-    pub staging_buffer: BufferWrapper,
-    pub staging_device_memory: DeviceMemoryPoolAllocation,
-    pub device_buffer: VulkanDeviceIndexBuffer,
-}
-
-pub struct VulkanStagingIndexBuffer(VulkanStagingIndexBufferImplementation);
-
-pub fn into_vulkan_staging_index_buffer_implementation(
-    v: VulkanStagingIndexBuffer,
-) -> VulkanStagingIndexBufferImplementation {
-    v.0
-}
-
-const STAGING_INDEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
-    api::VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-pub unsafe fn create_staging_index_buffer(
-    device: Arc<DeviceWrapper>,
-    device_memory_pools: &DeviceMemoryPools,
-    element_count: usize,
-) -> Result<VulkanStagingIndexBuffer> {
-    let buffer = BufferWrapper::new(
-        device.clone(),
-        cmp::max(1, element_count) as u64 * mem::size_of::<IndexBufferElement>() as u64,
-        STAGING_INDEX_BUFFER_USAGE_FLAGS,
-        api::VK_SHARING_MODE_EXCLUSIVE,
-        &[],
-    )?;
-    let (buffer, device_memory) = buffer.allocate_and_bind_memory(
-        device_memory_pools,
-        mem::align_of::<IndexBufferElement>(),
-        None,
-        api::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | api::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-    )?;
-    Ok(VulkanStagingIndexBuffer(
-        VulkanStagingIndexBufferImplementation {
-            staging_buffer: buffer,
-            staging_device_memory: device_memory,
-            device_buffer: create_device_index_buffer(device, device_memory_pools, element_count)?,
-        },
-    ))
-}
-
-impl StagingIndexBuffer for VulkanStagingIndexBuffer {
-    fn len(&self) -> usize {
-        self.0.device_buffer.0.element_count
-    }
-    fn write(&mut self, index: usize, value: IndexBufferElement) {
-        let memory_slice = self
-            .0
-            .staging_device_memory
-            .get_mapped_memory()
-            .unwrap()
-            .as_ptr();
-        assert!(
-            unsafe { &*memory_slice }.len()
-                >= self.0.device_buffer.0.element_count * mem::size_of::<IndexBufferElement>()
-        );
-        let memory_slice = unsafe {
-            slice::from_raw_parts_mut(
-                memory_slice as *mut u8 as *mut IndexBufferElement,
-                self.0.device_buffer.0.element_count,
-            )
-        };
-        memory_slice[index] = value;
-    }
-}
-
-#[derive(Clone)]
-pub struct VulkanDeviceIndexBufferImplementation {
-    pub buffer: Arc<BufferWrapper>,
-    pub device_memory: Arc<DeviceMemoryPoolAllocation>,
-    pub submit_tracker: Option<CommandBufferSubmitTracker>,
-    pub element_count: usize,
-}
-
-#[derive(Clone)]
-pub struct VulkanDeviceIndexBuffer(VulkanDeviceIndexBufferImplementation);
-
-pub fn get_mut_vulkan_device_index_buffer_implementation(
-    v: &mut VulkanDeviceIndexBuffer,
-) -> &mut VulkanDeviceIndexBufferImplementation {
-    &mut v.0
-}
-
-pub fn into_vulkan_device_index_buffer_implementation(
-    v: VulkanDeviceIndexBuffer,
-) -> VulkanDeviceIndexBufferImplementation {
-    v.0
+    Ok(VulkanDeviceBuffer {
+        buffer: Arc::new(buffer),
+        len: element_count,
+        _phantom: PhantomData,
+        submit_tracker: InactiveCommandBufferSubmitTracker,
+    })
 }
 
 const DEVICE_INDEX_BUFFER_USAGE_FLAGS: api::VkBufferUsageFlags =
@@ -330,7 +294,7 @@ pub unsafe fn create_device_index_buffer(
     device: Arc<DeviceWrapper>,
     device_memory_pools: &DeviceMemoryPools,
     element_count: usize,
-) -> Result<VulkanDeviceIndexBuffer> {
+) -> Result<VulkanDeviceBuffer<IndexBufferElement, InactiveCommandBufferSubmitTracker>> {
     let buffer = BufferWrapper::new(
         device,
         cmp::max(1, element_count) as u64 * mem::size_of::<IndexBufferElement>() as u64,
@@ -338,24 +302,16 @@ pub unsafe fn create_device_index_buffer(
         api::VK_SHARING_MODE_EXCLUSIVE,
         &[],
     )?;
-    let (buffer, device_memory) = buffer.allocate_and_bind_memory(
+    let buffer = buffer.allocate_and_bind_memory(
         device_memory_pools,
         1,
         None,
         api::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     )?;
-    Ok(VulkanDeviceIndexBuffer(
-        VulkanDeviceIndexBufferImplementation {
-            buffer: Arc::new(buffer),
-            device_memory: Arc::new(device_memory),
-            submit_tracker: None,
-            element_count: element_count,
-        },
-    ))
-}
-
-impl DeviceIndexBuffer for VulkanDeviceIndexBuffer {
-    fn len(&self) -> usize {
-        self.0.element_count
-    }
+    Ok(VulkanDeviceBuffer {
+        buffer: Arc::new(buffer),
+        len: element_count,
+        _phantom: PhantomData,
+        submit_tracker: InactiveCommandBufferSubmitTracker,
+    })
 }

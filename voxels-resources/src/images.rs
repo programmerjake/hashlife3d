@@ -23,20 +23,20 @@ pub struct ImageResource {
 }
 
 impl ImageResource {
-    pub const fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         self.name
     }
-    pub const fn file_name(&self) -> &'static str {
+    pub fn file_name(&self) -> &'static str {
         self.file_name
     }
-    pub const fn tiles_array_index(&self) -> Option<usize> {
+    pub fn tiles_array_index(&self) -> Option<usize> {
         self.index
     }
     pub fn texture_id(&self) -> Option<TextureId> {
         self.index.map(|v| (v + 1) as TextureId)
     }
     pub fn load(&self) -> image::Image {
-        image::load_image_bytes(self.bytes).unwrap()
+        image::load_image_bytes(self.bytes, image::DefaultPixelBufferFactory).unwrap()
     }
 }
 
@@ -50,19 +50,13 @@ pub mod tiles {
         device_reference: &DR,
     ) -> Result<DR::StagingImageSet, DR::Error> {
         let first_image = TILES_ARRAY[0].load();
-        let mut retval = device_reference.create_staging_image_set(
-            first_image.width(),
-            first_image.height(),
-            TILES_ARRAY.len() as u32,
-        )?;
+        let mut retval = device_reference
+            .create_staging_image_set(first_image.dimensions(), TILES_ARRAY.len())?;
         let mut first_image = Some(first_image);
         for tile in TILES_ARRAY {
             let image = first_image.take().unwrap_or_else(|| tile.load());
-            assert_eq!(
-                (image.width(), image.height()),
-                (retval.width(), retval.height())
-            );
-            retval.write(tile.texture_id().unwrap(), &image);
+            assert_eq!(image.dimensions(), retval.dimensions());
+            retval.as_mut()[tile.index.unwrap()].copy_from(&image);
         }
         Ok(retval)
     }

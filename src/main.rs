@@ -115,18 +115,27 @@ fn render_main_loop<PD: renderer::PausedDevice>(
                 device.create_loader_command_buffer_builder()?;
             let mut render_command_buffer_builder =
                 device.create_render_command_buffer_builder()?;
-            let (vertex_buffer, index_buffer) =
+            let (staging_vertex_buffer, staging_index_buffer) =
                 mesh.create_staging_buffers(device.get_device_ref())?;
-            let index_buffer =
-                loader_command_buffer_builder.copy_index_buffer_to_device(index_buffer)?;
-            let vertex_buffer =
-                loader_command_buffer_builder.copy_vertex_buffer_to_device(vertex_buffer)?;
-            let image_set =
+            let device_index_buffer = loader_command_buffer_builder.initialize_index_buffer(
+                staging_index_buffer.slice_ref(..),
+                device.create_device_index_buffer_like(&staging_index_buffer)?,
+            )?;
+            let device_vertex_buffer = loader_command_buffer_builder.initialize_vertex_buffer(
+                staging_vertex_buffer.slice_ref(..),
+                device.create_device_vertex_buffer_like(&staging_vertex_buffer)?,
+            )?;
+            let staging_image_set =
                 resources::images::tiles::create_tiles_image_set(device.get_device_ref())?;
-            let image_set = loader_command_buffer_builder.copy_image_set_to_device(image_set)?;
-            render_command_buffer_builder.set_image_set(image_set);
-            render_command_buffer_builder.set_buffers(vertex_buffer, index_buffer.clone());
-            render_command_buffer_builder.draw(index_buffer.len() as u32, 0, 0);
+            let device_image_set = loader_command_buffer_builder.initialize_image_set(
+                staging_image_set.slice_ref(..),
+                device.create_device_image_set_like(&staging_image_set)?,
+            )?;
+            render_command_buffer_builder.set_image_set(&device_image_set);
+            render_command_buffer_builder.draw(
+                device_vertex_buffer.slice_ref(..),
+                device_index_buffer.slice_ref(..),
+            );
             let loader_command_buffer = loader_command_buffer_builder.finish()?;
             let render_command_buffer = render_command_buffer_builder.finish()?;
             device.submit_loader_command_buffers(&mut vec![loader_command_buffer])?;

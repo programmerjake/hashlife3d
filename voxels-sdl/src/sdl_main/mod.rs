@@ -19,7 +19,6 @@ use std::env;
 use std::mem::{self, drop};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
-use std::process::Termination;
 
 struct CallOnDrop<F: FnOnce()> {
     f: Option<F>,
@@ -59,14 +58,16 @@ unsafe fn run_main() {
     let sdl = CallOnDrop::new(|| api::SDL_Quit());
     let rust_main: super::UnsafeRustMainType = rust_main;
     let rust_main: super::RustMainType = mem::transmute(rust_main);
-    let retval = rust_main(super::event::make_event_source());
+    rust_main(super::event::make_event_source());
     drop(sdl);
-    retval
 }
 
 #[cfg(not(test))]
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
-    catch_unwind(|| run_main()).report()
+    match catch_unwind(|| run_main()) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
 }

@@ -12,3 +12,7 @@ pkg-config = "0.3.12"
 
 [dependencies]
 libc = "0.2"
+
+[features]
+default = []
+weak_main = []

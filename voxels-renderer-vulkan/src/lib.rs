@@ -12,8 +12,6 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-#![feature(concat_idents)]
-#![feature(vec_resize_with)]
 
 extern crate voxels_image;
 extern crate voxels_math as math;
@@ -53,6 +51,7 @@ use std::mem;
 use std::os::raw::c_void;
 use std::ptr::*;
 use std::rc::Rc;
+use std::slice;
 use std::sync::Arc;
 use std::u32;
 
@@ -80,6 +79,15 @@ impl<T> NullOrZero for *const T {
 
 fn null_or_zero<T: NullOrZero>() -> T {
     NullOrZero::null_or_zero()
+}
+
+unsafe fn transmute_from_byte_slice<T: Sized>(v: NonNull<[u8]>) -> NonNull<[T]> {
+    assert_eq!(v.as_ref().len() % mem::size_of::<T>(), 0);
+    assert_eq!(v.as_ptr() as *const u8 as usize % mem::align_of::<T>(), 0);
+    slice::from_raw_parts_mut(
+        v.as_ptr() as *mut u8 as *mut T,
+        v.as_ref().len() / mem::size_of::<T>(),
+    ).into()
 }
 
 #[allow(dead_code)]
@@ -327,12 +335,19 @@ impl DeviceReference for VulkanDeviceReference {
     type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
     type RenderCommandBuffer = VulkanRenderCommandBuffer;
     type RenderCommandBufferBuilder = VulkanRenderCommandBufferBuilder;
-    type StagingVertexBuffer = VulkanStagingVertexBuffer;
-    type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
-    type StagingIndexBuffer = VulkanStagingIndexBuffer;
-    type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type StagingVertexBuffer = VulkanStagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer =
+        VulkanDeviceBuffer<VertexBufferElement, InactiveCommandBufferSubmitTracker>;
+    type DeviceVertexBuffer =
+        VulkanDeviceBuffer<VertexBufferElement, ActiveCommandBufferSubmitTracker>;
+    type StagingIndexBuffer = VulkanStagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer =
+        VulkanDeviceBuffer<IndexBufferElement, InactiveCommandBufferSubmitTracker>;
+    type DeviceIndexBuffer =
+        VulkanDeviceBuffer<IndexBufferElement, ActiveCommandBufferSubmitTracker>;
     type StagingImageSet = VulkanStagingImageSet;
-    type DeviceImageSet = VulkanDeviceImageSet;
+    type UninitializedDeviceImageSet = VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>;
+    type DeviceImageSet = VulkanDeviceImageSet<ActiveCommandBufferSubmitTracker>;
     fn create_loader_command_buffer_builder(&self) -> Result<VulkanLoaderCommandBufferBuilder> {
         unsafe { VulkanLoaderCommandBufferBuilder::new(&self.device, self.render_queue_index) }
     }
@@ -347,36 +362,67 @@ impl DeviceReference for VulkanDeviceReference {
             ))
         }
     }
-    fn create_staging_vertex_buffer(&self, len: usize) -> Result<VulkanStagingVertexBuffer> {
-        unsafe {
-            create_staging_vertex_buffer(self.device.clone(), &*self.device_memory_pools, len)
-        }
+    fn create_staging_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<VulkanStagingBuffer<VertexBufferElement>> {
+        unsafe { create_staging_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
-    fn create_staging_index_buffer(&self, len: usize) -> Result<VulkanStagingIndexBuffer> {
-        unsafe { create_staging_index_buffer(self.device.clone(), &*self.device_memory_pools, len) }
+    fn create_device_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<VulkanDeviceBuffer<VertexBufferElement, InactiveCommandBufferSubmitTracker>> {
+        unsafe { create_device_vertex_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
-    fn get_max_image_width(&self) -> u32 {
-        self.image_set_image_format_properties.maxExtent.width
+    fn create_staging_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<VulkanStagingBuffer<IndexBufferElement>> {
+        unsafe { create_staging_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
-    fn get_max_image_height(&self) -> u32 {
-        self.image_set_image_format_properties.maxExtent.height
+    fn create_device_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<VulkanDeviceBuffer<IndexBufferElement, InactiveCommandBufferSubmitTracker>> {
+        unsafe { create_device_index_buffer(self.device.clone(), &*self.device_memory_pools, len) }
     }
-    fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
-        get_image_set_max_total_layer_count(&self.image_set_image_format_properties, width, height)
+    fn get_max_image_dimensions(&self) -> math::Vec2<u32> {
+        let api::VkExtent3D {
+            width,
+            height,
+            depth: _,
+        } = self.image_set_image_format_properties.maxExtent;
+        math::Vec2::new(width, height)
+    }
+    fn get_max_image_count_in_image_set(&self, dimensions: math::Vec2<u32>) -> Result<usize> {
+        get_image_set_max_total_layer_count(&self.image_set_image_format_properties, dimensions)
     }
     fn create_staging_image_set(
         &self,
-        width: u32,
-        height: u32,
-        count: u32,
+        dimensions: math::Vec2<u32>,
+        count: usize,
     ) -> Result<VulkanStagingImageSet> {
         unsafe {
             create_staging_image_set(
                 self.device.clone(),
                 &*self.device_memory_pools,
                 &self.image_set_image_format_properties,
-                width,
-                height,
+                dimensions,
+                count,
+            )
+        }
+    }
+    fn create_device_image_set(
+        &self,
+        dimensions: math::Vec2<u32>,
+        count: usize,
+    ) -> Result<VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>> {
+        unsafe {
+            create_device_image_set(
+                self.device.clone(),
+                &*self.device_memory_pools,
+                &self.image_set_image_format_properties,
+                dimensions,
                 count,
                 self.samplers_descriptor_set_layout.clone(),
             )
@@ -669,7 +715,9 @@ fn create_pipeline_layout(
 ) -> Result<PipelineLayoutWrapper> {
     let device = samplers_descriptor_set_layout.device.clone();
     let mut descriptor_set_layouts: Vec<Option<_>> = Vec::new();
-    descriptor_set_layouts.resize_with(1, || None);
+    for _ in 0..1 {
+        descriptor_set_layouts.push(None);
+    }
     descriptor_set_layouts[SAMPLERS_DESCRIPTOR_SET_INDEX as usize] =
         Some(samplers_descriptor_set_layout);
     let descriptor_set_layouts: Vec<_> = descriptor_set_layouts
@@ -1170,12 +1218,19 @@ impl Device for VulkanDevice {
     type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
     type RenderCommandBuffer = VulkanRenderCommandBuffer;
     type RenderCommandBufferBuilder = VulkanRenderCommandBufferBuilder;
-    type StagingVertexBuffer = VulkanStagingVertexBuffer;
-    type DeviceVertexBuffer = VulkanDeviceVertexBuffer;
-    type StagingIndexBuffer = VulkanStagingIndexBuffer;
-    type DeviceIndexBuffer = VulkanDeviceIndexBuffer;
+    type StagingVertexBuffer = VulkanStagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer =
+        VulkanDeviceBuffer<VertexBufferElement, InactiveCommandBufferSubmitTracker>;
+    type DeviceVertexBuffer =
+        VulkanDeviceBuffer<VertexBufferElement, ActiveCommandBufferSubmitTracker>;
+    type StagingIndexBuffer = VulkanStagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer =
+        VulkanDeviceBuffer<IndexBufferElement, InactiveCommandBufferSubmitTracker>;
+    type DeviceIndexBuffer =
+        VulkanDeviceBuffer<IndexBufferElement, ActiveCommandBufferSubmitTracker>;
     type StagingImageSet = VulkanStagingImageSet;
-    type DeviceImageSet = VulkanDeviceImageSet;
+    type UninitializedDeviceImageSet = VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>;
+    type DeviceImageSet = VulkanDeviceImageSet<ActiveCommandBufferSubmitTracker>;
     fn pause(mut self) -> VulkanPausedDevice {
         VulkanPausedDevice {
             surface_state: self.surface_state.take().unwrap(),
@@ -1652,8 +1707,10 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 result => return Err(VulkanError::VulkanError(result)),
             }
             device_extensions.clear();
-            device_extensions
-                .resize_with(device_extension_count as usize, || unsafe { mem::zeroed() });
+            device_extensions.reserve(device_extension_count as usize);
+            for _ in 0..device_extension_count {
+                device_extensions.push(unsafe { mem::zeroed() });
+            }
             match unsafe {
                 instance.vkEnumerateDeviceExtensionProperties.unwrap()(
                     physical_device,

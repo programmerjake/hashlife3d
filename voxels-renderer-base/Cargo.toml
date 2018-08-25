@@ -7,6 +7,7 @@ authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 crate-type = ["rlib"]
 
 [dependencies]
+num-traits = "0.2"
 voxels-math = { path = "../voxels-math" }
 voxels-image = { path = "../voxels-image" }
 voxels-sdl = { path = "../voxels-sdl" }

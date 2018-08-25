@@ -12,8 +12,6 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-#![feature(const_fn)]
-
 extern crate voxels_image as image;
 extern crate voxels_renderer as renderer;
 

@@ -12,10 +12,13 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
+extern crate num_traits;
 extern crate voxels_image as image;
 extern crate voxels_math as math;
 extern crate voxels_sdl as sdl;
 use std::error;
+use std::marker::PhantomData;
+use std::ops;
 
 /// for N textures, ranges from 1 to N, with 0 reserved for not using a texture
 pub type TextureId = u16;
@@ -49,87 +52,283 @@ impl VertexBufferElement {
 
 pub type IndexBufferElement = u16;
 
-pub trait StagingVertexBuffer: Sized + Send {
+pub trait GenericArray<Element: Send + Sync + Clone + 'static>: Send + Sync + Sized {
     fn len(&self) -> usize;
-    fn write(&mut self, index: usize, value: VertexBufferElement);
+    fn slice<Range: ops::RangeBounds<usize>>(self, range: Range) -> Slice<Element, Self> {
+        Slice::new(self).slice(range)
+    }
+    fn slice_ref<Range: ops::RangeBounds<usize>>(&self, range: Range) -> Slice<Element, &Self> {
+        Slice::new(&*self).slice(range)
+    }
+    fn slice_mut<Range: ops::RangeBounds<usize>>(
+        &mut self,
+        range: Range,
+    ) -> Slice<Element, &mut Self> {
+        Slice::new(self).slice(range)
+    }
 }
 
-pub trait DeviceVertexBuffer: Sized + Send + Clone {
-    fn len(&self) -> usize;
+impl<'a, Element: Send + Sync + Clone + 'static, T: GenericArray<Element>> GenericArray<Element>
+    for &'a T
+{
+    fn len(&self) -> usize {
+        (**self).len()
+    }
 }
 
-pub trait StagingIndexBuffer: Sized + Send {
-    fn len(&self) -> usize;
-    fn write(&mut self, index: usize, value: IndexBufferElement);
+impl<'a, Element: Send + Sync + Clone + 'static, T: GenericArray<Element>> GenericArray<Element>
+    for &'a mut T
+{
+    fn len(&self) -> usize {
+        (**self).len()
+    }
 }
 
-pub trait DeviceIndexBuffer: Sized + Send + Clone {
-    fn len(&self) -> usize;
+#[derive(Copy, Clone, Debug)]
+pub struct UnbackedGenericArray<Element: Send + Sync + Clone + 'static> {
+    len: usize,
+    _elements: PhantomData<&'static Element>,
 }
 
-pub trait StagingImageSet: Sized + Send {
-    fn width(&self) -> u32;
-    fn height(&self) -> u32;
-    fn count(&self) -> u32;
-    fn write(&mut self, texture_id: TextureId, image: &image::Image);
+impl<Element: Send + Sync + Clone + 'static> UnbackedGenericArray<Element> {
+    pub fn new(len: usize) -> Self {
+        Self {
+            len: len,
+            _elements: PhantomData,
+        }
+    }
 }
 
-pub trait DeviceImageSet: Sized + Send + Clone {
-    fn width(&self) -> u32;
-    fn height(&self) -> u32;
-    fn count(&self) -> u32;
+impl<'a, Element: Send + Sync + Clone + 'static, T: GenericArray<Element>> From<&'a T>
+    for UnbackedGenericArray<Element>
+{
+    fn from(generic_array: &T) -> Self {
+        UnbackedGenericArray::new(generic_array.len())
+    }
 }
+
+impl<Element: Send + Sync + Clone + 'static> GenericArray<Element>
+    for UnbackedGenericArray<Element>
+{
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+pub trait UninitializedDeviceGenericArray<Element: Send + Sync + Clone + 'static>:
+    GenericArray<Element>
+{
+}
+
+pub trait DeviceGenericArray<Element: Send + Sync + Clone + 'static>:
+    GenericArray<Element>
+{
+}
+
+pub trait StagingGenericArray<Element: Send + Sync + Clone + 'static>:
+    GenericArray<Element> + AsRef<[Element]> + AsMut<[Element]>
+{
+}
+
+pub trait Buffer<Element: Send + Sync + Copy + 'static>: GenericArray<Element> {}
+
+pub trait ImageSet: GenericArray<image::Image> {
+    fn dimensions(&self) -> math::Vec2<u32>;
+}
+
+pub trait UninitializedDeviceImageSet:
+    ImageSet + UninitializedDeviceGenericArray<image::Image>
+{
+}
+
+pub trait DeviceImageSet: ImageSet + DeviceGenericArray<image::Image> {}
+
+pub trait StagingImageSet: ImageSet + StagingGenericArray<image::Image> {}
+
+pub trait DeviceBuffer<Element: Send + Sync + Copy + 'static>:
+    Buffer<Element> + DeviceGenericArray<Element>
+{
+}
+
+pub trait UninitializedDeviceBuffer<Element: Send + Sync + Copy + 'static>:
+    Buffer<Element> + UninitializedDeviceGenericArray<Element>
+{
+}
+
+pub trait StagingBuffer<Element: Send + Sync + Copy + 'static>:
+    Buffer<Element> + StagingGenericArray<Element>
+{
+}
+
+mod slices {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    pub struct Slice<Element: Send + Sync + Clone + 'static, T: GenericArray<Element>> {
+        underlying: T,
+        start: usize,
+        len: usize,
+        _phantom: PhantomData<&'static Element>,
+    }
+
+    impl<Element: Send + Sync + Clone + 'static, T: GenericArray<Element>> Slice<Element, T> {
+        pub fn new(underlying: T) -> Self {
+            let len = underlying.len();
+            Self {
+                underlying: underlying,
+                start: 0,
+                len: len,
+                _phantom: PhantomData,
+            }
+        }
+        pub fn underlying(&self) -> &T {
+            &self.underlying
+        }
+        pub fn underlying_mut(&mut self) -> &mut T {
+            &mut self.underlying
+        }
+        pub fn into_underlying(self) -> T {
+            self.underlying
+        }
+        pub fn start(&self) -> usize {
+            self.start
+        }
+        pub fn len(&self) -> usize {
+            self.len
+        }
+        fn slice_helper<Range: ops::RangeBounds<usize>>(
+            &self,
+            range: Range,
+        ) -> Slice<Element, UnbackedGenericArray<Element>> {
+            use std::ops::Bound::*;
+            let range_start = match range.start_bound() {
+                Included(&start) => start,
+                Excluded(&start) => start.checked_add(1).unwrap(),
+                Unbounded => 0,
+            };
+            let range_end = match range.end_bound() {
+                Included(&end) => end.checked_add(1).unwrap(),
+                Excluded(&end) => end,
+                Unbounded => self.len,
+            };
+            assert!(range_start <= range_end);
+            assert!(range_start <= self.len);
+            assert!(range_end <= self.len);
+            Slice {
+                underlying: (&self.underlying).into(),
+                start: self.start + range_start,
+                len: range_end - range_start,
+                _phantom: PhantomData,
+            }
+        }
+        pub fn slice<Range: ops::RangeBounds<usize>>(self, range: Range) -> Self {
+            let Slice {
+                underlying: _,
+                start,
+                len,
+                _phantom: _,
+            } = self.slice_helper(range);
+            Slice {
+                underlying: self.underlying,
+                start: start,
+                len: len,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<Element: Send + Sync + Clone + 'static, T: StagingGenericArray<Element>> AsRef<[Element]>
+        for Slice<Element, T>
+    {
+        fn as_ref(&self) -> &[Element] {
+            &self.underlying.as_ref()[self.start..][..self.len]
+        }
+    }
+
+    impl<Element: Send + Sync + Clone + 'static, T: StagingGenericArray<Element>> AsMut<[Element]>
+        for Slice<Element, T>
+    {
+        fn as_mut(&mut self) -> &mut [Element] {
+            &mut self.underlying.as_mut()[self.start..][..self.len]
+        }
+    }
+}
+
+pub use slices::*;
 
 pub trait LoaderCommandBufferBuilder: Sized {
     type Error: error::Error + 'static;
     type CommandBuffer: CommandBuffer;
-    type StagingVertexBuffer: StagingVertexBuffer;
-    type DeviceVertexBuffer: DeviceVertexBuffer;
-    type StagingIndexBuffer: StagingIndexBuffer;
-    type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
+    type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
+    type StagingIndexBuffer: StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer: UninitializedDeviceBuffer<IndexBufferElement>;
+    type DeviceIndexBuffer: DeviceBuffer<IndexBufferElement>;
     type StagingImageSet: StagingImageSet;
+    type UninitializedDeviceImageSet: UninitializedDeviceImageSet;
     type DeviceImageSet: DeviceImageSet;
+    fn initialize_vertex_buffer(
+        &mut self,
+        staging_buffer: Slice<VertexBufferElement, &Self::StagingVertexBuffer>,
+        device_buffer: Self::UninitializedDeviceVertexBuffer,
+    ) -> Result<Self::DeviceVertexBuffer, Self::Error>;
+    fn initialize_index_buffer(
+        &mut self,
+        staging_buffer: Slice<IndexBufferElement, &Self::StagingIndexBuffer>,
+        device_buffer: Self::UninitializedDeviceIndexBuffer,
+    ) -> Result<Self::DeviceIndexBuffer, Self::Error>;
+    fn initialize_image_set(
+        &mut self,
+        staging_image_set: Slice<image::Image, &Self::StagingImageSet>,
+        device_image_set: Self::UninitializedDeviceImageSet,
+    ) -> Result<Self::DeviceImageSet, Self::Error>;
     fn copy_vertex_buffer_to_device(
         &mut self,
-        staging_vertex_buffer: Self::StagingVertexBuffer,
-    ) -> Result<Self::DeviceVertexBuffer, Self::Error>;
+        staging_buffer: Slice<VertexBufferElement, &Self::StagingVertexBuffer>,
+        device_buffer: Slice<VertexBufferElement, &Self::DeviceVertexBuffer>,
+    ) -> Result<(), Self::Error>;
     fn copy_index_buffer_to_device(
         &mut self,
-        staging_index_buffer: Self::StagingIndexBuffer,
-    ) -> Result<Self::DeviceIndexBuffer, Self::Error>;
+        staging_buffer: Slice<IndexBufferElement, &Self::StagingIndexBuffer>,
+        device_buffer: Slice<IndexBufferElement, &Self::DeviceIndexBuffer>,
+    ) -> Result<(), Self::Error>;
     fn copy_image_set_to_device(
         &mut self,
-        staging_image_set: Self::StagingImageSet,
-    ) -> Result<Self::DeviceImageSet, Self::Error>;
+        staging_image_set: Slice<image::Image, &Self::StagingImageSet>,
+        device_image_set: Slice<image::Image, &Self::DeviceImageSet>,
+    ) -> Result<(), Self::Error>;
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
 }
 
 pub trait RenderCommandBufferBuilder: Sized {
     type Error: error::Error + 'static;
     type CommandBuffer: CommandBuffer + Clone;
-    type DeviceVertexBuffer: DeviceVertexBuffer;
-    type DeviceIndexBuffer: DeviceIndexBuffer;
+    type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
+    type DeviceIndexBuffer: DeviceBuffer<IndexBufferElement>;
     type DeviceImageSet: DeviceImageSet;
-    fn set_image_set(&mut self, image_set: Self::DeviceImageSet);
-    fn set_buffers(
-        &mut self,
-        vertex_buffer: Self::DeviceVertexBuffer,
-        index_buffer: Self::DeviceIndexBuffer,
-    );
+    fn set_image_set(&mut self, image_set: &Self::DeviceImageSet);
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>);
-    fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32);
+    fn draw(
+        &mut self,
+        vertex_buffer: Slice<VertexBufferElement, &Self::DeviceVertexBuffer>,
+        index_buffer: Slice<IndexBufferElement, &Self::DeviceIndexBuffer>,
+    );
     fn finish(self) -> Result<Self::CommandBuffer, Self::Error>;
 }
 
-pub trait CommandBuffer: Sized + 'static + Send {}
+pub trait CommandBuffer: Sized + 'static + Send + Sync {}
 
 pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Error: error::Error + 'static;
-    type StagingVertexBuffer: StagingVertexBuffer;
-    type DeviceVertexBuffer: DeviceVertexBuffer;
-    type StagingIndexBuffer: StagingIndexBuffer;
-    type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
+    type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
+    type StagingIndexBuffer: StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer: UninitializedDeviceBuffer<IndexBufferElement>;
+    type DeviceIndexBuffer: DeviceBuffer<IndexBufferElement>;
     type StagingImageSet: StagingImageSet;
+    type UninitializedDeviceImageSet: UninitializedDeviceImageSet;
     type DeviceImageSet: DeviceImageSet;
     type RenderCommandBuffer: CommandBuffer + Clone;
     type RenderCommandBufferBuilder: RenderCommandBufferBuilder<
@@ -144,11 +343,14 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         CommandBuffer = Self::LoaderCommandBuffer,
         Error = Self::Error,
         StagingVertexBuffer = Self::StagingVertexBuffer,
+        UninitializedDeviceVertexBuffer = Self::UninitializedDeviceVertexBuffer,
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        UninitializedDeviceIndexBuffer = Self::UninitializedDeviceIndexBuffer,
         StagingImageSet = Self::StagingImageSet,
         DeviceImageSet = Self::DeviceImageSet,
+        UninitializedDeviceImageSet = Self::UninitializedDeviceImageSet,
     >;
     fn create_render_command_buffer_builder(
         &self,
@@ -160,20 +362,51 @@ pub trait DeviceReference: Send + Sync + Clone + 'static {
         &self,
         len: usize,
     ) -> Result<Self::StagingVertexBuffer, Self::Error>;
+    fn create_device_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::UninitializedDeviceVertexBuffer, Self::Error>;
     fn create_staging_index_buffer(
         &self,
         len: usize,
     ) -> Result<Self::StagingIndexBuffer, Self::Error>;
-    fn get_max_image_width(&self) -> u32;
-    fn get_max_image_height(&self) -> u32;
-    fn get_max_image_count_in_image_set(&self, width: u32, height: u32)
-        -> Result<u32, Self::Error>;
+    fn create_device_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::UninitializedDeviceIndexBuffer, Self::Error>;
+    fn get_max_image_dimensions(&self) -> math::Vec2<u32>;
+    fn get_max_image_count_in_image_set(
+        &self,
+        dimensions: math::Vec2<u32>,
+    ) -> Result<usize, Self::Error>;
     fn create_staging_image_set(
         &self,
-        width: u32,
-        height: u32,
-        count: u32,
+        dimensions: math::Vec2<u32>,
+        count: usize,
     ) -> Result<Self::StagingImageSet, Self::Error>;
+    fn create_device_image_set(
+        &self,
+        dimensions: math::Vec2<u32>,
+        count: usize,
+    ) -> Result<Self::UninitializedDeviceImageSet, Self::Error>;
+    fn create_device_vertex_buffer_like(
+        &self,
+        staging_buffer: &Self::StagingVertexBuffer,
+    ) -> Result<Self::UninitializedDeviceVertexBuffer, Self::Error> {
+        self.create_device_vertex_buffer(staging_buffer.len())
+    }
+    fn create_device_index_buffer_like(
+        &self,
+        staging_buffer: &Self::StagingIndexBuffer,
+    ) -> Result<Self::UninitializedDeviceIndexBuffer, Self::Error> {
+        self.create_device_index_buffer(staging_buffer.len())
+    }
+    fn create_device_image_set_like(
+        &self,
+        staging_image_set: &Self::StagingImageSet,
+    ) -> Result<Self::UninitializedDeviceImageSet, Self::Error> {
+        self.create_device_image_set(staging_image_set.dimensions(), staging_image_set.len())
+    }
 }
 
 pub trait PausedDevice: Sized {
@@ -195,11 +428,14 @@ pub trait Device: Sized {
         LoaderCommandBuffer = Self::LoaderCommandBuffer,
         LoaderCommandBufferBuilder = Self::LoaderCommandBufferBuilder,
         StagingVertexBuffer = Self::StagingVertexBuffer,
+        UninitializedDeviceVertexBuffer = Self::UninitializedDeviceVertexBuffer,
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        UninitializedDeviceIndexBuffer = Self::UninitializedDeviceIndexBuffer,
         StagingImageSet = Self::StagingImageSet,
         DeviceImageSet = Self::DeviceImageSet,
+        UninitializedDeviceImageSet = Self::UninitializedDeviceImageSet,
     >;
     type PausedDevice: PausedDevice<Device = Self>;
     type RenderCommandBuffer: CommandBuffer + Clone;
@@ -215,17 +451,23 @@ pub trait Device: Sized {
         CommandBuffer = Self::LoaderCommandBuffer,
         Error = Self::Error,
         StagingVertexBuffer = Self::StagingVertexBuffer,
+        UninitializedDeviceVertexBuffer = Self::UninitializedDeviceVertexBuffer,
         DeviceVertexBuffer = Self::DeviceVertexBuffer,
         StagingIndexBuffer = Self::StagingIndexBuffer,
         DeviceIndexBuffer = Self::DeviceIndexBuffer,
+        UninitializedDeviceIndexBuffer = Self::UninitializedDeviceIndexBuffer,
         StagingImageSet = Self::StagingImageSet,
         DeviceImageSet = Self::DeviceImageSet,
+        UninitializedDeviceImageSet = Self::UninitializedDeviceImageSet,
     >;
-    type StagingVertexBuffer: StagingVertexBuffer;
-    type DeviceVertexBuffer: DeviceVertexBuffer;
-    type StagingIndexBuffer: StagingIndexBuffer;
-    type DeviceIndexBuffer: DeviceIndexBuffer;
+    type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
+    type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
+    type StagingIndexBuffer: StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer: UninitializedDeviceBuffer<IndexBufferElement>;
+    type DeviceIndexBuffer: DeviceBuffer<IndexBufferElement>;
     type StagingImageSet: StagingImageSet;
+    type UninitializedDeviceImageSet: UninitializedDeviceImageSet;
     type DeviceImageSet: DeviceImageSet;
     fn pause(self) -> Self::PausedDevice;
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
@@ -257,34 +499,67 @@ pub trait Device: Sized {
     ) -> Result<Self::StagingVertexBuffer, Self::Error> {
         self.get_device_ref().create_staging_vertex_buffer(len)
     }
+    fn create_device_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::UninitializedDeviceVertexBuffer, Self::Error> {
+        self.get_device_ref().create_device_vertex_buffer(len)
+    }
     fn create_staging_index_buffer(
         &self,
         len: usize,
     ) -> Result<Self::StagingIndexBuffer, Self::Error> {
         self.get_device_ref().create_staging_index_buffer(len)
     }
-    fn get_max_image_width(&self) -> u32 {
-        self.get_device_ref().get_max_image_width()
+    fn create_device_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<Self::UninitializedDeviceIndexBuffer, Self::Error> {
+        self.get_device_ref().create_device_index_buffer(len)
     }
-    fn get_max_image_height(&self) -> u32 {
-        self.get_device_ref().get_max_image_height()
+    fn get_max_image_dimensions(&self) -> math::Vec2<u32> {
+        self.get_device_ref().get_max_image_dimensions()
     }
     fn get_max_image_count_in_image_set(
         &self,
-        width: u32,
-        height: u32,
-    ) -> Result<u32, Self::Error> {
+        dimensions: math::Vec2<u32>,
+    ) -> Result<usize, Self::Error> {
         self.get_device_ref()
-            .get_max_image_count_in_image_set(width, height)
+            .get_max_image_count_in_image_set(dimensions)
     }
     fn create_staging_image_set(
         &self,
-        width: u32,
-        height: u32,
-        count: u32,
+        dimensions: math::Vec2<u32>,
+        count: usize,
     ) -> Result<Self::StagingImageSet, Self::Error> {
         self.get_device_ref()
-            .create_staging_image_set(width, height, count)
+            .create_staging_image_set(dimensions, count)
+    }
+    fn create_device_image_set(
+        &self,
+        dimensions: math::Vec2<u32>,
+        count: usize,
+    ) -> Result<Self::UninitializedDeviceImageSet, Self::Error> {
+        self.get_device_ref()
+            .create_device_image_set(dimensions, count)
+    }
+    fn create_device_vertex_buffer_like(
+        &self,
+        staging_buffer: &Self::StagingVertexBuffer,
+    ) -> Result<Self::UninitializedDeviceVertexBuffer, Self::Error> {
+        self.create_device_vertex_buffer(staging_buffer.len())
+    }
+    fn create_device_index_buffer_like(
+        &self,
+        staging_buffer: &Self::StagingIndexBuffer,
+    ) -> Result<Self::UninitializedDeviceIndexBuffer, Self::Error> {
+        self.create_device_index_buffer(staging_buffer.len())
+    }
+    fn create_device_image_set_like(
+        &self,
+        staging_image_set: &Self::StagingImageSet,
+    ) -> Result<Self::UninitializedDeviceImageSet, Self::Error> {
+        self.create_device_image_set(staging_image_set.dimensions(), staging_image_set.len())
     }
 }
 
