@@ -50,13 +50,16 @@ pub mod tiles {
         device_reference: &DR,
     ) -> Result<DR::StagingImageSet, DR::Error> {
         let first_image = TILES_ARRAY[0].load();
-        let mut retval = device_reference
+        let retval = device_reference
             .create_staging_image_set(first_image.dimensions(), TILES_ARRAY.len())?;
-        let mut first_image = Some(first_image);
-        for tile in TILES_ARRAY {
-            let image = first_image.take().unwrap_or_else(|| tile.load());
-            assert_eq!(image.dimensions(), retval.dimensions());
-            retval.as_mut()[tile.index.unwrap()].copy_from(&image);
+        {
+            let mut staging_image_set = retval.write();
+            let mut first_image = Some(first_image);
+            for tile in TILES_ARRAY {
+                let image = first_image.take().unwrap_or_else(|| tile.load());
+                assert_eq!(image.dimensions(), retval.dimensions());
+                staging_image_set[tile.index.unwrap()].copy_from(&image);
+            }
         }
         Ok(retval)
     }

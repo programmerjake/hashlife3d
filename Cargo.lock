@@ -571,6 +571,7 @@ name = "voxels-renderer"
 version = "0.1.0"
 dependencies = [
  "voxels-renderer-base 0.1.0",
+ "voxels-renderer-gles2 0.1.0",
  "voxels-renderer-vulkan 0.1.0",
  "voxels-sdl 0.1.0",
 ]

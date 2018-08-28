@@ -13,8 +13,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 extern crate voxels_renderer_base as renderer;
-// FIXME: reenable gles2
-//extern crate voxels_renderer_gles2 as gles2;
+extern crate voxels_renderer_gles2 as gles2;
 extern crate voxels_renderer_vulkan as vulkan;
 extern crate voxels_sdl as sdl;
 
@@ -95,7 +94,6 @@ pub fn for_each_backend<BV: BackendVisitor>(backend_visitor: &mut BV) -> Backend
         }};
     }
     visit_backend!(self::vulkan::VulkanDeviceFactory, "vulkan", "Vulkan");
-    // FIXME: reenable gles2
-    //visit_backend!(self::gles2::GLES2DeviceFactory, "gles2", "OpenGL ES 2.0");
+    visit_backend!(self::gles2::GLES2DeviceFactory, "gles2", "OpenGL ES 2.0");
     BackendVisitorResult::Continue
 }

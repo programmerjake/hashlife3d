@@ -353,7 +353,7 @@ pub fn rust_main(event_source: sdl::event::EventSource) {
         }
     }
     let mut selected_backend = None;
-    if false {
+    if true {
         // FIXME: change back to dynamically selecting the backend
         selected_backend = Some(String::from("gles2"));
     }

@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use math;
-use renderer::{DeviceReference, IndexBufferElement, TextureId, VertexBufferElement};
-use std::convert::AsMut;
+use renderer::{
+    DeviceReference, IndexBufferElement, StagingGenericArray, TextureId, VertexBufferElement,
+};
 
 pub struct Mesh {
     vertices: Vec<VertexBufferElement>,
@@ -390,11 +391,10 @@ impl Mesh {
         &self,
         device_reference: &DR,
     ) -> Result<(DR::StagingVertexBuffer, DR::StagingIndexBuffer), DR::Error> {
-        let mut vertex_buffer =
-            device_reference.create_staging_vertex_buffer(self.vertices.len())?;
-        let mut index_buffer = device_reference.create_staging_index_buffer(self.indices.len())?;
-        vertex_buffer.as_mut().copy_from_slice(&self.vertices);
-        index_buffer.as_mut().copy_from_slice(&self.indices);
+        let vertex_buffer = device_reference.create_staging_vertex_buffer(self.vertices.len())?;
+        let index_buffer = device_reference.create_staging_index_buffer(self.indices.len())?;
+        vertex_buffer.write().copy_from_slice(&self.vertices);
+        index_buffer.write().copy_from_slice(&self.indices);
         Ok((vertex_buffer, index_buffer))
     }
 }

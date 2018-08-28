@@ -26,7 +26,7 @@ pub type TextureId = u16;
 pub const NO_TEXTURE: TextureId = 0;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct VertexBufferElement {
     pub position: [f32; 3],
     pub color: [u8; 4],
@@ -51,6 +51,18 @@ impl VertexBufferElement {
 }
 
 pub type IndexBufferElement = u16;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FenceTryWaitResult {
+    Ready,
+    WouldBlock,
+}
+
+pub trait Fence: Send + Sync + Sized + Clone {
+    type Error: error::Error + 'static;
+    fn try_wait(&self) -> Result<FenceTryWaitResult, Self::Error>;
+    fn wait(self) -> Result<(), Self::Error>;
+}
 
 pub trait GenericArray<Element: Send + Sync + Clone + 'static>: Send + Sync + Sized {
     fn len(&self) -> usize;
@@ -125,9 +137,113 @@ pub trait DeviceGenericArray<Element: Send + Sync + Clone + 'static>:
 {
 }
 
+mod staging_lock_guards {
+    use super::*;
+
+    pub trait StagingReadLockGuardImplementation {
+        type Element: Send + Sync + Clone + 'static;
+        unsafe fn get(&self) -> *const [Self::Element];
+    }
+
+    pub trait StagingWriteLockGuardImplementation {
+        type Element: Send + Sync + Clone + 'static;
+        unsafe fn get(&self) -> *const [Self::Element];
+        unsafe fn get_mut(&mut self) -> *mut [Self::Element];
+    }
+
+    pub struct StagingReadLockGuard<'a, I: StagingReadLockGuardImplementation> {
+        implementation: I,
+        start: usize,
+        len: usize,
+        _phantom: PhantomData<&'a [I::Element]>,
+    }
+
+    pub struct StagingWriteLockGuard<'a, I: StagingWriteLockGuardImplementation> {
+        implementation: I,
+        start: usize,
+        len: usize,
+        _phantom: PhantomData<&'a mut [I::Element]>,
+    }
+
+    impl<'a, I: StagingReadLockGuardImplementation> StagingReadLockGuard<'a, I> {
+        pub unsafe fn new(implementation: I) -> Self {
+            let len = (*implementation.get()).len();
+            Self {
+                implementation: implementation,
+                start: 0,
+                len: len,
+                _phantom: PhantomData,
+            }
+        }
+        pub fn slice(mut this: Self, start: usize, len: usize) -> Self {
+            assert!(start <= this.len);
+            assert!(len <= this.len);
+            assert!(start + len <= this.len);
+            this.start += start;
+            this.len = len;
+            this
+        }
+        fn get(&self) -> &'a [I::Element] {
+            unsafe { &(*self.implementation.get())[self.start..][..self.len] }
+        }
+    }
+
+    impl<'a, I: StagingWriteLockGuardImplementation> StagingWriteLockGuard<'a, I> {
+        pub unsafe fn new(implementation: I) -> Self {
+            let len = (*implementation.get()).len();
+            Self {
+                implementation: implementation,
+                start: 0,
+                len: len,
+                _phantom: PhantomData,
+            }
+        }
+        pub fn slice(mut this: Self, start: usize, len: usize) -> Self {
+            assert!(start <= this.len);
+            assert!(len <= this.len);
+            assert!(start + len <= this.len);
+            this.start += start;
+            this.len = len;
+            this
+        }
+        fn get(&self) -> &'a [I::Element] {
+            unsafe { &(*self.implementation.get())[self.start..][..self.len] }
+        }
+        fn get_mut(&mut self) -> &'a mut [I::Element] {
+            unsafe { &mut (*self.implementation.get_mut())[self.start..][..self.len] }
+        }
+    }
+
+    impl<'a, I: StagingReadLockGuardImplementation> ops::Deref for StagingReadLockGuard<'a, I> {
+        type Target = [I::Element];
+        fn deref(&self) -> &[I::Element] {
+            self.get()
+        }
+    }
+
+    impl<'a, I: StagingWriteLockGuardImplementation> ops::Deref for StagingWriteLockGuard<'a, I> {
+        type Target = [I::Element];
+        fn deref(&self) -> &[I::Element] {
+            self.get()
+        }
+    }
+
+    impl<'a, I: StagingWriteLockGuardImplementation> ops::DerefMut for StagingWriteLockGuard<'a, I> {
+        fn deref_mut(&mut self) -> &mut [I::Element] {
+            self.get_mut()
+        }
+    }
+}
+
+pub use staging_lock_guards::*;
+
 pub trait StagingGenericArray<Element: Send + Sync + Clone + 'static>:
-    GenericArray<Element> + AsRef<[Element]> + AsMut<[Element]>
+    GenericArray<Element>
 {
+    type ReadLockGuardImplementation: StagingReadLockGuardImplementation<Element = Element>;
+    type WriteLockGuardImplementation: StagingWriteLockGuardImplementation<Element = Element>;
+    fn read<'a>(&'a self) -> StagingReadLockGuard<'a, Self::ReadLockGuardImplementation>;
+    fn write<'a>(&'a self) -> StagingWriteLockGuard<'a, Self::WriteLockGuardImplementation>;
 }
 
 pub trait Buffer<Element: Send + Sync + Copy + 'static>: GenericArray<Element> {}
@@ -237,19 +353,12 @@ mod slices {
         }
     }
 
-    impl<Element: Send + Sync + Clone + 'static, T: StagingGenericArray<Element>> AsRef<[Element]>
-        for Slice<Element, T>
-    {
-        fn as_ref(&self) -> &[Element] {
-            &self.underlying.as_ref()[self.start..][..self.len]
+    impl<Element: Send + Sync + Clone + 'static, T: StagingGenericArray<Element>> Slice<Element, T> {
+        pub fn read<'a>(&'a self) -> StagingReadLockGuard<'a, T::ReadLockGuardImplementation> {
+            StagingReadLockGuard::slice(self.underlying.read(), self.start, self.len)
         }
-    }
-
-    impl<Element: Send + Sync + Clone + 'static, T: StagingGenericArray<Element>> AsMut<[Element]>
-        for Slice<Element, T>
-    {
-        fn as_mut(&mut self) -> &mut [Element] {
-            &mut self.underlying.as_mut()[self.start..][..self.len]
+        pub fn write<'a>(&'a self) -> StagingWriteLockGuard<'a, T::WriteLockGuardImplementation> {
+            StagingWriteLockGuard::slice(self.underlying.write(), self.start, self.len)
         }
     }
 }
@@ -321,6 +430,7 @@ pub trait CommandBuffer: Sized + 'static + Send + Sync {}
 
 pub trait DeviceReference: Send + Sync + Clone + 'static {
     type Error: error::Error + 'static;
+    type Fence: Fence<Error = Self::Error>;
     type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
     type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
     type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
@@ -421,8 +531,10 @@ pub struct RenderCommandBufferGroup<'a, RCB: CommandBuffer> {
 
 pub trait Device: Sized {
     type Error: error::Error + 'static;
+    type Fence: Fence<Error = Self::Error>;
     type Reference: DeviceReference<
         Error = Self::Error,
+        Fence = Self::Fence,
         RenderCommandBuffer = Self::RenderCommandBuffer,
         RenderCommandBufferBuilder = Self::RenderCommandBufferBuilder,
         LoaderCommandBuffer = Self::LoaderCommandBuffer,
@@ -476,13 +588,13 @@ pub trait Device: Sized {
     fn submit_loader_command_buffers(
         &mut self,
         loader_command_buffers: &mut Vec<Self::LoaderCommandBuffer>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<Self::Fence, Self::Error>;
     fn render_frame(
         &mut self,
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<Self::LoaderCommandBuffer>,
         render_command_buffer_groups: &[RenderCommandBufferGroup<Self::RenderCommandBuffer>],
-    ) -> Result<(), Self::Error>;
+    ) -> Result<Self::Fence, Self::Error>;
     fn create_render_command_buffer_builder(
         &self,
     ) -> Result<Self::RenderCommandBufferBuilder, Self::Error> {

@@ -44,13 +44,11 @@ use self::instance_functions::*;
 use self::semaphore::*;
 use self::surface::*;
 use renderer::*;
-use std::any::Any;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::mem;
 use std::os::raw::c_void;
 use std::ptr::*;
-use std::rc::Rc;
 use std::slice;
 use std::sync::Arc;
 use std::u32;
@@ -123,7 +121,7 @@ pub struct VulkanPausedDevice {
 
 struct SwapchainWrapper {
     device: Arc<DeviceWrapper>,
-    _surface: Rc<SurfaceWrapper>,
+    _surface: Arc<SurfaceWrapper>,
     swapchain: api::VkSwapchainKHR,
 }
 
@@ -147,7 +145,7 @@ pub struct VulkanDevice {
     render_queue: api::VkQueue,
     present_queue: api::VkQueue,
     swapchain: Option<Arc<SwapchainState>>,
-    in_progress_operations: VecDeque<(FenceWrapper, Vec<Box<Any>>)>,
+    in_progress_operations: VecDeque<VulkanFence>,
     in_progress_present_semaphores: VecDeque<SemaphoreWrapper>,
 }
 
@@ -331,6 +329,7 @@ impl VulkanDeviceReference {
 
 impl DeviceReference for VulkanDeviceReference {
     type Error = VulkanError;
+    type Fence = VulkanFence;
     type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
     type LoaderCommandBufferBuilder = VulkanLoaderCommandBufferBuilder;
     type RenderCommandBuffer = VulkanRenderCommandBuffer;
@@ -433,7 +432,7 @@ impl DeviceReference for VulkanDeviceReference {
 impl PausedDevice for VulkanPausedDevice {
     type Device = VulkanDevice;
     fn get_window(&self) -> &sdl::window::Window {
-        &self.surface_state.surface.window
+        &self.surface_state.window
     }
 }
 
@@ -1184,13 +1183,12 @@ impl VulkanDevice {
         )?))
     }
     fn free_finished_objects(&mut self) -> Result<()> {
-        let device = &self.device_reference.device;
         loop {
             if let Some(front) = self.in_progress_operations.front() {
-                match unsafe { device.vkGetFenceStatus.unwrap()(device.device, front.0.fence) } {
-                    api::VK_SUCCESS => (),
-                    api::VK_NOT_READY => break,
-                    result => return Err(VulkanError::VulkanError(result)),
+                if FenceTryWaitResult::Ready != VulkanFenceVulkanState::clear_if_done(
+                    &mut *get_fence_vulkan_state(front).lock().unwrap(),
+                )? {
+                    break;
                 }
             } else {
                 break;
@@ -1212,6 +1210,7 @@ impl Drop for VulkanDevice {
 
 impl Device for VulkanDevice {
     type Error = VulkanError;
+    type Fence = VulkanFence;
     type Reference = VulkanDeviceReference;
     type PausedDevice = VulkanPausedDevice;
     type LoaderCommandBuffer = VulkanLoaderCommandBuffer;
@@ -1238,6 +1237,7 @@ impl Device for VulkanDevice {
     }
     fn resume(paused_device: VulkanPausedDevice) -> Result<Self> {
         let SurfaceState {
+            window,
             surface,
             physical_device,
             present_queue_index,
@@ -1307,6 +1307,7 @@ impl Device for VulkanDevice {
         };
         let device = Arc::new(device);
         let surface_state = SurfaceState {
+            window: window,
             surface: surface,
             physical_device: physical_device,
             present_queue_index: present_queue_index,
@@ -1350,7 +1351,7 @@ impl Device for VulkanDevice {
         return Ok(retval);
     }
     fn get_window(&self) -> &sdl::window::Window {
-        &self.surface_state.as_ref().unwrap().surface.window
+        &self.surface_state.as_ref().unwrap().window
     }
     fn get_device_ref(&self) -> &VulkanDeviceReference {
         &self.device_reference
@@ -1358,7 +1359,7 @@ impl Device for VulkanDevice {
     fn submit_loader_command_buffers(
         &mut self,
         loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-    ) -> Result<()> {
+    ) -> Result<VulkanFence> {
         submit_loader_command_buffers(self, loader_command_buffers)
     }
     fn render_frame(
@@ -1366,7 +1367,7 @@ impl Device for VulkanDevice {
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
         render_command_buffer_groups: &[RenderCommandBufferGroup<VulkanRenderCommandBuffer>],
-    ) -> Result<()> {
+    ) -> Result<VulkanFence> {
         unsafe {
             render_frame(
                 self,
@@ -1466,7 +1467,7 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
             }
         };
         let instance = Arc::new(instance);
-        let surface = unsafe { SurfaceWrapper::new(window, instance.clone()) }?;
+        let surface = unsafe { SurfaceWrapper::new(&window, instance.clone()) }?;
         let mut physical_device_count = 0;
         match unsafe {
             instance.vkEnumeratePhysicalDevices.unwrap()(
@@ -1776,7 +1777,8 @@ impl<'a> DeviceFactory for VulkanDeviceFactory<'a> {
                 ) => {
                     return Ok(VulkanPausedDevice {
                         surface_state: SurfaceState {
-                            surface: Rc::new(surface),
+                            window: window,
+                            surface: Arc::new(surface),
                             physical_device: physical_device,
                             present_queue_index: present_queue_index,
                             render_queue_index: render_queue_index,

@@ -21,11 +21,15 @@ use renderer::*;
 use std::error;
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem;
 use std::os::raw::*;
 use std::ptr::*;
 use std::result;
-use std::sync::*;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    *,
+};
 
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
@@ -420,35 +424,141 @@ impl fmt::Display for GLES2Error {
 
 impl error::Error for GLES2Error {}
 
-pub struct GLES2StagingVertexBuffer {
-    buffer_data: Vec<VertexBufferElement>,
+#[derive(Clone)]
+pub struct GLES2Fence {
+    wait_completed: Arc<AtomicBool>,
 }
 
-impl GLES2StagingVertexBuffer {
-    fn new(len: usize) -> Self {
-        let mut buffer_data = Vec::new();
-        buffer_data.resize(len, unsafe { mem::zeroed() });
+impl GLES2Fence {
+    fn new() -> Self {
         Self {
-            buffer_data: buffer_data,
+            wait_completed: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
-impl StagingVertexBuffer for GLES2StagingVertexBuffer {
-    fn len(&self) -> usize {
-        self.buffer_data.len()
+impl Fence for GLES2Fence {
+    type Error = GLES2Error;
+    fn try_wait(&self) -> Result<FenceTryWaitResult> {
+        self.wait_completed.store(true, Ordering::Release);
+        Ok(FenceTryWaitResult::Ready)
     }
-    fn write(&mut self, index: usize, value: VertexBufferElement) {
-        self.buffer_data[index] = value;
+    fn wait(self) -> Result<()> {
+        self.wait_completed.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
-struct DeviceBuffer {
+struct StagingArraySharedState<T: Clone + Sync + Send + 'static> {
+    device_access_fence_wait_completed: Option<Arc<AtomicBool>>,
+    data: Box<[T]>,
+}
+
+pub struct StagingArrayReadLockGuardImplementation<T: Clone + Sync + Send + 'static>(
+    RwLockReadGuard<'static, StagingArraySharedState<T>>,
+);
+
+pub struct StagingArrayWriteLockGuardImplementation<T: Clone + Sync + Send + 'static>(
+    RwLockWriteGuard<'static, StagingArraySharedState<T>>,
+);
+
+impl<T: Clone + Sync + Send + 'static> StagingReadLockGuardImplementation
+    for StagingArrayReadLockGuardImplementation<T>
+{
+    type Element = T;
+    unsafe fn get(&self) -> *const [T] {
+        self.0.data.as_ref()
+    }
+}
+
+impl<T: Clone + Sync + Send + 'static> StagingWriteLockGuardImplementation
+    for StagingArrayWriteLockGuardImplementation<T>
+{
+    type Element = T;
+    unsafe fn get(&self) -> *const [T] {
+        self.0.data.as_ref()
+    }
+    unsafe fn get_mut(&mut self) -> *mut [T] {
+        self.0.data.as_mut()
+    }
+}
+
+unsafe fn transmute_to_static_lifetime<T>(v: &T) -> &'static T {
+    &*(v as *const T)
+}
+
+impl<T: Clone + Sync + Send + 'static> StagingArraySharedState<T> {
+    fn read_lock<'a>(
+        rw_lock: &'a RwLock<Self>,
+    ) -> StagingReadLockGuard<'a, StagingArrayReadLockGuardImplementation<T>> {
+        unsafe {
+            let lock = transmute_to_static_lifetime(rw_lock).read().unwrap();
+            StagingReadLockGuard::new(StagingArrayReadLockGuardImplementation(lock))
+        }
+    }
+    fn write_lock<'a>(
+        rw_lock: &'a RwLock<Self>,
+    ) -> StagingWriteLockGuard<'a, StagingArrayWriteLockGuardImplementation<T>> {
+        unsafe {
+            let lock = transmute_to_static_lifetime(rw_lock).write().unwrap();
+            assert!(
+                lock.device_access_fence_wait_completed
+                    .as_ref()
+                    .map(|v| v.load(Ordering::Acquire))
+                    .unwrap_or(true)
+            );
+            StagingWriteLockGuard::new(StagingArrayWriteLockGuardImplementation(lock))
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct GLES2StagingBuffer<T: Copy + Sync + Send + 'static> {
+    len: usize,
+    state: Arc<RwLock<StagingArraySharedState<T>>>,
+}
+
+impl<T: Copy + Sync + Send + 'static + Default> GLES2StagingBuffer<T> {
+    fn new(len: usize) -> Self {
+        let mut data = Vec::new();
+        data.resize(len, Default::default());
+        Self {
+            len: len,
+            state: Arc::new(RwLock::new(StagingArraySharedState {
+                device_access_fence_wait_completed: None,
+                data: data.into_boxed_slice(),
+            })),
+        }
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> GenericArray<T> for GLES2StagingBuffer<T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> StagingGenericArray<T> for GLES2StagingBuffer<T> {
+    type ReadLockGuardImplementation = StagingArrayReadLockGuardImplementation<T>;
+    type WriteLockGuardImplementation = StagingArrayWriteLockGuardImplementation<T>;
+    fn read(&self) -> StagingReadLockGuard<StagingArrayReadLockGuardImplementation<T>> {
+        StagingArraySharedState::read_lock(&*self.state)
+    }
+    fn write(&self) -> StagingWriteLockGuard<StagingArrayWriteLockGuardImplementation<T>> {
+        StagingArraySharedState::write_lock(&*self.state)
+    }
+}
+
+impl<T: Copy + Sync + Send + 'static> Buffer<T> for GLES2StagingBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> StagingBuffer<T> for GLES2StagingBuffer<T> {}
+
+struct BufferWrapper {
     buffer: api::GLuint,
     buffer_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
 }
 
-impl Drop for DeviceBuffer {
+impl Drop for BufferWrapper {
     fn drop(&mut self) {
         self.buffer_deallocate_channel_sender
             .send(self.buffer)
@@ -456,12 +566,12 @@ impl Drop for DeviceBuffer {
     }
 }
 
-struct DeviceImage {
+struct ImageWrapper {
     image: api::GLuint,
     image_deallocate_channel_sender: mpsc::Sender<api::GLuint>,
 }
 
-impl Drop for DeviceImage {
+impl Drop for ImageWrapper {
     fn drop(&mut self) {
         self.image_deallocate_channel_sender
             .send(self.image)
@@ -469,87 +579,119 @@ impl Drop for DeviceImage {
     }
 }
 
-#[derive(Clone)]
-pub struct GLES2DeviceVertexBuffer {
-    buffer: Arc<Mutex<Option<DeviceBuffer>>>,
-    len: usize,
-    load_submitted_flag: Arc<atomic::AtomicBool>,
-}
+pub trait SubmitTracker: Clone + Sync + Send + 'static {}
 
-impl DeviceVertexBuffer for GLES2DeviceVertexBuffer {
-    fn len(&self) -> usize {
-        self.len
+#[derive(Clone)]
+pub struct ActiveSubmitTracker(Arc<AtomicBool>);
+
+impl ActiveSubmitTracker {
+    fn new() -> Self {
+        ActiveSubmitTracker(Arc::new(AtomicBool::new(false)))
+    }
+    fn assert_submitted(&self) {
+        assert!(self.0.load(Ordering::Acquire));
+    }
+    fn set_submitted(&self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
-pub struct GLES2StagingIndexBuffer {
-    buffer_data: Vec<IndexBufferElement>,
+impl SubmitTracker for ActiveSubmitTracker {}
+
+#[derive(Copy, Clone)]
+pub struct InactiveSubmitTracker;
+
+impl SubmitTracker for InactiveSubmitTracker {}
+
+#[derive(Clone)]
+pub struct GLES2DeviceBuffer<T: Copy + Sync + Send + 'static, ST: SubmitTracker> {
+    buffer: Arc<Mutex<Option<BufferWrapper>>>,
+    len: usize,
+    submit_tracker: ST,
+    _phantom: PhantomData<&'static T>,
 }
 
-impl GLES2StagingIndexBuffer {
+impl<T: Copy + Sync + Send + 'static> GLES2DeviceBuffer<T, InactiveSubmitTracker> {
     fn new(len: usize) -> Self {
-        let mut buffer_data = Vec::new();
-        buffer_data.resize(len, Default::default());
         Self {
-            buffer_data: buffer_data,
+            buffer: Arc::new(Mutex::new(None)),
+            len: len,
+            submit_tracker: InactiveSubmitTracker,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl StagingIndexBuffer for GLES2StagingIndexBuffer {
-    fn len(&self) -> usize {
-        self.buffer_data.len()
-    }
-    fn write(&mut self, index: usize, value: IndexBufferElement) {
-        self.buffer_data[index] = value;
+impl<T: Copy + Sync + Send + 'static> GLES2DeviceBuffer<T, ActiveSubmitTracker> {
+    fn activate(
+        device_buffer: GLES2DeviceBuffer<T, InactiveSubmitTracker>,
+        submit_tracker: ActiveSubmitTracker,
+    ) -> Self {
+        Self {
+            buffer: device_buffer.buffer,
+            len: device_buffer.len,
+            submit_tracker: submit_tracker,
+            _phantom: PhantomData,
+        }
     }
 }
 
-#[derive(Clone)]
-pub struct GLES2DeviceIndexBuffer {
-    buffer: Arc<Mutex<Option<DeviceBuffer>>>,
-    len: usize,
-    load_submitted_flag: Arc<atomic::AtomicBool>,
-}
-
-impl DeviceIndexBuffer for GLES2DeviceIndexBuffer {
+impl<T: Copy + Sync + Send + 'static, ST: SubmitTracker> GenericArray<T>
+    for GLES2DeviceBuffer<T, ST>
+{
     fn len(&self) -> usize {
         self.len
     }
 }
 
-#[derive(Copy, Clone)]
+impl<T: Copy + Sync + Send + 'static> UninitializedDeviceGenericArray<T>
+    for GLES2DeviceBuffer<T, InactiveSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static> DeviceGenericArray<T>
+    for GLES2DeviceBuffer<T, ActiveSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static, ST: SubmitTracker> Buffer<T> for GLES2DeviceBuffer<T, ST> {}
+
+impl<T: Copy + Sync + Send + 'static> UninitializedDeviceBuffer<T>
+    for GLES2DeviceBuffer<T, InactiveSubmitTracker>
+{}
+
+impl<T: Copy + Sync + Send + 'static> DeviceBuffer<T>
+    for GLES2DeviceBuffer<T, ActiveSubmitTracker>
+{}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct ImageSetLayoutBase {
-    sub_image_width: u32,
-    sub_image_height: u32,
+    sub_image_dimensions: math::Vec2<u32>,
     max_image_size: u32,
 }
 
 impl ImageSetLayoutBase {
-    fn new(sub_image_width: u32, sub_image_height: u32, max_image_size: u32) -> Result<Self> {
-        if !sub_image_width.is_power_of_two() || !sub_image_height.is_power_of_two() {
+    fn new(sub_image_dimensions: math::Vec2<u32>, max_image_size: u32) -> Result<Self> {
+        if !sub_image_dimensions.x.is_power_of_two() || !sub_image_dimensions.y.is_power_of_two() {
             return Err(GLES2Error::ImageMustHavePowerOfTwoDimensions);
         }
         assert!(max_image_size.is_power_of_two());
-        if sub_image_width > max_image_size || sub_image_height > max_image_size {
+        if sub_image_dimensions.x > max_image_size || sub_image_dimensions.y > max_image_size {
             Err(GLES2Error::ImageIsTooBig)
         } else {
             Ok(Self {
-                sub_image_width: sub_image_width,
-                sub_image_height: sub_image_height,
+                sub_image_dimensions: sub_image_dimensions,
                 max_image_size: max_image_size,
             })
         }
     }
-    fn get_max_sub_image_count(&self) -> u32 {
+    fn get_max_sub_image_count(&self) -> usize {
         // glsl only guarantees that integers up to 2^10 are representable as mediump int
-        const MAX_COUNT: u32 = 1 << 10;
-        let max_sub_image_count_x = self.max_image_size / self.sub_image_width;
-        let max_sub_image_count_y = self.max_image_size / self.sub_image_height;
+        const MAX_COUNT: usize = 1 << 10;
+        let max_sub_image_count_x = self.max_image_size / self.sub_image_dimensions.x;
+        let max_sub_image_count_y = self.max_image_size / self.sub_image_dimensions.y;
         let retval = max_sub_image_count_x
             .checked_mul(max_sub_image_count_y)
             .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
-            .unwrap_or(MAX_COUNT);
+            .unwrap_or(MAX_COUNT as u32) as usize;
         if retval > MAX_COUNT {
             MAX_COUNT
         } else {
@@ -558,7 +700,7 @@ impl ImageSetLayoutBase {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct ImageSetLayout {
     base: ImageSetLayoutBase,
     sub_image_count_x: u32,
@@ -574,23 +716,23 @@ struct FragmentShaderImageSetParameters {
 }
 
 impl ImageSetLayout {
-    fn new(base: ImageSetLayoutBase, sub_image_count: u32) -> Result<Self> {
+    fn new(base: ImageSetLayoutBase, sub_image_count: usize) -> Result<Self> {
         if sub_image_count > base.get_max_sub_image_count() {
             return Err(GLES2Error::ImageSetHasTooManyImages);
         }
-        let mut sub_image_count_x = base.max_image_size / base.sub_image_width;
-        let mut sub_image_count_y = base.max_image_size / base.sub_image_height;
+        let mut sub_image_count_x = base.max_image_size / base.sub_image_dimensions.x;
+        let mut sub_image_count_y = base.max_image_size / base.sub_image_dimensions.y;
         loop {
             if sub_image_count_x > 1
                 && (sub_image_count_y <= 1
-                    || sub_image_count_x * base.sub_image_width
-                        >= sub_image_count_y * base.sub_image_height)
+                    || sub_image_count_x * base.sub_image_dimensions.x
+                        >= sub_image_count_y * base.sub_image_dimensions.y)
             {
                 let new_sub_image_count_x = sub_image_count_x / 2;
                 if new_sub_image_count_x
                     .checked_mul(sub_image_count_y)
                     .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
-                    .map(|v| v >= sub_image_count)
+                    .map(|v| v >= sub_image_count as u32)
                     .unwrap_or(true)
                 {
                     sub_image_count_x = new_sub_image_count_x;
@@ -602,7 +744,7 @@ impl ImageSetLayout {
                 if sub_image_count_x
                     .checked_mul(new_sub_image_count_y)
                     .and_then(|v| v.checked_mul(ShaderUniformLocations::SAMPLERS_LEN))
-                    .map(|v| v >= sub_image_count)
+                    .map(|v| v >= sub_image_count as u32)
                     .unwrap_or(true)
                 {
                     sub_image_count_y = new_sub_image_count_y;
@@ -617,8 +759,8 @@ impl ImageSetLayout {
             base: base,
             sub_image_count_x: sub_image_count_x,
             sub_image_count_y: sub_image_count_y,
-            sub_image_count: sub_image_count,
-            image_count: (sub_image_count + sub_image_count_x * sub_image_count_y - 1)
+            sub_image_count: sub_image_count as u32,
+            image_count: (sub_image_count as u32 + sub_image_count_x * sub_image_count_y - 1)
                 / (sub_image_count_x * sub_image_count_y),
         })
     }
@@ -634,102 +776,132 @@ impl ImageSetLayout {
     }
 }
 
+#[derive(Clone)]
 pub struct GLES2StagingImageSet {
-    device_image_set: GLES2DeviceImageSet,
-    images: [Option<Image>; ShaderUniformLocations::SAMPLERS_LEN as usize],
+    layout: ImageSetLayout,
+    state: Arc<RwLock<StagingArraySharedState<Image>>>,
 }
 
 impl GLES2StagingImageSet {
+    fn new(layout: ImageSetLayout) -> Self {
+        let mut images = Vec::new();
+        images.reserve(layout.sub_image_count as usize);
+        for _ in 0..layout.sub_image_count {
+            images.push(Image::new(
+                layout.base.sub_image_dimensions,
+                Default::default(),
+            ));
+        }
+        Self {
+            state: Arc::new(RwLock::new(StagingArraySharedState {
+                device_access_fence_wait_completed: None,
+                data: images.into_boxed_slice(),
+            })),
+            layout: layout,
+        }
+    }
+}
+
+impl GenericArray<image::Image> for GLES2StagingImageSet {
+    fn len(&self) -> usize {
+        self.layout.sub_image_count as usize
+    }
+}
+
+impl ImageSet for GLES2StagingImageSet {
+    fn dimensions(&self) -> math::Vec2<u32> {
+        self.layout.base.sub_image_dimensions
+    }
+}
+
+impl StagingGenericArray<image::Image> for GLES2StagingImageSet {
+    type ReadLockGuardImplementation = StagingArrayReadLockGuardImplementation<image::Image>;
+    type WriteLockGuardImplementation = StagingArrayWriteLockGuardImplementation<image::Image>;
+    fn read(&self) -> StagingReadLockGuard<StagingArrayReadLockGuardImplementation<image::Image>> {
+        StagingArraySharedState::read_lock(&*self.state)
+    }
+    fn write(
+        &self,
+    ) -> StagingWriteLockGuard<StagingArrayWriteLockGuardImplementation<image::Image>> {
+        StagingArraySharedState::write_lock(&*self.state)
+    }
+}
+
+impl StagingImageSet for GLES2StagingImageSet {}
+
+struct DeviceImageSetLockedState<ST: SubmitTracker> {
+    images: [Option<Option<ImageWrapper>>; ShaderUniformLocations::SAMPLERS_LEN as usize],
+    submit_tracker: ST,
+}
+
+#[derive(Clone)]
+pub struct GLES2DeviceImageSet<ST: SubmitTracker> {
+    locked_state: Arc<Mutex<DeviceImageSetLockedState<ST>>>,
+    layout: ImageSetLayout,
+}
+
+impl GLES2DeviceImageSet<InactiveSubmitTracker> {
     fn make_images<T, F: FnMut(usize) -> T>(
         mut f: F,
     ) -> [T; ShaderUniformLocations::SAMPLERS_LEN as usize] {
         [f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7)]
     }
     fn new(layout: ImageSetLayout) -> Self {
-        let images = Self::make_images(|index| {
-            if index < layout.image_count as usize {
-                Some(Image::new(
-                    layout.base.sub_image_width * layout.sub_image_count_x,
-                    layout.base.sub_image_height * layout.sub_image_count_y,
-                    math::Vec4::new(0xFF, 0, 0xFF, 0xFF),
-                ))
-            } else {
-                None
-            }
-        });
-        let device_images = Self::make_images(|index| {
-            if index < layout.image_count as usize {
-                Some(None)
-            } else {
-                None
-            }
-        });
         Self {
-            device_image_set: GLES2DeviceImageSet(Arc::new(GLES2DeviceImageSetState {
-                images: Mutex::new(device_images),
-                load_submitted_flag: None,
-                layout: layout,
+            locked_state: Arc::new(Mutex::new(DeviceImageSetLockedState {
+                images: Self::make_images(|index| {
+                    if index < layout.image_count as usize {
+                        Some(None)
+                    } else {
+                        None
+                    }
+                }),
+                submit_tracker: InactiveSubmitTracker,
             })),
-            images: images,
+            layout: layout,
         }
     }
 }
 
-impl StagingImageSet for GLES2StagingImageSet {
-    type DeviceImageSet = GLES2DeviceImageSet;
-    fn get_device_image_set(&self) -> &GLES2DeviceImageSet {
-        &self.device_image_set
-    }
-    fn write(&mut self, texture_id: TextureId, image: &image::Image) {
-        let layout = &self.device_image_set.0.layout;
-        assert!(texture_id != 0);
-        let mut image_index = texture_id as u32 - 1;
-        assert!(image_index < layout.sub_image_count);
-        assert!(image.width() == layout.base.sub_image_width);
-        assert!(image.height() == layout.base.sub_image_height);
-        let x_sub_image_index = image_index % layout.sub_image_count_x;
-        image_index /= layout.sub_image_count_x;
-        let y_sub_image_index = image_index % layout.sub_image_count_y;
-        image_index /= layout.sub_image_count_y;
-        self.images[image_index as usize]
-            .as_mut()
+impl GLES2DeviceImageSet<ActiveSubmitTracker> {
+    fn activate(
+        device_image_set: GLES2DeviceImageSet<InactiveSubmitTracker>,
+        submit_tracker: ActiveSubmitTracker,
+    ) -> Self {
+        let locked_state = Arc::try_unwrap(device_image_set.locked_state)
+            .map_err(|_| ())
             .unwrap()
-            .copy_area_from(
-                x_sub_image_index * layout.base.sub_image_width,
-                y_sub_image_index * layout.base.sub_image_height,
-                image,
-                0,
-                0,
-                layout.base.sub_image_width,
-                layout.base.sub_image_height,
-            );
+            .into_inner()
+            .unwrap();
+        Self {
+            locked_state: Arc::new(Mutex::new(DeviceImageSetLockedState {
+                images: locked_state.images,
+                submit_tracker: submit_tracker,
+            })),
+            layout: device_image_set.layout,
+        }
     }
 }
 
-struct DeviceImageSetLockedState {
-    images: [Option<Option<DeviceImage>>; ShaderUniformLocations::SAMPLERS_LEN as usize],
-    load_submitted_flag: Option<Arc<atomic::AtomicBool>>,
-}
-
-struct DeviceImageSetState {
-    locked_state: Mutex<DeviceImageSetLockedState>,
-    layout: ImageSetLayout,
-}
-
-#[derive(Clone)]
-pub struct GLES2DeviceImageSet(Arc<DeviceImageSetState>);
-
-impl DeviceImageSet for GLES2DeviceImageSet {
-    fn width(&self) -> u32 {
-        self.0.layout.base.sub_image_width
-    }
-    fn height(&self) -> u32 {
-        self.0.layout.base.sub_image_height
-    }
-    fn count(&self) -> u32 {
-        self.0.layout.sub_image_count
+impl<ST: SubmitTracker> GenericArray<image::Image> for GLES2DeviceImageSet<ST> {
+    fn len(&self) -> usize {
+        self.layout.sub_image_count as usize
     }
 }
+
+impl<ST: SubmitTracker> ImageSet for GLES2DeviceImageSet<ST> {
+    fn dimensions(&self) -> math::Vec2<u32> {
+        self.layout.base.sub_image_dimensions
+    }
+}
+
+impl UninitializedDeviceGenericArray<image::Image> for GLES2DeviceImageSet<InactiveSubmitTracker> {}
+
+impl DeviceGenericArray<image::Image> for GLES2DeviceImageSet<ActiveSubmitTracker> {}
+
+impl UninitializedDeviceImageSet for GLES2DeviceImageSet<InactiveSubmitTracker> {}
+
+impl DeviceImageSet for GLES2DeviceImageSet<ActiveSubmitTracker> {}
 
 #[derive(Clone)]
 pub struct GLES2DeviceReference {
@@ -737,14 +909,32 @@ pub struct GLES2DeviceReference {
 }
 
 enum LoaderCommand {
-    CopyVertexBufferToDevice(GLES2StagingVertexBuffer),
-    CopyIndexBufferToDevice(GLES2StagingIndexBuffer),
-    CopyImageSetToDevice(GLES2StagingImageSet),
+    CopyVertexBufferToDevice {
+        staging_buffer: GLES2StagingBuffer<VertexBufferElement>,
+        staging_start: usize,
+        device_buffer: GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>,
+        device_start: usize,
+        len: usize,
+    },
+    CopyIndexBufferToDevice {
+        staging_buffer: GLES2StagingBuffer<IndexBufferElement>,
+        staging_start: usize,
+        device_buffer: GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>,
+        device_start: usize,
+        len: usize,
+    },
+    CopyImageSetToDevice {
+        staging_image_set: GLES2StagingImageSet,
+        staging_start: usize,
+        device_image_set: GLES2DeviceImageSet<ActiveSubmitTracker>,
+        device_start: usize,
+        len: usize,
+    },
 }
 
 pub struct GLES2LoaderCommandBuffer {
     commands: Vec<LoaderCommand>,
-    submitted_flag: Arc<atomic::AtomicBool>,
+    submit_tracker: ActiveSubmitTracker,
 }
 
 impl CommandBuffer for GLES2LoaderCommandBuffer {}
@@ -758,7 +948,7 @@ impl GLES2LoaderCommandBufferBuilder {
         Self {
             command_buffer: GLES2LoaderCommandBuffer {
                 commands: Vec::new(),
-                submitted_flag: Arc::new(atomic::AtomicBool::new(false)),
+                submit_tracker: ActiveSubmitTracker::new(),
             },
         }
     }
@@ -767,81 +957,136 @@ impl GLES2LoaderCommandBufferBuilder {
 impl LoaderCommandBufferBuilder for GLES2LoaderCommandBufferBuilder {
     type Error = GLES2Error;
     type CommandBuffer = GLES2LoaderCommandBuffer;
-    type StagingVertexBuffer = GLES2StagingVertexBuffer;
-    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
-    type StagingIndexBuffer = GLES2StagingIndexBuffer;
-    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingVertexBuffer = GLES2StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer =
+        GLES2DeviceBuffer<VertexBufferElement, InactiveSubmitTracker>;
+    type DeviceVertexBuffer = GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>;
+    type StagingIndexBuffer = GLES2StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer =
+        GLES2DeviceBuffer<IndexBufferElement, InactiveSubmitTracker>;
+    type DeviceIndexBuffer = GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>;
     type StagingImageSet = GLES2StagingImageSet;
-    type DeviceImageSet = GLES2DeviceImageSet;
+    type UninitializedDeviceImageSet = GLES2DeviceImageSet<InactiveSubmitTracker>;
+    type DeviceImageSet = GLES2DeviceImageSet<ActiveSubmitTracker>;
     fn finish(self) -> Result<GLES2LoaderCommandBuffer> {
         Ok(self.command_buffer)
     }
+    fn initialize_vertex_buffer(
+        &mut self,
+        staging_buffer: Slice<VertexBufferElement, &GLES2StagingBuffer<VertexBufferElement>>,
+        device_buffer: GLES2DeviceBuffer<VertexBufferElement, InactiveSubmitTracker>,
+    ) -> Result<GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>> {
+        let retval =
+            GLES2DeviceBuffer::activate(device_buffer, self.command_buffer.submit_tracker.clone());
+        self.copy_vertex_buffer_to_device(staging_buffer, retval.slice_ref(..))?;
+        Ok(retval)
+    }
+    fn initialize_index_buffer(
+        &mut self,
+        staging_buffer: Slice<IndexBufferElement, &GLES2StagingBuffer<IndexBufferElement>>,
+        device_buffer: GLES2DeviceBuffer<IndexBufferElement, InactiveSubmitTracker>,
+    ) -> Result<GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>> {
+        let retval =
+            GLES2DeviceBuffer::activate(device_buffer, self.command_buffer.submit_tracker.clone());
+        self.copy_index_buffer_to_device(staging_buffer, retval.slice_ref(..))?;
+        Ok(retval)
+    }
+    fn initialize_image_set(
+        &mut self,
+        staging_image_set: Slice<image::Image, &GLES2StagingImageSet>,
+        device_image_set: GLES2DeviceImageSet<InactiveSubmitTracker>,
+    ) -> Result<GLES2DeviceImageSet<ActiveSubmitTracker>> {
+        let retval = GLES2DeviceImageSet::activate(
+            device_image_set,
+            self.command_buffer.submit_tracker.clone(),
+        );
+        self.copy_image_set_to_device(staging_image_set, retval.slice_ref(..))?;
+        Ok(retval)
+    }
     fn copy_vertex_buffer_to_device(
         &mut self,
-        staging_vertex_buffer: GLES2StagingVertexBuffer,
-    ) -> Result<GLES2DeviceVertexBuffer> {
-        let device_buffer = GLES2DeviceVertexBuffer {
-            buffer: Arc::new(Mutex::new(None)),
-            len: staging_vertex_buffer.buffer_data.len(),
-            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
-        };
+        staging_buffer: Slice<VertexBufferElement, &GLES2StagingBuffer<VertexBufferElement>>,
+        device_buffer: Slice<
+            VertexBufferElement,
+            &GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>,
+        >,
+    ) -> Result<()> {
+        let staging_start = staging_buffer.start();
+        let device_start = device_buffer.start();
+        let len = staging_buffer.len();
+        assert_eq!(len, device_buffer.len());
+        let staging_buffer = staging_buffer.into_underlying();
+        let device_buffer = device_buffer.into_underlying();
         self.command_buffer
             .commands
             .push(LoaderCommand::CopyVertexBufferToDevice {
-                staging_vertex_buffer: staging_vertex_buffer,
-                device_vertex_buffer: device_buffer.clone(),
+                staging_buffer: staging_buffer.clone(),
+                staging_start: staging_start,
+                device_buffer: device_buffer.clone(),
+                device_start: device_start,
+                len: len,
             });
-        Ok(device_buffer)
+        Ok(())
     }
     fn copy_index_buffer_to_device(
         &mut self,
-        staging_index_buffer: GLES2StagingIndexBuffer,
-    ) -> Result<GLES2DeviceIndexBuffer> {
-        let device_buffer = GLES2DeviceIndexBuffer {
-            buffer: Arc::new(Mutex::new(None)),
-            len: staging_index_buffer.buffer_data.len(),
-            load_submitted_flag: self.command_buffer.submitted_flag.clone(),
-        };
+        staging_buffer: Slice<IndexBufferElement, &GLES2StagingBuffer<IndexBufferElement>>,
+        device_buffer: Slice<
+            IndexBufferElement,
+            &GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>,
+        >,
+    ) -> Result<()> {
+        let staging_start = staging_buffer.start();
+        let device_start = device_buffer.start();
+        let len = staging_buffer.len();
+        assert_eq!(len, device_buffer.len());
+        let staging_buffer = staging_buffer.into_underlying();
+        let device_buffer = device_buffer.into_underlying();
         self.command_buffer
             .commands
             .push(LoaderCommand::CopyIndexBufferToDevice {
-                staging_index_buffer: staging_index_buffer,
-                device_index_buffer: device_buffer.clone(),
+                staging_buffer: staging_buffer.clone(),
+                staging_start: staging_start,
+                device_buffer: device_buffer.clone(),
+                device_start: device_start,
+                len: len,
             });
-        Ok(device_buffer)
+        Ok(())
     }
-    fn copy_image_set_to_device(&mut self, staging_image_set: GLES2StagingImageSet) -> Result<()> {
-        let mut images = [None, None, None, None, None, None, None, None];
-        for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
-            images[i] = if staging_image_set.images[i].is_some() {
-                Some(None)
-            } else {
-                None
-            };
-        }
-        staging_image_set
-            .device_image_set
-            .0
-            .locked_state
-            .lock()
-            .unwrap()
-            .load_submitted_flag = Some(self.command_buffer.submitted_flag.clone());
+    fn copy_image_set_to_device(
+        &mut self,
+        staging_image_set: Slice<image::Image, &GLES2StagingImageSet>,
+        device_image_set: Slice<image::Image, &GLES2DeviceImageSet<ActiveSubmitTracker>>,
+    ) -> Result<()> {
+        let staging_start = staging_image_set.start();
+        let device_start = device_image_set.start();
+        let len = staging_image_set.len();
+        assert_eq!(len, device_image_set.len());
+        let staging_image_set = staging_image_set.into_underlying();
+        let device_image_set = device_image_set.into_underlying();
+        assert_eq!(staging_image_set.layout, device_image_set.layout);
         self.command_buffer
             .commands
-            .push(LoaderCommand::CopyImageSetToDevice(staging_image_set));
+            .push(LoaderCommand::CopyImageSetToDevice {
+                staging_image_set: staging_image_set.clone(),
+                staging_start: staging_start,
+                device_image_set: device_image_set.clone(),
+                device_start: device_start,
+                len: len,
+            });
         Ok(())
     }
 }
 
 enum RenderCommand {
     Draw {
-        vertex_buffer: GLES2DeviceVertexBuffer,
-        index_buffer: GLES2DeviceIndexBuffer,
-        image_set: GLES2DeviceImageSet,
+        vertex_buffer: GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>,
+        index_buffer: GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>,
+        image_set: GLES2DeviceImageSet<ActiveSubmitTracker>,
         initial_transform: math::Mat4<f32>,
-        index_count: u32,
-        first_index: u32,
-        vertex_offset: u32,
+        index_count: usize,
+        first_index: usize,
+        vertex_offset: usize,
     },
 }
 
@@ -856,8 +1101,7 @@ impl CommandBuffer for GLES2RenderCommandBuffer {}
 
 pub struct GLES2RenderCommandBufferBuilder {
     state: RenderCommandBufferState,
-    buffers: Option<(GLES2DeviceVertexBuffer, GLES2DeviceIndexBuffer)>,
-    image_set: Option<GLES2DeviceImageSet>,
+    image_set: Option<GLES2DeviceImageSet<ActiveSubmitTracker>>,
     initial_transform: math::Mat4<f32>,
 }
 
@@ -867,7 +1111,6 @@ impl GLES2RenderCommandBufferBuilder {
             state: RenderCommandBufferState {
                 commands: Vec::new(),
             },
-            buffers: None,
             image_set: None,
             initial_transform: math::Mat4::identity(),
         }
@@ -877,46 +1120,45 @@ impl GLES2RenderCommandBufferBuilder {
 impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
     type Error = GLES2Error;
     type CommandBuffer = GLES2RenderCommandBuffer;
-    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
-    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
-    type DeviceImageSet = GLES2DeviceImageSet;
-    fn set_image_set(&mut self, image_set: Self::DeviceImageSet) {
-        self.image_set = Some(image_set);
-    }
-    fn set_buffers(
-        &mut self,
-        vertex_buffer: GLES2DeviceVertexBuffer,
-        index_buffer: GLES2DeviceIndexBuffer,
-    ) {
-        self.buffers = Some((vertex_buffer, index_buffer));
+    type DeviceVertexBuffer = GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>;
+    type DeviceIndexBuffer = GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>;
+    type DeviceImageSet = GLES2DeviceImageSet<ActiveSubmitTracker>;
+    fn set_image_set(&mut self, image_set: &GLES2DeviceImageSet<ActiveSubmitTracker>) {
+        self.image_set = Some(image_set.clone());
     }
     fn set_initial_transform(&mut self, transform: math::Mat4<f32>) {
         self.initial_transform = transform;
     }
-    fn draw(&mut self, index_count: u32, first_index: u32, vertex_offset: u32) {
-        let (vertex_buffer, index_buffer) = self
-            .buffers
-            .clone()
-            .expect("can't draw without vertex and index buffers bound");
+    fn draw(
+        &mut self,
+        vertex_buffer: Slice<
+            VertexBufferElement,
+            &GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>,
+        >,
+        index_buffer: Slice<
+            IndexBufferElement,
+            &GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>,
+        >,
+    ) {
         let image_set = self
             .image_set
             .clone()
             .expect("can't draw without image set bound");
-        assert!(index_count as usize <= index_buffer.len());
-        assert!(index_count as usize + first_index as usize <= index_buffer.len());
-        assert!((vertex_offset as usize) < vertex_buffer.len() || index_count == 0);
+        let index_count = index_buffer.len();
+        let index_start = index_buffer.start();
+        let vertex_start = vertex_buffer.start();
         assert!(index_count % 3 == 0, "must be whole number of triangles");
         if index_count == 0 {
             return;
         }
         self.state.commands.push(RenderCommand::Draw {
-            vertex_buffer: vertex_buffer,
-            index_buffer: index_buffer,
+            vertex_buffer: vertex_buffer.into_underlying().clone(),
+            index_buffer: index_buffer.into_underlying().clone(),
             image_set: image_set,
             initial_transform: self.initial_transform,
             index_count: index_count,
-            first_index: first_index,
-            vertex_offset: vertex_offset,
+            first_index: index_start,
+            vertex_offset: vertex_start,
         });
     }
     fn finish(self) -> Result<GLES2RenderCommandBuffer> {
@@ -926,45 +1168,75 @@ impl RenderCommandBufferBuilder for GLES2RenderCommandBufferBuilder {
 
 impl DeviceReference for GLES2DeviceReference {
     type Error = GLES2Error;
+    type Fence = GLES2Fence;
     type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
     type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
     type RenderCommandBuffer = GLES2RenderCommandBuffer;
     type RenderCommandBufferBuilder = GLES2RenderCommandBufferBuilder;
-    type StagingVertexBuffer = GLES2StagingVertexBuffer;
-    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
-    type StagingIndexBuffer = GLES2StagingIndexBuffer;
-    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingVertexBuffer = GLES2StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer =
+        GLES2DeviceBuffer<VertexBufferElement, InactiveSubmitTracker>;
+    type DeviceVertexBuffer = GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>;
+    type StagingIndexBuffer = GLES2StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer =
+        GLES2DeviceBuffer<IndexBufferElement, InactiveSubmitTracker>;
+    type DeviceIndexBuffer = GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>;
     type StagingImageSet = GLES2StagingImageSet;
-    type DeviceImageSet = GLES2DeviceImageSet;
+    type UninitializedDeviceImageSet = GLES2DeviceImageSet<InactiveSubmitTracker>;
+    type DeviceImageSet = GLES2DeviceImageSet<ActiveSubmitTracker>;
     fn create_loader_command_buffer_builder(&self) -> Result<GLES2LoaderCommandBufferBuilder> {
         Ok(GLES2LoaderCommandBufferBuilder::new())
     }
     fn create_render_command_buffer_builder(&self) -> Result<GLES2RenderCommandBufferBuilder> {
         Ok(GLES2RenderCommandBufferBuilder::new())
     }
-    fn create_staging_vertex_buffer(&self, len: usize) -> Result<GLES2StagingVertexBuffer> {
-        Ok(GLES2StagingVertexBuffer::new(len))
+    fn create_staging_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<GLES2StagingBuffer<VertexBufferElement>> {
+        Ok(GLES2StagingBuffer::new(len))
     }
-    fn create_staging_index_buffer(&self, len: usize) -> Result<GLES2StagingIndexBuffer> {
-        Ok(GLES2StagingIndexBuffer::new(len))
+    fn create_device_vertex_buffer(
+        &self,
+        len: usize,
+    ) -> Result<GLES2DeviceBuffer<VertexBufferElement, InactiveSubmitTracker>> {
+        Ok(GLES2DeviceBuffer::new(len))
     }
-    fn get_max_image_width(&self) -> u32 {
-        self.max_image_size
+    fn create_staging_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<GLES2StagingBuffer<IndexBufferElement>> {
+        Ok(GLES2StagingBuffer::new(len))
     }
-    fn get_max_image_height(&self) -> u32 {
-        self.max_image_size
+    fn create_device_index_buffer(
+        &self,
+        len: usize,
+    ) -> Result<GLES2DeviceBuffer<IndexBufferElement, InactiveSubmitTracker>> {
+        Ok(GLES2DeviceBuffer::new(len))
     }
-    fn get_max_image_count_in_image_set(&self, width: u32, height: u32) -> Result<u32> {
-        Ok(ImageSetLayoutBase::new(width, height, self.max_image_size)?.get_max_sub_image_count())
+    fn get_max_image_dimensions(&self) -> math::Vec2<u32> {
+        math::Vec2::splat(self.max_image_size)
+    }
+    fn get_max_image_count_in_image_set(&self, dimensions: math::Vec2<u32>) -> Result<usize> {
+        Ok(ImageSetLayoutBase::new(dimensions, self.max_image_size)?.get_max_sub_image_count())
     }
     fn create_staging_image_set(
         &self,
-        width: u32,
-        height: u32,
-        count: u32,
+        dimensions: math::Vec2<u32>,
+        count: usize,
     ) -> Result<GLES2StagingImageSet> {
         Ok(GLES2StagingImageSet::new(ImageSetLayout::new(
-            ImageSetLayoutBase::new(width, height, self.max_image_size)?,
+            ImageSetLayoutBase::new(dimensions, self.max_image_size)?,
+            count,
+        )?))
+    }
+    fn create_device_image_set(
+        &self,
+        dimensions: math::Vec2<u32>,
+        count: usize,
+    ) -> Result<GLES2DeviceImageSet<InactiveSubmitTracker>> {
+        Ok(GLES2DeviceImageSet::new(ImageSetLayout::new(
+            ImageSetLayoutBase::new(dimensions, self.max_image_size)?,
             count,
         )?))
     }
@@ -1056,9 +1328,9 @@ pub struct GLES2Device {
 }
 
 impl GLES2Device {
-    fn allocate_buffer(&mut self) -> DeviceBuffer {
+    fn allocate_buffer(&mut self) -> BufferWrapper {
         match self.buffer_deallocate_channel_receiver.try_recv() {
-            Ok(buffer) => DeviceBuffer {
+            Ok(buffer) => BufferWrapper {
                 buffer: buffer,
                 buffer_deallocate_channel_sender: self.buffer_deallocate_channel_sender.clone(),
             },
@@ -1066,7 +1338,7 @@ impl GLES2Device {
                 let api = &self.gl_context.api;
                 let mut buffer = 0;
                 api.glGenBuffers.unwrap()(1, &mut buffer);
-                DeviceBuffer {
+                BufferWrapper {
                     buffer: buffer,
                     buffer_deallocate_channel_sender: self.buffer_deallocate_channel_sender.clone(),
                 }
@@ -1074,9 +1346,9 @@ impl GLES2Device {
             _ => panic!(),
         }
     }
-    fn allocate_image(&mut self) -> DeviceImage {
+    fn allocate_image(&mut self) -> ImageWrapper {
         match self.image_deallocate_channel_receiver.try_recv() {
-            Ok(image) => DeviceImage {
+            Ok(image) => ImageWrapper {
                 image: image,
                 image_deallocate_channel_sender: self.image_deallocate_channel_sender.clone(),
             },
@@ -1084,7 +1356,7 @@ impl GLES2Device {
                 let api = &self.gl_context.api;
                 let mut image = 0;
                 api.glGenTextures.unwrap()(1, &mut image);
-                DeviceImage {
+                ImageWrapper {
                     image: image,
                     image_deallocate_channel_sender: self.image_deallocate_channel_sender.clone(),
                 }
@@ -1105,18 +1377,24 @@ impl PausedDevice for GLES2PausedDevice {
 
 impl Device for GLES2Device {
     type Error = GLES2Error;
+    type Fence = GLES2Fence;
     type Reference = GLES2DeviceReference;
     type PausedDevice = GLES2PausedDevice;
     type LoaderCommandBuffer = GLES2LoaderCommandBuffer;
     type LoaderCommandBufferBuilder = GLES2LoaderCommandBufferBuilder;
     type RenderCommandBuffer = GLES2RenderCommandBuffer;
     type RenderCommandBufferBuilder = GLES2RenderCommandBufferBuilder;
-    type StagingVertexBuffer = GLES2StagingVertexBuffer;
-    type DeviceVertexBuffer = GLES2DeviceVertexBuffer;
-    type StagingIndexBuffer = GLES2StagingIndexBuffer;
-    type DeviceIndexBuffer = GLES2DeviceIndexBuffer;
+    type StagingVertexBuffer = GLES2StagingBuffer<VertexBufferElement>;
+    type UninitializedDeviceVertexBuffer =
+        GLES2DeviceBuffer<VertexBufferElement, InactiveSubmitTracker>;
+    type DeviceVertexBuffer = GLES2DeviceBuffer<VertexBufferElement, ActiveSubmitTracker>;
+    type StagingIndexBuffer = GLES2StagingBuffer<IndexBufferElement>;
+    type UninitializedDeviceIndexBuffer =
+        GLES2DeviceBuffer<IndexBufferElement, InactiveSubmitTracker>;
+    type DeviceIndexBuffer = GLES2DeviceBuffer<IndexBufferElement, ActiveSubmitTracker>;
     type StagingImageSet = GLES2StagingImageSet;
-    type DeviceImageSet = GLES2DeviceImageSet;
+    type UninitializedDeviceImageSet = GLES2DeviceImageSet<InactiveSubmitTracker>;
+    type DeviceImageSet = GLES2DeviceImageSet<ActiveSubmitTracker>;
     fn pause(self) -> GLES2PausedDevice {
         GLES2PausedDevice {
             surface_state: self.surface_state,
@@ -1343,85 +1621,162 @@ impl Device for GLES2Device {
     fn submit_loader_command_buffers(
         &mut self,
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
-    ) -> Result<()> {
+    ) -> Result<GLES2Fence> {
+        let fence = GLES2Fence::new();
         for loader_command_buffer in loader_command_buffers.drain(..) {
-            loader_command_buffer
-                .submitted_flag
-                .store(true, atomic::Ordering::Release);
+            loader_command_buffer.submit_tracker.set_submitted();
             for command in loader_command_buffer.commands {
                 match command {
                     LoaderCommand::CopyVertexBufferToDevice {
-                        staging_vertex_buffer: GLES2StagingVertexBuffer { buffer_data },
-                        device_vertex_buffer:
-                            GLES2DeviceVertexBuffer {
-                                buffer,
+                        staging_buffer:
+                            GLES2StagingBuffer {
+                                state: staging_state,
                                 len: _,
-                                load_submitted_flag: _,
                             },
+                        staging_start,
+                        device_buffer:
+                            GLES2DeviceBuffer {
+                                buffer: device_buffer,
+                                len: device_buffer_len,
+                                submit_tracker,
+                                _phantom: _,
+                            },
+                        device_start,
+                        len,
                     } => {
-                        let new_buffer = self.allocate_buffer();
+                        submit_tracker.assert_submitted();
+                        let mut staging_state = staging_state.write().unwrap();
+                        let StagingArraySharedState {
+                            device_access_fence_wait_completed,
+                            data,
+                        } = &mut *staging_state;
+                        *device_access_fence_wait_completed = Some(fence.wait_completed.clone());
+                        let mut device_buffer = device_buffer.lock().unwrap();
+                        let buffer = device_buffer
+                            .take()
+                            .unwrap_or_else(|| self.allocate_buffer());
                         unsafe {
                             let api = &self.gl_context.api;
-                            api.glBindBuffer.unwrap()(api::GL_ARRAY_BUFFER, new_buffer.buffer);
-                            api.glBufferData.unwrap()(
-                                api::GL_ARRAY_BUFFER,
-                                (buffer_data.len() * mem::size_of::<VertexBufferElement>())
-                                    as api::GLsizeiptr,
-                                buffer_data.as_ptr() as *const c_void,
-                                api::GL_STATIC_DRAW,
-                            );
+                            api.glBindBuffer.unwrap()(api::GL_ARRAY_BUFFER, buffer.buffer);
+                            let data = &data.as_ref()[staging_start..][..len];
+                            if device_start == 0 && len == device_buffer_len {
+                                api.glBufferData.unwrap()(
+                                    api::GL_ARRAY_BUFFER,
+                                    (device_buffer_len * mem::size_of::<VertexBufferElement>())
+                                        as api::GLsizeiptr,
+                                    data.as_ptr() as *const c_void,
+                                    api::GL_STATIC_DRAW,
+                                );
+                            } else {
+                                api.glBufferSubData.unwrap()(
+                                    api::GL_ARRAY_BUFFER,
+                                    (device_start * mem::size_of::<VertexBufferElement>())
+                                        as api::GLintptr,
+                                    (len * mem::size_of::<VertexBufferElement>())
+                                        as api::GLsizeiptr,
+                                    data.as_ptr() as *const c_void,
+                                );
+                            }
                         }
-                        *buffer.lock().unwrap() = Some(new_buffer);
+                        *device_buffer = Some(buffer);
                     }
                     LoaderCommand::CopyIndexBufferToDevice {
-                        staging_index_buffer: GLES2StagingIndexBuffer { buffer_data },
-                        device_index_buffer:
-                            GLES2DeviceIndexBuffer {
-                                buffer,
+                        staging_buffer:
+                            GLES2StagingBuffer {
+                                state: staging_state,
                                 len: _,
-                                load_submitted_flag: _,
                             },
+                        staging_start,
+                        device_buffer:
+                            GLES2DeviceBuffer {
+                                buffer: device_buffer,
+                                len: device_buffer_len,
+                                submit_tracker,
+                                _phantom: _,
+                            },
+                        device_start,
+                        len,
                     } => {
-                        let new_buffer = self.allocate_buffer();
+                        submit_tracker.assert_submitted();
+                        let mut staging_state = staging_state.write().unwrap();
+                        let StagingArraySharedState {
+                            device_access_fence_wait_completed,
+                            data,
+                        } = &mut *staging_state;
+                        *device_access_fence_wait_completed = Some(fence.wait_completed.clone());
+                        let mut device_buffer = device_buffer.lock().unwrap();
+                        let buffer = device_buffer
+                            .take()
+                            .unwrap_or_else(|| self.allocate_buffer());
                         unsafe {
                             let api = &self.gl_context.api;
-                            api.glBindBuffer.unwrap()(
-                                api::GL_ELEMENT_ARRAY_BUFFER,
-                                new_buffer.buffer,
-                            );
-                            api.glBufferData.unwrap()(
-                                api::GL_ELEMENT_ARRAY_BUFFER,
-                                (buffer_data.len() * mem::size_of::<IndexBufferElement>())
-                                    as api::GLsizeiptr,
-                                buffer_data.as_ptr() as *const c_void,
-                                api::GL_STATIC_DRAW,
-                            );
+                            api.glBindBuffer.unwrap()(api::GL_ELEMENT_ARRAY_BUFFER, buffer.buffer);
+                            let data = &data.as_ref()[staging_start..][..len];
+                            if device_start == 0 && len == device_buffer_len {
+                                api.glBufferData.unwrap()(
+                                    api::GL_ELEMENT_ARRAY_BUFFER,
+                                    (device_buffer_len * mem::size_of::<IndexBufferElement>())
+                                        as api::GLsizeiptr,
+                                    data.as_ptr() as *const c_void,
+                                    api::GL_STATIC_DRAW,
+                                );
+                            } else {
+                                api.glBufferSubData.unwrap()(
+                                    api::GL_ELEMENT_ARRAY_BUFFER,
+                                    (device_start * mem::size_of::<IndexBufferElement>())
+                                        as api::GLintptr,
+                                    (len * mem::size_of::<IndexBufferElement>()) as api::GLsizeiptr,
+                                    data.as_ptr() as *const c_void,
+                                );
+                            }
                         }
-                        *buffer.lock().unwrap() = Some(new_buffer);
+                        *device_buffer = Some(buffer);
                     }
-                    LoaderCommand::CopyImageSetToDevice(GLES2StagingImageSet {
-                        device_image_set: GLES2DeviceImageSet(device_image_set_state),
-                        images: staging_images,
-                    }) => {
-                        let DeviceImageSetState {
-                            locked_state: locked_state,
-                            layout: _,
-                        } = &*device_image_set_state;
-                        let mut locked_state = locked_state.lock().unwrap();
+                    LoaderCommand::CopyImageSetToDevice {
+                        staging_image_set:
+                            GLES2StagingImageSet {
+                                state: staging_state,
+                                layout,
+                            },
+                        staging_start,
+                        device_image_set:
+                            GLES2DeviceImageSet {
+                                locked_state: device_state,
+                                layout: _,
+                            },
+                        device_start,
+                        len,
+                    } => {
+                        let mut device_state = device_state.lock().unwrap();
                         let DeviceImageSetLockedState {
                             images: device_images,
-                            load_submitted_flag: _,
-                        } = &mut *locked_state;
+                            submit_tracker,
+                        } = &mut *device_state;
+                        submit_tracker.assert_submitted();
+                        let mut staging_state = staging_state.write().unwrap();
+                        let StagingArraySharedState {
+                            device_access_fence_wait_completed,
+                            data,
+                        } = &mut *staging_state;
+                        *device_access_fence_wait_completed = Some(fence.wait_completed.clone());
+                        let is_initialization =
+                            device_start == 0 && len == layout.sub_image_count as usize;
                         unsafe {
-                            for i in 0..(ShaderUniformLocations::SAMPLERS_LEN as usize) {
-                                match (&staging_images[i], &mut device_images[i]) {
-                                    (Some(staging_image), Some(device_image)) => {
-                                        let new_image = self.allocate_image();
-                                        let api = &self.gl_context.api;
-                                        api.glBindTexture.unwrap()(
-                                            api::GL_TEXTURE_2D,
-                                            new_image.image,
-                                        );
+                            for device_image_index in
+                                0..(ShaderUniformLocations::SAMPLERS_LEN as usize)
+                            {
+                                if let Some(device_image_ref) =
+                                    &mut device_images[device_image_index]
+                                {
+                                    let device_image = device_image_ref
+                                        .take()
+                                        .unwrap_or_else(|| self.allocate_image());
+                                    let api = &self.gl_context.api;
+                                    api.glBindTexture.unwrap()(
+                                        api::GL_TEXTURE_2D,
+                                        device_image.image,
+                                    );
+                                    if is_initialization {
                                         api.glTexParameteri.unwrap()(
                                             api::GL_TEXTURE_2D,
                                             api::GL_TEXTURE_MIN_FILTER,
@@ -1446,19 +1801,58 @@ impl Device for GLES2Device {
                                             api::GL_TEXTURE_2D,
                                             0,
                                             api::GL_RGBA as api::GLint,
-                                            staging_image.width() as api::GLsizei,
-                                            staging_image.height() as api::GLsizei,
+                                            (layout.base.sub_image_dimensions.x
+                                                * layout.sub_image_count_x)
+                                                as api::GLsizei,
+                                            (layout.base.sub_image_dimensions.y
+                                                * layout.sub_image_count_y)
+                                                as api::GLsizei,
                                             0,
                                             api::GL_RGBA,
                                             api::GL_UNSIGNED_BYTE,
-                                            (staging_image.get_pixels() as &[math::Vec4<u8>])
-                                                .as_ptr()
-                                                as *const c_void,
+                                            null(),
                                         );
-                                        *device_image = Some(new_image);
                                     }
-                                    (None, None) => {}
-                                    _ => unreachable!(),
+                                    for y_sub_image_index in 0..layout.sub_image_count_y {
+                                        for x_sub_image_index in 0..layout.sub_image_count_x {
+                                            let staging_image_index = (device_image_index
+                                                * layout.sub_image_count_y as usize
+                                                + y_sub_image_index as usize)
+                                                * layout.sub_image_count_x as usize
+                                                + x_sub_image_index as usize;
+                                            if staging_image_index >= len {
+                                                continue;
+                                            }
+                                            let staging_image_index =
+                                                staging_image_index + staging_start;
+                                            let staging_image = &data[staging_image_index];
+                                            assert_eq!(
+                                                staging_image.dimensions(),
+                                                layout.base.sub_image_dimensions
+                                            );
+                                            api.glTexSubImage2D.unwrap()(
+                                                api::GL_TEXTURE_2D,
+                                                0,
+                                                (x_sub_image_index
+                                                    * layout.base.sub_image_dimensions.x)
+                                                    as api::GLint,
+                                                (y_sub_image_index
+                                                    * layout.base.sub_image_dimensions.y)
+                                                    as api::GLint,
+                                                layout.base.sub_image_dimensions.x as api::GLsizei,
+                                                layout.base.sub_image_dimensions.y as api::GLsizei,
+                                                api::GL_RGBA,
+                                                api::GL_UNSIGNED_BYTE,
+                                                staging_image
+                                                    .get_pixels()
+                                                    .as_ref()
+                                                    .as_ref()
+                                                    .as_ptr()
+                                                    as *const c_void,
+                                            );
+                                        }
+                                    }
+                                    *device_image_ref = Some(device_image);
                                 }
                             }
                         }
@@ -1466,14 +1860,14 @@ impl Device for GLES2Device {
                 }
             }
         }
-        Ok(())
+        Ok(fence)
     }
     fn render_frame(
         &mut self,
         clear_color: math::Vec4<f32>,
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
         render_command_buffer_groups: &[RenderCommandBufferGroup<GLES2RenderCommandBuffer>],
-    ) -> Result<()> {
+    ) -> Result<GLES2Fence> {
         unsafe {
             let mut sdl_dimensions = (0, 0);
             sdl::api::SDL_GL_GetDrawableSize(
@@ -1492,7 +1886,7 @@ impl Device for GLES2Device {
                     sdl_dimensions.1 as api::GLsizei,
                 );
             }
-            self.submit_loader_command_buffers(loader_command_buffers)?;
+            let fence = self.submit_loader_command_buffers(loader_command_buffers)?;
             let api = &self.gl_context.api;
             api.glClearColor.unwrap()(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
             api.glClear.unwrap()(api::GL_COLOR_BUFFER_BIT | api::GL_DEPTH_BUFFER_BIT);
@@ -1519,50 +1913,43 @@ impl Device for GLES2Device {
                         match command {
                             RenderCommand::Draw {
                                 vertex_buffer:
-                                    GLES2DeviceVertexBuffer {
+                                    GLES2DeviceBuffer {
                                         buffer: vertex_buffer,
                                         len: _,
-                                        load_submitted_flag: vertex_buffer_load_submitted_flag,
+                                        submit_tracker: vertex_buffer_submit_tracker,
+                                        _phantom: _,
                                     },
                                 index_buffer:
-                                    GLES2DeviceIndexBuffer {
+                                    GLES2DeviceBuffer {
                                         buffer: index_buffer,
                                         len: _,
-                                        load_submitted_flag: index_buffer_load_submitted_flag,
+                                        submit_tracker: index_buffer_submit_tracker,
+                                        _phantom: _,
                                     },
-                                image_set: GLES2DeviceImageSet(image_set_state),
+                                image_set:
+                                    GLES2DeviceImageSet {
+                                        locked_state: image_set_locked_state,
+                                        layout: image_set_layout,
+                                    },
                                 initial_transform,
                                 index_count,
                                 first_index,
                                 vertex_offset,
                             } => {
-                                let DeviceImageSetState {
-                                    locked_state: image_set_locked_state,
-                                    layout: image_set_layout,
-                                } = &**image_set_state;
-                                let image_set_locked_state = image_set_locked_state.lock();
+                                let image_set_locked_state = image_set_locked_state.lock().unwrap();
                                 let DeviceImageSetLockedState {
                                     images: image_set_images,
-                                    load_submitted_flag: image_set_load_submitted_flag,
+                                    submit_tracker: image_set_submit_tracker,
                                 } = &*image_set_locked_state;
-                                assert!(
-                                    vertex_buffer_load_submitted_flag
-                                        .load(atomic::Ordering::Acquire)
-                                );
-                                assert!(
-                                    index_buffer_load_submitted_flag
-                                        .load(atomic::Ordering::Acquire)
-                                );
-                                assert!(
-                                    image_set_load_submitted_flag.load(atomic::Ordering::Acquire)
-                                );
+                                vertex_buffer_submit_tracker.assert_submitted();
+                                index_buffer_submit_tracker.assert_submitted();
+                                image_set_submit_tracker.assert_submitted();
                                 set_uniform_matrix(
                                     self.shader_uniform_locations.initial_transform,
                                     *initial_transform,
                                 );
                                 let mut textures = [0 as api::GLint;
                                     ShaderUniformLocations::SAMPLERS_LEN as usize];
-                                let image_set_images = image_set_images.lock().unwrap();
                                 for i in 0..ShaderUniformLocations::SAMPLERS_LEN {
                                     api.glActiveTexture.unwrap()(api::GL_TEXTURE0 + i);
                                     api.glBindTexture.unwrap()(
@@ -1659,7 +2046,7 @@ impl Device for GLES2Device {
                 }
             }
             sdl::api::SDL_GL_SwapWindow(self.surface_state.window.get());
-            Ok(())
+            Ok(fence)
         }
     }
 }

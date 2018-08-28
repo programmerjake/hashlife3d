@@ -16,18 +16,21 @@ use super::{
     api, null_or_zero, transmute_from_byte_slice, ActiveCommandBufferSubmitTracker, BufferWrapper,
     CommandBufferSubmitTracker, DescriptorPoolWrapper, DescriptorSetLayoutWrapper,
     DescriptorSetWrapper, DeviceMemoryPoolAllocation, DeviceMemoryPools, DeviceWrapper,
-    InactiveCommandBufferSubmitTracker, Result, VulkanError, FRAGMENT_SAMPLERS_BINDING,
+    InactiveCommandBufferSubmitTracker, Result, VulkanError, VulkanStagingArrayElements,
+    VulkanStagingArrayGetSharedState, VulkanStagingArrayReadLockGuard,
+    VulkanStagingArraySharedState, VulkanStagingArrayWriteLockGuard, FRAGMENT_SAMPLERS_BINDING,
     FRAGMENT_SAMPLERS_BINDING_DESCRIPTOR_COUNT,
 };
 use math::{self, Mappable, Reducible};
 use renderer::{
     DeviceGenericArray, DeviceImageSet, GenericArray, ImageSet, StagingGenericArray,
-    StagingImageSet, TextureId, UninitializedDeviceGenericArray, UninitializedDeviceImageSet,
+    StagingImageSet, StagingReadLockGuard, StagingWriteLockGuard, TextureId,
+    UninitializedDeviceGenericArray, UninitializedDeviceImageSet,
 };
 use std::convert;
 use std::mem;
 use std::ptr::{null, NonNull};
-use std::sync::Arc;
+use std::sync::*;
 use voxels_image::{Image, Pixel, PixelBuffer};
 
 pub struct ImageWrapper {
@@ -257,10 +260,33 @@ impl convert::AsMut<[Pixel]> for VulkanStagingImageSetBuffer {
 
 impl PixelBuffer for VulkanStagingImageSetBuffer {}
 
+pub struct VulkanStagingImageSetImages {
+    _buffer: Arc<BufferWrapper>,
+    images: Box<[Image]>,
+}
+
+impl VulkanStagingArrayElements for VulkanStagingImageSetImages {
+    type Element = Image;
+    unsafe fn get(&self) -> &[Image] {
+        &*self.images
+    }
+    unsafe fn get_mut(&mut self) -> &mut [Image] {
+        &mut *self.images
+    }
+}
+
 pub struct VulkanStagingImageSet {
     buffer: Arc<BufferWrapper>,
-    images: Box<[Image]>,
     dimensions: math::Vec2<u32>,
+    len: usize,
+    shared_state: Arc<VulkanStagingArraySharedState<VulkanStagingImageSetImages>>,
+}
+
+impl VulkanStagingArrayGetSharedState for VulkanStagingImageSet {
+    type SharedState = Arc<VulkanStagingArraySharedState<VulkanStagingImageSetImages>>;
+    fn shared_state(&self) -> &Self::SharedState {
+        &self.shared_state
+    }
 }
 
 pub fn get_vulkan_staging_image_set_buffer(v: &VulkanStagingImageSet) -> &Arc<BufferWrapper> {
@@ -363,31 +389,40 @@ pub unsafe fn create_staging_image_set(
         }
     }
     Ok(VulkanStagingImageSet {
-        buffer: buffer,
-        images: images.into_boxed_slice(),
+        buffer: buffer.clone(),
         dimensions: dimensions,
+        len: total_layer_count,
+        shared_state: Arc::new(VulkanStagingArraySharedState {
+            data: RwLock::new(VulkanStagingImageSetImages {
+                _buffer: buffer,
+                images: images.into_boxed_slice(),
+            }),
+            device_access_fence_wait_completed: Arc::new(Mutex::new(None)),
+        }),
     })
 }
 
 impl GenericArray<Image> for VulkanStagingImageSet {
     fn len(&self) -> usize {
-        self.images.len()
+        self.len
     }
 }
 
-impl convert::AsMut<[Image]> for VulkanStagingImageSet {
-    fn as_mut(&mut self) -> &mut [Image] {
-        self.images.as_mut()
+impl StagingGenericArray<Image> for VulkanStagingImageSet {
+    type ReadLockGuardImplementation = VulkanStagingArrayReadLockGuard<VulkanStagingImageSetImages>;
+    type WriteLockGuardImplementation =
+        VulkanStagingArrayWriteLockGuard<VulkanStagingImageSetImages>;
+    fn read(
+        &self,
+    ) -> StagingReadLockGuard<VulkanStagingArrayReadLockGuard<VulkanStagingImageSetImages>> {
+        self.shared_state.read_lock()
+    }
+    fn write(
+        &self,
+    ) -> StagingWriteLockGuard<VulkanStagingArrayWriteLockGuard<VulkanStagingImageSetImages>> {
+        self.shared_state.write_lock()
     }
 }
-
-impl convert::AsRef<[Image]> for VulkanStagingImageSet {
-    fn as_ref(&self) -> &[Image] {
-        self.images.as_ref()
-    }
-}
-
-impl StagingGenericArray<Image> for VulkanStagingImageSet {}
 
 impl ImageSet for VulkanStagingImageSet {
     fn dimensions(&self) -> math::Vec2<u32> {

@@ -19,15 +19,15 @@ use super::{
 };
 use renderer::{
     Buffer, DeviceBuffer, DeviceGenericArray, GenericArray, IndexBufferElement, StagingBuffer,
-    StagingGenericArray, UninitializedDeviceBuffer, UninitializedDeviceGenericArray,
-    VertexBufferElement,
+    StagingGenericArray, StagingReadLockGuard, StagingReadLockGuardImplementation,
+    StagingWriteLockGuard, StagingWriteLockGuardImplementation, UninitializedDeviceBuffer,
+    UninitializedDeviceGenericArray, VertexBufferElement,
 };
 use std::cmp;
-use std::convert;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr::{null, NonNull};
-use std::sync::Arc;
+use std::sync::{atomic::*, *};
 
 pub struct BufferWrapper {
     pub device: Arc<DeviceWrapper>,
@@ -120,9 +120,113 @@ pub trait VulkanBuffer<T: Copy + Sync + Send + 'static>: Buffer<T> {
     fn submit_tracker(&self) -> Self::SubmitTracker;
 }
 
+pub trait VulkanStagingArrayElements: 'static + Sync + Send {
+    type Element: Clone + Sync + Send + 'static;
+    unsafe fn get(&self) -> &[Self::Element];
+    unsafe fn get_mut(&mut self) -> &mut [Self::Element];
+}
+
+pub struct VulkanStagingArrayElementsBuffer<T: Copy + Sync + Send + 'static> {
+    _buffer: Arc<BufferWrapper>,
+    mapped_memory: NonNull<[T]>,
+}
+
+unsafe impl<T: Copy + Sync + Send + 'static> Sync for VulkanStagingArrayElementsBuffer<T> {}
+unsafe impl<T: Copy + Sync + Send + 'static> Send for VulkanStagingArrayElementsBuffer<T> {}
+
+impl<T: Copy + Sync + Send + 'static> VulkanStagingArrayElements
+    for VulkanStagingArrayElementsBuffer<T>
+{
+    type Element = T;
+    unsafe fn get(&self) -> &[T] {
+        self.mapped_memory.as_ref()
+    }
+    unsafe fn get_mut(&mut self) -> &mut [T] {
+        self.mapped_memory.as_mut()
+    }
+}
+
+pub struct VulkanStagingArraySharedState<Elements: VulkanStagingArrayElements> {
+    pub data: RwLock<Elements>,
+    pub device_access_fence_wait_completed: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+pub struct VulkanStagingArrayReadLockGuard<Elements: VulkanStagingArrayElements>(
+    RwLockReadGuard<'static, Elements>,
+);
+
+pub struct VulkanStagingArrayWriteLockGuard<Elements: VulkanStagingArrayElements>(
+    RwLockWriteGuard<'static, Elements>,
+);
+
+impl<Elements: VulkanStagingArrayElements> StagingReadLockGuardImplementation
+    for VulkanStagingArrayReadLockGuard<Elements>
+{
+    type Element = Elements::Element;
+    unsafe fn get(&self) -> *const [Elements::Element] {
+        self.0.get()
+    }
+}
+
+impl<Elements: VulkanStagingArrayElements> StagingWriteLockGuardImplementation
+    for VulkanStagingArrayWriteLockGuard<Elements>
+{
+    type Element = Elements::Element;
+    unsafe fn get(&self) -> *const [Elements::Element] {
+        self.0.get()
+    }
+    unsafe fn get_mut(&mut self) -> *mut [Elements::Element] {
+        self.0.get_mut()
+    }
+}
+
+pub unsafe fn transmute_to_static_lifetime<T>(v: &T) -> &'static T {
+    &*(v as *const T)
+}
+
+impl<Elements: VulkanStagingArrayElements> VulkanStagingArraySharedState<Elements> {
+    pub fn read_lock<'a>(
+        &'a self,
+    ) -> StagingReadLockGuard<'a, VulkanStagingArrayReadLockGuard<Elements>> {
+        unsafe {
+            let lock = transmute_to_static_lifetime(self).data.read().unwrap();
+            StagingReadLockGuard::new(VulkanStagingArrayReadLockGuard(lock))
+        }
+    }
+    pub fn write_lock<'a>(
+        &'a self,
+    ) -> StagingWriteLockGuard<'a, VulkanStagingArrayWriteLockGuard<Elements>> {
+        unsafe {
+            let lock = transmute_to_static_lifetime(self).data.write().unwrap();
+            assert!(
+                self.device_access_fence_wait_completed
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|v| v.load(Ordering::Acquire))
+                    .unwrap_or(true)
+            );
+            StagingWriteLockGuard::new(VulkanStagingArrayWriteLockGuard(lock))
+        }
+    }
+}
+
 pub struct VulkanStagingBuffer<T: Copy + Sync + Send + 'static> {
     buffer: Arc<BufferWrapper>,
-    mapped_memory: NonNull<[T]>,
+    len: usize,
+    shared_state: Arc<VulkanStagingArraySharedState<VulkanStagingArrayElementsBuffer<T>>>,
+}
+
+pub trait VulkanStagingArrayGetSharedState {
+    type SharedState;
+    fn shared_state(&self) -> &Self::SharedState;
+}
+
+impl<T: Copy + Sync + Send + 'static> VulkanStagingArrayGetSharedState for VulkanStagingBuffer<T> {
+    type SharedState = Arc<VulkanStagingArraySharedState<VulkanStagingArrayElementsBuffer<T>>>;
+    fn shared_state(&self) -> &Self::SharedState {
+        &self.shared_state
+    }
 }
 
 unsafe impl<T: Copy + Sync + Send + 'static> Sync for VulkanStagingBuffer<T> {}
@@ -131,23 +235,28 @@ unsafe impl<T: Copy + Sync + Send + 'static> Send for VulkanStagingBuffer<T> {}
 
 impl<T: Copy + Sync + Send + 'static> GenericArray<T> for VulkanStagingBuffer<T> {
     fn len(&self) -> usize {
-        unsafe { self.mapped_memory.as_ref() }.len()
+        self.len
     }
 }
 
-impl<T: Copy + Sync + Send + 'static> convert::AsRef<[T]> for VulkanStagingBuffer<T> {
-    fn as_ref(&self) -> &[T] {
-        unsafe { self.mapped_memory.as_ref() }
+impl<T: Copy + Sync + Send + 'static> StagingGenericArray<T> for VulkanStagingBuffer<T> {
+    type ReadLockGuardImplementation =
+        VulkanStagingArrayReadLockGuard<VulkanStagingArrayElementsBuffer<T>>;
+    type WriteLockGuardImplementation =
+        VulkanStagingArrayWriteLockGuard<VulkanStagingArrayElementsBuffer<T>>;
+    fn read(
+        &self,
+    ) -> StagingReadLockGuard<VulkanStagingArrayReadLockGuard<VulkanStagingArrayElementsBuffer<T>>>
+    {
+        self.shared_state.read_lock()
+    }
+    fn write(
+        &self,
+    ) -> StagingWriteLockGuard<VulkanStagingArrayWriteLockGuard<VulkanStagingArrayElementsBuffer<T>>>
+    {
+        self.shared_state.write_lock()
     }
 }
-
-impl<T: Copy + Sync + Send + 'static> convert::AsMut<[T]> for VulkanStagingBuffer<T> {
-    fn as_mut(&mut self) -> &mut [T] {
-        unsafe { self.mapped_memory.as_mut() }
-    }
-}
-
-impl<T: Copy + Sync + Send + 'static> StagingGenericArray<T> for VulkanStagingBuffer<T> {}
 
 impl<T: Copy + Sync + Send + 'static> Buffer<T> for VulkanStagingBuffer<T> {}
 
@@ -252,9 +361,17 @@ pub unsafe fn create_staging_buffer<T: Copy + Sync + Send + 'static>(
         (&mut mapped_memory.as_mut()[..(element_count as usize * mem::size_of::<T>())]).into(),
     );
     assert_eq!(mapped_memory.as_ref().len(), element_count);
+    let buffer = Arc::new(buffer);
     Ok(VulkanStagingBuffer {
-        buffer: Arc::new(buffer),
-        mapped_memory: mapped_memory,
+        buffer: buffer.clone(),
+        len: element_count,
+        shared_state: Arc::new(VulkanStagingArraySharedState {
+            data: RwLock::new(VulkanStagingArrayElementsBuffer {
+                _buffer: buffer,
+                mapped_memory: mapped_memory,
+            }),
+            device_access_fence_wait_completed: Arc::new(Mutex::new(None)),
+        }),
     })
 }
 
