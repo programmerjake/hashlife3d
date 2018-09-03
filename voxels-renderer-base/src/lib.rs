@@ -59,7 +59,7 @@ pub enum FenceTryWaitResult {
 }
 
 pub trait Fence: Send + Sync + Sized + Clone {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     fn try_wait(&self) -> Result<FenceTryWaitResult, Self::Error>;
     fn wait(self) -> Result<(), Self::Error>;
 }
@@ -366,7 +366,7 @@ mod slices {
 pub use slices::*;
 
 pub trait LoaderCommandBufferBuilder: Sized {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     type CommandBuffer: CommandBuffer;
     type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
     type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
@@ -411,7 +411,7 @@ pub trait LoaderCommandBufferBuilder: Sized {
 }
 
 pub trait RenderCommandBufferBuilder: Sized {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     type CommandBuffer: CommandBuffer + Clone;
     type DeviceVertexBuffer: DeviceBuffer<VertexBufferElement>;
     type DeviceIndexBuffer: DeviceBuffer<IndexBufferElement>;
@@ -429,7 +429,7 @@ pub trait RenderCommandBufferBuilder: Sized {
 pub trait CommandBuffer: Sized + 'static + Send + Sync {}
 
 pub trait DeviceReference: Send + Sync + Clone + 'static {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     type Fence: Fence<Error = Self::Error>;
     type StagingVertexBuffer: StagingBuffer<VertexBufferElement>;
     type UninitializedDeviceVertexBuffer: UninitializedDeviceBuffer<VertexBufferElement>;
@@ -530,7 +530,7 @@ pub struct RenderCommandBufferGroup<'a, RCB: CommandBuffer> {
 }
 
 pub trait Device: Sized {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     type Fence: Fence<Error = Self::Error>;
     type Reference: DeviceReference<
         Error = Self::Error,
@@ -676,7 +676,7 @@ pub trait Device: Sized {
 }
 
 pub trait DeviceFactory {
-    type Error: error::Error + 'static;
+    type Error: error::Error + Send + Sync + 'static;
     type Device: Device<Error = Self::Error, PausedDevice = Self::PausedDevice>;
     type PausedDevice: PausedDevice<Device = Self::Device>;
     fn create<T: Into<String>>(

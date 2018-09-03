@@ -21,16 +21,16 @@ struct RegistryData {
     blocks_array: Vec<&'static BlockDescriptor>,
 }
 
+#[derive(Clone)]
 pub struct Registry(Arc<RegistryData>);
 
-#[macro_export]
-macro_rules! register_texture {
-    ($registry_builder:expr, $texture:expr) => {
-        $registry_builder.register_texture(
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/textures/", $texture)),
-            $texture,
-        )
-    };
+impl Registry {
+    pub fn get_block(&self, id: BlockId) -> &'static BlockDescriptor {
+        self.0.blocks_array[id.value() as usize]
+    }
+    pub fn find_block_by_name(&self, name: &str) -> Option<BlockId> {
+        self.0.blocks_map.get(&name).map(|v| *v)
+    }
 }
 
 pub struct RegistryBuilder {

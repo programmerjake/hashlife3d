@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use hashtable::*;
+use math::{self, Dot, Mappable, Reducible};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -25,9 +26,15 @@ pub trait BlockType: Copy + Default + Eq + PartialEq + Hash + fmt::Debug {}
 
 impl<T: Copy + Default + Eq + PartialEq + Hash + fmt::Debug> BlockType for T {}
 
-pub trait StepFn<Block: BlockType>: Fn(&[[[Block; 3]; 3]; 3]) -> Block {}
+pub trait StepFn<Block: BlockType> {
+    fn step(&self, neighborhood: &[[[Block; 3]; 3]; 3]) -> Block;
+}
 
-impl<Block: BlockType, T: Fn(&[[[Block; 3]; 3]; 3]) -> Block> StepFn<Block> for T {}
+impl<Block: BlockType, T: Fn(&[[[Block; 3]; 3]; 3]) -> Block> StepFn<Block> for T {
+    fn step(&self, neighborhood: &[[[Block; 3]; 3]; 3]) -> Block {
+        self(neighborhood)
+    }
+}
 
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
 struct NodeKeyNonleaf<Block: BlockType> {
@@ -96,6 +103,12 @@ struct Node<Block: BlockType> {
     key: NodeKey<Block>,
     next: [Option<NonNull<Node<Block>>>; 2],
     gc_state: GcState,
+}
+
+macro_rules! get_size_from_level {
+    ($level:expr) => {
+        2u32 << $level
+    };
 }
 
 impl<Block: BlockType> Node<Block> {
@@ -179,7 +192,7 @@ impl<Block: BlockType> Node<Block> {
                                     }
                                 }
                             }
-                            next_key[dx][dy][dz] = (world.step)(&step_input);
+                            next_key[dx][dy][dz] = world.step.step(&step_input);
                         }
                     }
                 }
@@ -471,77 +484,64 @@ impl<Block: BlockType> Node<Block> {
         assert!(level == unsafe { root.as_ref() }.key.level());
         root
     }
-    fn get_size_from_level(level: u32) -> u32 {
-        2u32 << level
-    }
-    fn get_block(root: NonNull<Node<Block>>, mut x: u32, mut y: u32, mut z: u32) -> Block {
+    fn get_block(root: NonNull<Node<Block>>, mut position: math::Vec3<u32>) -> Block {
         let mut root = unsafe { root.as_ref() };
         loop {
-            let size = Node::<Block>::get_size_from_level(root.key.level());
-            assert!(x < size && y < size && z < size);
+            let size = get_size_from_level!(root.key.level());
+            assert!(position.x < size && position.y < size && position.z < size);
             match &root.key {
-                NodeKey::Leaf(key) => break key[x as usize][y as usize][z as usize],
+                NodeKey::Leaf(key) => {
+                    break key[position.x as usize][position.y as usize][position.z as usize]
+                }
                 NodeKey::Nonleaf(key) => {
-                    let xi = (x / (size / 2)) as usize;
-                    let yi = (y / (size / 2)) as usize;
-                    let zi = (z / (size / 2)) as usize;
-                    x %= size / 2;
-                    y %= size / 2;
-                    z %= size / 2;
-                    root = unsafe { key.children[xi][yi][zi].as_ref() };
+                    let index = position.map(|v| (v / (size / 2)) as usize);
+                    position %= math::Vec3::splat(size / 2);
+                    root = unsafe { key.children[index.x][index.y][index.z].as_ref() };
                 }
             }
         }
     }
     fn get_cube_pow2(
         root: NonNull<Node<Block>>,
-        x: u32,
-        y: u32,
-        z: u32,
+        position: math::Vec3<u32>,
         result_size: u32,
-        x_stride: usize,
-        y_stride: usize,
-        z_stride: usize,
+        stride: math::Vec3<usize>,
         result: &mut [Block],
     ) {
         let root = unsafe { root.as_ref() };
-        let size = Node::<Block>::get_size_from_level(root.key.level());
-        assert!(x < size && y < size && z < size);
-        assert!(x + result_size <= size && y + result_size <= size && z + result_size <= size);
+        let size = get_size_from_level!(root.key.level());
+        assert!(position.x < size && position.y < size && position.z < size);
+        assert!(
+            position.x + result_size <= size
+                && position.y + result_size <= size
+                && position.z + result_size <= size
+        );
         match &root.key {
             NodeKey::Leaf(key) => if result_size == 1 {
-                result[0] = key[x as usize][y as usize][z as usize]
+                result[0] = key[position.x as usize][position.y as usize][position.z as usize]
             } else {
-                assert_eq!(x, 0);
-                assert_eq!(y, 0);
-                assert_eq!(z, 0);
+                assert_eq!(position, math::Vec3::splat(0));
                 for z in 0..1 {
                     for y in 0..1 {
                         for x in 0..1 {
-                            result[x * x_stride + y * y_stride + z * z_stride] = key[x][y][z];
+                            result[math::Vec3::new(x, y, z).dot(stride)] = key[x][y][z];
                         }
                     }
                 }
             },
             NodeKey::Nonleaf(key) => if result_size == size {
-                assert_eq!(x, 0);
-                assert_eq!(y, 0);
-                assert_eq!(z, 0);
+                assert_eq!(position, math::Vec3::splat(0));
                 for zi in 0..1 {
                     for yi in 0..1 {
                         for xi in 0..1 {
-                            let offset = x_stride * (xi * (size / 2) as usize)
-                                + y_stride * (yi * (size / 2) as usize)
-                                + z_stride * (zi * (size / 2) as usize);
+                            let offset = stride.dot(
+                                math::Vec3::new(xi, yi, zi).map(|v| (v * (size / 2) as usize)),
+                            );
                             Self::get_cube_pow2(
                                 key.children[xi][yi][zi],
-                                0,
-                                0,
-                                0,
+                                math::Vec3::splat(0),
                                 size / 2,
-                                x_stride,
-                                y_stride,
-                                z_stride,
+                                stride,
                                 &mut result[offset..],
                             );
                         }
@@ -549,53 +549,67 @@ impl<Block: BlockType> Node<Block> {
                 }
             } else {
                 assert!(result_size <= size / 2);
-                let xi = (x / (size / 2)) as usize;
-                let yi = (y / (size / 2)) as usize;
-                let zi = (z / (size / 2)) as usize;
+                let index = position.map(|v| (v / (size / 2)) as usize);
                 Self::get_cube_pow2(
-                    key.children[xi][yi][zi],
-                    x % (size / 2),
-                    y % (size / 2),
-                    z % (size / 2),
+                    key.children[index.x][index.y][index.z],
+                    position % math::Vec3::splat(size / 2),
                     result_size,
-                    x_stride,
-                    y_stride,
-                    z_stride,
+                    stride,
                     result,
                 );
             },
         }
     }
+    fn get_child_node(
+        mut root: NonNull<Node<Block>>,
+        mut position: math::Vec3<u32>,
+        child_size: u32,
+    ) -> NonNull<Node<Block>> {
+        assert!(child_size >= 2);
+        loop {
+            let size = get_size_from_level!(unsafe { root.as_ref() }.key.level());
+            assert!(position.x < size && position.y < size && position.z < size);
+            assert!(
+                position.x + child_size <= size
+                    && position.y + child_size <= size
+                    && position.z + child_size <= size
+            );
+            assert!(child_size <= size);
+            if size == child_size {
+                break root;
+            }
+            root = match &unsafe { root.as_ref() }.key {
+                NodeKey::Leaf(_) => unreachable!(),
+                NodeKey::Nonleaf(key) => {
+                    assert!(child_size <= size / 2);
+                    let index = position.map(|v| (v / (size / 2)) as usize);
+                    position %= math::Vec3::splat(size / 2);
+                    key.children[index.x][index.y][index.z]
+                }
+            }
+        }
+    }
     fn set_block_without_expanding<Step: StepFn<Block>, H: BuildHasher>(
         root: NonNull<Node<Block>>,
-        x: u32,
-        y: u32,
-        z: u32,
+        position: math::Vec3<u32>,
         block: Block,
         world: &mut World<Block, Step, H>,
     ) -> NonNull<Node<Block>> {
         let root = unsafe { root.as_ref() };
-        let size = Node::<Block>::get_size_from_level(root.key.level());
-        assert!(x < size && y < size && z < size);
+        let size = get_size_from_level!(root.key.level());
+        assert!(position.x < size && position.y < size && position.z < size);
         match &root.key {
             NodeKey::Leaf(key) => {
                 let mut new_key = *key;
-                new_key[x as usize][y as usize][z as usize] = block;
+                new_key[position.x as usize][position.y as usize][position.z as usize] = block;
                 world.get(NodeKey::Leaf(new_key)).into()
             }
             NodeKey::Nonleaf(key) => {
                 let mut new_key = *key;
-                let xi = (x / (size / 2)) as usize;
-                let yi = (y / (size / 2)) as usize;
-                let zi = (z / (size / 2)) as usize;
-                let x = x % (size / 2);
-                let y = y % (size / 2);
-                let z = z % (size / 2);
-                new_key.children[xi][yi][zi] = Node::set_block_without_expanding(
-                    key.children[xi][yi][zi],
-                    x,
-                    y,
-                    z,
+                let index = position.map(|v| (v / (size / 2)) as usize);
+                new_key.children[index.x][index.y][index.z] = Node::set_block_without_expanding(
+                    key.children[index.x][index.y][index.z],
+                    position % math::Vec3::splat(size / 2),
                     block,
                     world,
                 );
@@ -641,36 +655,51 @@ impl<Block: BlockType> Hash for Node<Block> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct State<Block: BlockType, H: BuildHasher> {
-    root: Arc<NonNull<Node<Block>>>,
-    world_nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
-    snapshots: Arc<Mutex<HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>>>,
+#[derive(Debug)]
+struct SharedWorldState<Block: BlockType, H: BuildHasher> {
+    nodes: UnsafeCell<HashTable<Node<Block>, H>>,
+    snapshots: Mutex<HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>>,
 }
 
-impl<Block: BlockType, H: BuildHasher> State<Block, H> {
-    const MAX_LEVEL: u32 = 20;
-    fn new_from(state: &Self, root: NonNull<Node<Block>>) -> Self {
-        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, H>::MAX_LEVEL);
-        let value = state
-            .snapshots
-            .lock()
-            .unwrap()
-            .entry(root)
-            .or_insert_with(|| Arc::new(root))
-            .clone();
+impl<Block: BlockType, H: BuildHasher> PartialEq for SharedWorldState<Block, H> {
+    fn eq(&self, rhs: &Self) -> bool {
+        ptr::eq(self, rhs)
+    }
+}
+
+#[derive(Debug)]
+pub struct Substate<Block: BlockType, H: BuildHasher> {
+    referenced_root: Arc<NonNull<Node<Block>>>,
+    root: NonNull<Node<Block>>,
+    shared_world_state: Arc<SharedWorldState<Block, H>>,
+}
+
+unsafe impl<Block: BlockType, H: BuildHasher> Send for Substate<Block, H> {}
+unsafe impl<Block: BlockType, H: BuildHasher> Sync for Substate<Block, H> {}
+
+impl<Block: BlockType, H: BuildHasher> Clone for Substate<Block, H> {
+    fn clone(&self) -> Self {
         Self {
-            root: value,
-            world_nodes: state.world_nodes.clone(),
-            snapshots: state.snapshots.clone(),
+            referenced_root: self.referenced_root.clone(),
+            root: self.root,
+            shared_world_state: self.shared_world_state.clone(),
         }
     }
-    fn new<Step: StepFn<Block>>(
-        world: &mut World<Block, Step, H>,
+}
+
+impl<Block: BlockType, H: BuildHasher> Substate<Block, H> {
+    fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
+        let mut root: NonNull<Node<Block>> = world.get(Default::default()).into();
+        while unsafe { root.as_ref() }.key.level() < State::<Block, H>::MAX_LEVEL {
+            root = Node::expand_root(root, world);
+        }
+        Self::create_independent_reference(world.shared_world_state.clone(), root)
+    }
+    fn create_independent_reference(
+        shared_world_state: Arc<SharedWorldState<Block, H>>,
         root: NonNull<Node<Block>>,
     ) -> Self {
-        assert!(unsafe { root.as_ref() }.key.level() <= State::<Block, H>::MAX_LEVEL);
-        let value = world
+        let referenced_root = shared_world_state
             .snapshots
             .lock()
             .unwrap()
@@ -678,110 +707,184 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
             .or_insert_with(|| Arc::new(root))
             .clone();
         Self {
-            root: value,
-            world_nodes: world.nodes.clone(),
-            snapshots: world.snapshots.clone(),
+            referenced_root: referenced_root,
+            root: root,
+            shared_world_state: shared_world_state,
         }
     }
-    pub fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
-        let node = world.get(Default::default()).into();
-        State::new(world, node)
+    fn create_dependent_reference(base: Self, root: NonNull<Node<Block>>) -> Self {
+        Self {
+            referenced_root: base.referenced_root,
+            root: root,
+            shared_world_state: base.shared_world_state,
+        }
     }
-    pub fn get(&self, x: i32, y: i32, z: i32) -> Block {
-        let key = &unsafe { (*self.root).as_ref() }.key;
+    pub fn size(&self) -> u32 {
+        let key = &unsafe { self.root.as_ref() }.key;
         let level = key.level();
-        let size = Node::<Block>::get_size_from_level(level);
-        let x = (x as u32).wrapping_add(size / 2);
-        let y = (y as u32).wrapping_add(size / 2);
-        let z = (z as u32).wrapping_add(size / 2);
-        if x >= size || y >= size || z >= size {
+        get_size_from_level!(level)
+    }
+    pub fn get(&self, position: math::Vec3<u32>) -> Block {
+        let size = self.size();
+        if position.x >= size || position.y >= size || position.z >= size {
             Default::default()
         } else {
-            Node::get_block(*self.root, x, y, z)
+            Node::get_block(self.root, position)
         }
     }
     pub fn get_cube_pow2(
         &self,
-        x: i32,
-        y: i32,
-        z: i32,
+        position: math::Vec3<u32>,
         result_size: u32,
-        x_stride: usize,
-        y_stride: usize,
-        z_stride: usize,
+        stride: math::Vec3<usize>,
         result: &mut [Block],
     ) {
         assert!(result_size.is_power_of_two());
-        assert_eq!(x as u32 % result_size, 0);
-        assert_eq!(y as u32 % result_size, 0);
-        assert_eq!(z as u32 % result_size, 0);
-        let key = &unsafe { (*self.root).as_ref() }.key;
-        let level = key.level();
-        let size = Node::<Block>::get_size_from_level(level);
-        let x = (x as u32).wrapping_add(size / 2);
-        let y = (y as u32).wrapping_add(size / 2);
-        let z = (z as u32).wrapping_add(size / 2);
+        assert_eq!(
+            position & math::Vec3::splat(result_size - 1),
+            math::Vec3::splat(0)
+        );
+        let size = self.size();
         for rz in 0..result_size {
-            if rz.wrapping_add(z) < size {
+            if rz + position.z < size {
                 continue;
             }
             for ry in 0..result_size {
-                if ry.wrapping_add(y) < size {
+                if ry + position.y < size {
                     continue;
                 }
                 for rx in 0..result_size {
-                    if rx.wrapping_add(x) < size {
+                    if rx + position.x < size {
                         continue;
                     }
-                    result[rx as usize * x_stride
-                               + ry as usize * y_stride
-                               + rz as usize * z_stride] = Default::default();
+                    result[math::Vec3::new(rx, ry, rz).map(|v| v as usize).dot(stride)] =
+                        Default::default();
                 }
             }
         }
-        unimplemented!()
+        if position.map(|v| v < size).reduce(|a, b| a && b) {
+            if result_size > size {
+                Node::get_cube_pow2(self.root, position, size, stride, result)
+            } else {
+                Node::get_cube_pow2(self.root, position, result_size, stride, result);
+            }
+        }
+    }
+    pub fn get_substate(self, position: math::Vec3<u32>, size: u32) -> Self {
+        assert!(size >= 2);
+        assert!(size.is_power_of_two());
+        assert!(size <= self.size());
+        assert_eq!(position.map(|v| v % size), math::Vec3::splat(0));
+        let root = Node::get_child_node(self.root, position, size);
+        Self::create_dependent_reference(self, root)
+    }
+}
+
+impl<Block: BlockType, H: BuildHasher> Eq for Substate<Block, H> {}
+
+impl<Block: BlockType, H: BuildHasher> PartialEq for Substate<Block, H> {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.root.as_ptr() == rhs.root.as_ptr()
+    }
+}
+
+impl<Block: BlockType, H: BuildHasher> Hash for Substate<Block, H> {
+    fn hash<H2: Hasher>(&self, h: &mut H2) {
+        self.root.as_ptr().hash(h)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct State<Block: BlockType, H: BuildHasher> {
+    state: Substate<Block, H>,
+    empty_state: Substate<Block, H>,
+}
+
+impl<Block: BlockType, H: BuildHasher> State<Block, H> {
+    const MAX_LEVEL: u32 = 20;
+    const MAX_LEVEL_SIZE: u32 = get_size_from_level!(Self::MAX_LEVEL);
+    const OFFSET: u32 = Self::MAX_LEVEL_SIZE / 2;
+    fn new(
+        shared_world_state: Arc<SharedWorldState<Block, H>>,
+        root: NonNull<Node<Block>>,
+        empty_state: Substate<Block, H>,
+    ) -> Self {
+        assert_eq!(
+            unsafe { root.as_ref() }.key.level(),
+            State::<Block, H>::MAX_LEVEL
+        );
+        Self {
+            state: Substate::create_independent_reference(shared_world_state, root),
+            empty_state: empty_state,
+        }
+    }
+    fn new_from_world<Step: StepFn<Block>>(
+        world: &mut World<Block, Step, H>,
+        mut root: NonNull<Node<Block>>,
+    ) -> Self {
+        while unsafe { root.as_ref() }.key.level() < State::<Block, H>::MAX_LEVEL {
+            root = Node::expand_root(root, world);
+        }
+        let empty_state = Substate::create_empty(world);
+        Self::new(world.shared_world_state.clone(), root, empty_state)
+    }
+    pub fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
+        let empty_state = Substate::create_empty(world);
+        Self {
+            state: empty_state.clone(),
+            empty_state: empty_state,
+        }
+    }
+    pub fn get(&self, position: math::Vec3<i32>) -> Block {
+        self.state
+            .get(position.map(|v| (v as u32).wrapping_add(Self::OFFSET)))
+    }
+    pub fn get_substate(&self, position: math::Vec3<i32>, size: u32) -> Substate<Block, H> {
+        assert!(size >= 2);
+        assert!(size.is_power_of_two());
+        assert!(size <= Self::MAX_LEVEL_SIZE);
+        let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
+        assert_eq!(position.map(|v| v % size), math::Vec3::splat(0));
+        if position
+            .map(|v| v >= Self::MAX_LEVEL_SIZE)
+            .reduce(|a, b| a || b)
+        {
+            self.empty_state
+                .clone()
+                .get_substate(math::Vec3::splat(0), size)
+        } else {
+            self.state.clone().get_substate(position, size)
+        }
     }
     fn set_helper<Step: StepFn<Block>>(
         &self,
         world: &mut World<Block, Step, H>,
-        x: i32,
-        y: i32,
-        z: i32,
+        position: math::Vec3<i32>,
         block: Block,
     ) -> Self {
-        let mut root = *self.root;
-        loop {
-            let key = &unsafe { *root.as_ptr() }.key;
-            let size = Node::<Block>::get_size_from_level(key.level());
-            let xu = (x as u32).wrapping_add(size / 2);
-            let yu = (y as u32).wrapping_add(size / 2);
-            let zu = (z as u32).wrapping_add(size / 2);
-            if xu < size && yu < size && zu < size {
-                root = Node::set_block_without_expanding(root, xu, yu, zu, block, world);
-                break;
-            } else {
-                root = Node::expand_root(root, world);
-            }
-        }
-        State::new(world, root)
+        assert_eq!(
+            position.map(|v| (v as u32).wrapping_add(Self::OFFSET) < Self::MAX_LEVEL_SIZE),
+            math::Vec3::splat(true)
+        );
+        let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
+        let root = Node::set_block_without_expanding(self.state.root, position, block, world);
+        State::new_from_world(world, root)
     }
     pub fn set<Step: StepFn<Block>>(
         &mut self,
         world: &mut World<Block, Step, H>,
-        x: i32,
-        y: i32,
-        z: i32,
+        position: math::Vec3<i32>,
         block: Block,
     ) {
-        assert!(ptr::eq(self.world_nodes.as_ref(), world.nodes.as_ref()));
-        *self = self.set_helper(world, x, y, z, block);
+        assert!(self.state.shared_world_state == world.shared_world_state);
+        *self = self.set_helper(world, position, block);
     }
     fn step_helper<Step: StepFn<Block>>(
         &self,
         world: &mut World<Block, Step, H>,
         log2_generation_count: u32,
     ) -> Self {
-        let mut root = *self.root;
+        let mut root = self.state.root;
         loop {
             let log2_of_max_generation_step: Option<u32> =
                 unsafe { root.as_ref() }.get_log2_of_max_generation_step();
@@ -798,36 +901,35 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         if unsafe { root.as_ref() }.key.level() > State::<Block, H>::MAX_LEVEL {
             root = Node::truncate_root_to(State::<Block, H>::MAX_LEVEL, root, world);
         }
-        State::new(world, root)
+        State::new_from_world(world, root)
     }
     pub fn step<Step: StepFn<Block>>(
         &mut self,
         world: &mut World<Block, Step, H>,
         log2_generation_count: u32,
     ) {
-        assert!(ptr::eq(self.world_nodes.as_ref(), world.nodes.as_ref()));
+        assert!(self.state.shared_world_state == world.shared_world_state);
         *self = self.step_helper(world, log2_generation_count);
-    }
-}
-
-impl<Block: BlockType, H: BuildHasher> PartialEq for State<Block, H> {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.root == rhs.root
     }
 }
 
 impl<Block: BlockType, H: BuildHasher> Eq for State<Block, H> {}
 
-impl<Block: BlockType, BH: BuildHasher> Hash for State<Block, BH> {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
-        self.root.hash(hasher)
+impl<Block: BlockType, H: BuildHasher> PartialEq for State<Block, H> {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.state == rhs.state
+    }
+}
+
+impl<Block: BlockType, H: BuildHasher> Hash for State<Block, H> {
+    fn hash<H2: Hasher>(&self, h: &mut H2) {
+        self.state.hash(h)
     }
 }
 
 #[derive(Debug)]
 pub struct World<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> {
-    nodes: Arc<UnsafeCell<HashTable<Node<Block>, H>>>,
-    snapshots: Arc<Mutex<HashMap<NonNull<Node<Block>>, Arc<NonNull<Node<Block>>>>>>,
+    shared_world_state: Arc<SharedWorldState<Block, H>>,
     step: Step,
 }
 
@@ -855,7 +957,7 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
         } else {
             true
         });
-        let nodes = unsafe { &mut *self.nodes.get() };
+        let nodes = unsafe { &mut *self.shared_world_state.nodes.get() };
         let (_, retval) = nodes.insert(Node {
             key: key,
             ..Default::default()
@@ -864,8 +966,10 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
     }
     pub fn new(step: Step, build_hasher: H) -> World<Block, Step, H> {
         World {
-            nodes: Arc::new(UnsafeCell::new(HashTable::with_hasher(build_hasher))),
-            snapshots: Default::default(),
+            shared_world_state: Arc::new(SharedWorldState {
+                nodes: UnsafeCell::new(HashTable::with_hasher(build_hasher)),
+                snapshots: Default::default(),
+            }),
             step: step,
         }
     }
@@ -877,19 +981,23 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
         }
     }
     pub fn gc(&mut self) {
-        let nodes = unsafe { &mut *self.nodes.get() };
+        let nodes = unsafe { &mut *self.shared_world_state.nodes.get() };
         for node in nodes.iter_mut() {
             node.gc_state = GcState::Unreachable;
         }
         let mut work_queue = Default::default();
-        self.snapshots.lock().unwrap().retain(|k, v| {
-            if Arc::get_mut(v).is_none() {
-                Self::mark_node(*k, &mut work_queue);
-                true
-            } else {
-                false
-            }
-        });
+        self.shared_world_state
+            .snapshots
+            .lock()
+            .unwrap()
+            .retain(|k, v| {
+                if Arc::get_mut(v).is_none() {
+                    Self::mark_node(*k, &mut work_queue);
+                    true
+                } else {
+                    false
+                }
+            });
         while let Some(node) = work_queue.pop_front() {
             for i in node.next.iter() {
                 if let Some(next) = *i {

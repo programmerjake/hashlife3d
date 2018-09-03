@@ -20,16 +20,16 @@ extern crate voxels_resources as resources;
 extern crate voxels_sdl as sdl;
 
 mod block;
+mod chunk_cache;
+mod game_state;
 mod geometry;
 mod hashtable;
 mod registry;
 mod world3d;
-//#[cfg(not(test))]
-//pub use self::sdl::SDL_main;
+use registry::RegistryBuilder;
 use renderer::*;
 use sdl::event::Event;
 use std::error;
-use std::time;
 use world3d::{State, World};
 
 type Block = u32;
@@ -40,13 +40,69 @@ fn write_state(state: &State<Block, hashtable::DefaultBuildHasher>) {
         println!("z={}", z);
         for y in -range..range {
             for x in -range..range {
-                print!("{}", [' ', '#'][state.get(x, y, z) as usize]);
+                print!(
+                    "{}",
+                    [' ', '#'][state.get(math::Vec3::new(x, y, z)) as usize]
+                );
             }
             println!();
         }
     }
 }
 
+fn render_main_loop<PD: renderer::PausedDevice>(
+    mut paused_device: PD,
+    event_source: &sdl::event::EventSource,
+) {
+    let mut registry_builder = RegistryBuilder::new();
+    block::register_blocks(&mut registry_builder);
+    let registry = registry_builder.finish_startup();
+    let mut game_state = game_state::GameState::new(registry.clone());
+    struct Running<'a, D: renderer::Device> {
+        render_state: game_state::RenderState<'a, D>,
+    }
+    loop {
+        let mut running_state: Running<PD::Device> = loop {
+            match event_source.next() {
+                event @ Event::Quit { .. } => {
+                    game_state.send_event(event);
+                    return;
+                }
+                event @ Event::WindowShown { .. } => {
+                    game_state.send_event(event);
+                    break Running {
+                        render_state: game_state::RenderState::new(
+                            renderer::Device::resume(paused_device).unwrap(),
+                            &mut game_state,
+                            registry.clone(),
+                        ).unwrap(),
+                    };
+                }
+                event => println!("unhandled event while paused: {:?}", event),
+            }
+        };
+        paused_device = loop {
+            if let Some(event) = event_source.poll() {
+                match event {
+                    event @ Event::WindowHidden { .. } => {
+                        running_state.render_state.send_event(event);
+                        break running_state.render_state.into_device().pause();
+                    }
+                    event @ Event::Quit { .. } => {
+                        running_state.render_state.send_event(event);
+                        return;
+                    }
+                    event => running_state.render_state.send_event(event),
+                }
+            } else {
+                running_state.render_state.render_frame().unwrap();
+            }
+        }
+    }
+}
+
+// FIXME: remove
+#[cfg(all(unix, not(unix)))]
 fn render_main_loop<PD: renderer::PausedDevice>(
     paused_device: PD,
     event_source: &sdl::event::EventSource,
@@ -294,7 +350,7 @@ pub fn rust_main(event_source: sdl::event::EventSource) {
                 (5, 3),
             ];
             for &(x, y) in &_lwss {
-                state.set(&mut world, x - 5, y, 0, 1 as Block);
+                state.set(&mut world, math::Vec3::new(x - 5, y, 0), 1 as Block);
             }
             //println!("{:#?}", state);
             write_state(&state);
@@ -353,7 +409,7 @@ pub fn rust_main(event_source: sdl::event::EventSource) {
         }
     }
     let mut selected_backend = None;
-    if true {
+    if false {
         // FIXME: change back to dynamically selecting the backend
         selected_backend = Some(String::from("gles2"));
     }

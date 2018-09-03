@@ -408,8 +408,6 @@ impl JoystickHatDirection {
     }
 }
 
-pub type UserEvent = api::SDL_UserEvent;
-
 #[derive(Debug)]
 pub enum Event {
     Quit {
@@ -502,10 +500,6 @@ pub enum Event {
     WindowHitTest {
         timestamp: u32,
         window_id: u32,
-    },
-    SysWMEvent {
-        timestamp: u32,
-        msg: *mut api::SDL_SysWMmsg,
     },
     KeyDown {
         timestamp: u32,
@@ -721,10 +715,13 @@ pub enum Event {
     RenderDeviceReset {
         timestamp: u32,
     },
-    User(UserEvent),
 }
 
 #[allow(dead_code)]
+fn assert_event_is_sync_and_send(v: Event) -> Box<Sync + Send> {
+    Box::new(v)
+}
+
 impl Event {
     pub fn timestamp(&self) -> u32 {
         use self::Event::*;
@@ -752,7 +749,6 @@ impl Event {
             WindowClose { timestamp, .. } => *timestamp,
             WindowTakeFocus { timestamp, .. } => *timestamp,
             WindowHitTest { timestamp, .. } => *timestamp,
-            SysWMEvent { timestamp, .. } => *timestamp,
             KeyDown { timestamp, .. } => *timestamp,
             KeyUp { timestamp, .. } => *timestamp,
             TextEditing { timestamp, .. } => *timestamp,
@@ -790,7 +786,6 @@ impl Event {
             AudioDeviceRemoved { timestamp, .. } => *timestamp,
             RenderTargetsReset { timestamp } => *timestamp,
             RenderDeviceReset { timestamp } => *timestamp,
-            User(event) => event.timestamp,
         }
     }
 }
@@ -939,10 +934,7 @@ impl From<api::SDL_Event> for Event {
                     },
                     _ => panic!("unknown SDL window event type"),
                 },
-                api::SDL_SYSWMEVENT => SysWMEvent {
-                    timestamp: event.syswm.timestamp,
-                    msg: event.syswm.msg,
-                },
+                api::SDL_SYSWMEVENT => panic!("SysWM events are not implemented"),
                 api::SDL_KEYDOWN => KeyDown {
                     timestamp: event.key.timestamp,
                     window_id: event.key.windowID,
@@ -1165,7 +1157,9 @@ impl From<api::SDL_Event> for Event {
                 api::SDL_RENDER_DEVICE_RESET => RenderDeviceReset {
                     timestamp: event.common.timestamp,
                 },
-                api::SDL_USEREVENT..=api::SDL_LASTEVENT => User(event.user),
+                api::SDL_USEREVENT..=api::SDL_LASTEVENT => {
+                    panic!("SDL user events are not implemented")
+                }
                 _ => panic!("unknown SDL event type"),
             }
         }

@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 
-use block::BlockDescriptor;
+use block::{Block, BlockDescriptor};
+use geometry::Mesh;
+use math;
 
 #[derive(Debug)]
 pub struct Air(());
@@ -25,5 +27,12 @@ impl BlockDescriptor for Air {
     }
     fn id_string(&self) -> &'static str {
         "voxels:air"
+    }
+    fn render(
+        &self,
+        _neighborhood: [[[Block; 3]; 3]; 3],
+        _mesh: &mut Mesh,
+        _position: math::Vec3<i32>,
+    ) {
     }
 }

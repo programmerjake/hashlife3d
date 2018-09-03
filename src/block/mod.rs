@@ -13,13 +13,17 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 mod air;
+mod stone;
 use registry;
 
 mod block_definition {
+    use geometry::Mesh;
+    use math;
     use registry;
     use std::fmt;
     use std::hash;
     use std::mem;
+    use std::ops::Deref;
 
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -30,6 +34,9 @@ mod block_definition {
         pub fn new(id: u32) -> Self {
             assert!(id <= Self::MAX.0);
             BlockId(id)
+        }
+        pub fn value(self) -> u32 {
+            self.0
         }
     }
 
@@ -125,6 +132,23 @@ mod block_definition {
             mem::drop((block_id, registry_builder));
         }
         fn id_string(&self) -> &'static str;
+        fn render(
+            &self,
+            neighborhood: [[[Block; 3]; 3]; 3],
+            mesh: &mut Mesh,
+            position: math::Vec3<i32>,
+        );
+    }
+
+    pub struct RegisteredBlockDescriptor {
+        block_descriptor: &'static BlockDescriptor,
+    }
+
+    impl Deref for RegisteredBlockDescriptor {
+        type Target = &'static BlockDescriptor;
+        fn deref(&self) -> &&'static BlockDescriptor {
+            &self.block_descriptor
+        }
     }
 
     impl<'a> hash::Hash for &'a dyn BlockDescriptor {
@@ -155,13 +179,20 @@ mod block_definition {
         fn id_string(&self) -> &'static str {
             "uninitialized"
         }
+        fn render(
+            &self,
+            _neighborhood: [[[Block; 3]; 3]; 3],
+            _mesh: &mut Mesh,
+            _position: math::Vec3<i32>,
+        ) {
+        }
     }
 }
 
 pub use self::block_definition::*;
 
 pub fn register_blocks(registry_builder: &mut registry::RegistryBuilder) {
-    let blocks = [air::Air::get()];
+    let blocks = [air::Air::get(), stone::Stone::get()];
     for &block in &blocks {
         registry_builder.register_block(block);
     }
