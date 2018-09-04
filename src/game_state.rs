@@ -192,23 +192,29 @@ impl<'a, D: Device> RenderState<'a, D> {
             .set_world_state(self.game_state.get_world_state());
         let elapsed_time = self.start_instant.elapsed();
         let elapsed_time = elapsed_time.subsec_nanos() as f32 / 1e9 + elapsed_time.as_secs() as f32;
-        let view_point = math::Vec3::<f32>::new(0.0, 0.0, 0.0);
-        let view_transform = math::Mat4::translation(-view_point)
-            .rotate(
+        let view_point = math::Vec3::<f32>::new(0.5, 0.5, 0.5);
+        let mut view_transform = math::Mat4::<f32>::identity();
+        if true {
+            view_transform = view_transform.rotate(
                 (elapsed_time * 30.0).to_radians(),
-                math::Vec3::new(1.0, 0.5, 1.0f32).normalize().unwrap(),
-            ).rotate(
-                (elapsed_time * 60.0).to_radians(),
-                math::Vec3::new(1.0, -0.5, 1.0f32).normalize().unwrap(),
+                math::Vec3::new(1.0, 0.0, 0.0),
             );
+        }
+        if true {
+            view_transform = view_transform.rotate(
+                (elapsed_time * 60.0).to_radians(),
+                math::Vec3::new(0.0, 1.0, 0.0),
+            );
+        }
+        view_transform = view_transform.translate(-view_point);
         let render_command_buffers = self
             .chunk_cache
             .get_render_command_buffers(math::Vec3::new(0.0, 0.0, 0.0), 64.0)?;
         let loader_command_buffers = self.chunk_cache.get_loader_command_buffers();
         let near = 0.1;
-        let far = 100.0;
+        let far = 10.0;
         let final_transform =
-            math::Mat4::<f32>::perspective_projection(-1.0, 1.0, -1.0, 1.0, near, far)
+            math::Mat4::<f32>::perspective_projection(-near, near, -near, near, near, far)
                 * view_transform;
         self.device.render_frame(
             math::Vec4::new(0.0, 0.0, 0.0, 1.0),
