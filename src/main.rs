@@ -30,6 +30,8 @@ use registry::RegistryBuilder;
 use renderer::*;
 use sdl::event::Event;
 use std::error;
+#[allow(unused_imports)]
+use std::os::raw::{c_char, c_int};
 use world3d::{State, World};
 
 type Block = u32;
@@ -430,4 +432,15 @@ pub fn rust_main(event_source: sdl::event::EventSource) {
 #[allow(dead_code)]
 fn assert_rust_main_is_right_type() -> sdl::RustMainType {
     rust_main
+}
+
+#[no_mangle]
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "ios",
+    target_os = "android",
+    test
+)))]
+pub unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
+    sdl::SDL_main(argc, argv)
 }

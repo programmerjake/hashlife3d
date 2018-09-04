@@ -16,3 +16,4 @@ libc = "0.2"
 [features]
 default = []
 weak_main = []
+no_main = []

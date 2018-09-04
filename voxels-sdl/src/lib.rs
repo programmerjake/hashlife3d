@@ -66,6 +66,7 @@ impl Error for SDLError {}
     test
 )))]
 #[cfg_attr(feature = "weak_main", linkage = "weak")]
+#[cfg(not(feature = "no_main"))]
 pub unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
     SDL_main(argc, argv)
 }

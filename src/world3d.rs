@@ -1020,3 +1020,154 @@ unsafe impl<Block: BlockType + Send + Sync, Step: StepFn<Block> + Send, H: Build
 unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Send for State<Block, H> {}
 
 unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Sync for State<Block, H> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    type Block = u32;
+
+    const TEST_SIZE: u32 = 1 << 3;
+
+    fn encode_position(position: math::Vec3<u32>) -> Block {
+        position.x + TEST_SIZE * (position.y + TEST_SIZE * position.z)
+    }
+
+    fn decode_position(value: Block) -> math::Vec3<u32> {
+        let yz = value / TEST_SIZE;
+        let z = yz / TEST_SIZE;
+        math::Vec3::new(value % TEST_SIZE, yz % TEST_SIZE, z)
+    }
+
+    fn verify_subslice(
+        substate: &Substate<Block, DefaultBuildHasher>,
+        offset: math::Vec3<u32>,
+        size: u32,
+    ) {
+        assert_eq!(substate.size(), size);
+        for x in 0..size {
+            for y in 0..size {
+                for z in 0..size {
+                    let position = math::Vec3::new(x, y, z);
+                    assert_eq!(
+                        decode_position(substate.get(position)),
+                        position + offset,
+                        "checking if block matches expected value: offset = {:?}, size = {}",
+                        offset,
+                        size
+                    );
+                }
+            }
+        }
+    }
+
+    fn create_test_state<Step: StepFn<Block>>(
+        world: &mut World<Block, Step, DefaultBuildHasher>,
+        offset: math::Vec3<i32>,
+    ) -> State<Block, DefaultBuildHasher> {
+        let mut state = State::create_empty(world);
+        for x in 0..TEST_SIZE {
+            for y in 0..TEST_SIZE {
+                for z in 0..TEST_SIZE {
+                    state.set(
+                        world,
+                        math::Vec3::new(x, y, z).map(|v| v as i32) + offset,
+                        encode_position(math::Vec3::new(x, y, z)),
+                    );
+                }
+            }
+        }
+        state
+    }
+
+    #[test]
+    fn test_substate() {
+        let mut world = World::new(
+            |neighborhood: &[[[Block; 3]; 3]; 3]| neighborhood[1][1][1],
+            DefaultBuildHasher::new(),
+        );
+        let offset = math::Vec3::splat(-(TEST_SIZE as i32) / 2);
+        let state = create_test_state(&mut world, offset);
+        let verify_subslice = |position: math::Vec3<u32>, size: u32| {
+            verify_subslice(
+                &state.get_substate(position.map(|v| v as i32) + offset, size),
+                position,
+                size,
+            )
+        };
+        verify_subslice(math::Vec3::new(0, 0, 0), TEST_SIZE / 2);
+        verify_subslice(math::Vec3::new(0, 0, TEST_SIZE / 2), TEST_SIZE / 2);
+        verify_subslice(math::Vec3::new(0, TEST_SIZE / 2, 0), TEST_SIZE / 2);
+        verify_subslice(
+            math::Vec3::new(0, TEST_SIZE / 2, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+        verify_subslice(math::Vec3::new(TEST_SIZE / 2, 0, 0), TEST_SIZE / 2);
+        verify_subslice(
+            math::Vec3::new(TEST_SIZE / 2, 0, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+        verify_subslice(
+            math::Vec3::new(TEST_SIZE / 2, TEST_SIZE / 2, 0),
+            TEST_SIZE / 2,
+        );
+        verify_subslice(
+            math::Vec3::new(TEST_SIZE / 2, TEST_SIZE / 2, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+        verify_subslice(math::Vec3::new(2, 2, 2), 2);
+    }
+
+    #[test]
+    fn test_get_cube() {
+        let mut world = World::new(
+            |neighborhood: &[[[Block; 3]; 3]; 3]| neighborhood[1][1][1],
+            DefaultBuildHasher::new(),
+        );
+        let state = create_test_state(&mut world, math::Vec3::splat(0));
+        let substate = state.get_substate(math::Vec3::splat(0), TEST_SIZE);
+        let verify_cube = |offset: math::Vec3<u32>, size: u32| {
+            let mut blocks = Vec::with_capacity(size as usize * size as usize * size as usize);
+            for _ in 0..size as usize * size as usize * size as usize {
+                blocks.push(0 as Block);
+            }
+            let stride = math::Vec3::new(1, size as usize, size as usize * size as usize);
+            substate.get_cube_pow2(offset, size, stride, &mut blocks);
+            for x in 0..size {
+                for y in 0..size {
+                    for z in 0..size {
+                        let position = math::Vec3::new(x, y, z);
+                        assert_eq!(
+                            decode_position(blocks[stride.dot(position.map(|v| v as usize))]),
+                            position + offset,
+                            "checking if block matches expected value: size = {}",
+                            size
+                        );
+                    }
+                }
+            }
+        };
+        verify_cube(math::Vec3::new(1, 1, 1), 1);
+        verify_cube(math::Vec3::new(2, 2, 2), 2);
+        verify_cube(math::Vec3::new(0, 0, 0), TEST_SIZE);
+        verify_cube(math::Vec3::new(0, 0, 0), TEST_SIZE / 2);
+        verify_cube(math::Vec3::new(0, 0, TEST_SIZE / 2), TEST_SIZE / 2);
+        verify_cube(math::Vec3::new(0, TEST_SIZE / 2, 0), TEST_SIZE / 2);
+        verify_cube(
+            math::Vec3::new(0, TEST_SIZE / 2, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+        verify_cube(math::Vec3::new(TEST_SIZE / 2, 0, 0), TEST_SIZE / 2);
+        verify_cube(
+            math::Vec3::new(TEST_SIZE / 2, 0, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+        verify_cube(
+            math::Vec3::new(TEST_SIZE / 2, TEST_SIZE / 2, 0),
+            TEST_SIZE / 2,
+        );
+        verify_cube(
+            math::Vec3::new(TEST_SIZE / 2, TEST_SIZE / 2, TEST_SIZE / 2),
+            TEST_SIZE / 2,
+        );
+    }
+}
