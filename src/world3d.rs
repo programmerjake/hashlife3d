@@ -521,9 +521,9 @@ impl<Block: BlockType> Node<Block> {
                 result[0] = key[position.x as usize][position.y as usize][position.z as usize]
             } else {
                 assert_eq!(position, math::Vec3::splat(0));
-                for z in 0..1 {
-                    for y in 0..1 {
-                        for x in 0..1 {
+                for z in 0..2 {
+                    for y in 0..2 {
+                        for x in 0..2 {
                             result[math::Vec3::new(x, y, z).dot(stride)] = key[x][y][z];
                         }
                     }
@@ -531,9 +531,9 @@ impl<Block: BlockType> Node<Block> {
             },
             NodeKey::Nonleaf(key) => if result_size == size {
                 assert_eq!(position, math::Vec3::splat(0));
-                for zi in 0..1 {
-                    for yi in 0..1 {
-                        for xi in 0..1 {
+                for zi in 0..2 {
+                    for yi in 0..2 {
+                        for xi in 0..2 {
                             let offset = stride.dot(
                                 math::Vec3::new(xi, yi, zi).map(|v| (v * (size / 2) as usize)),
                             );
@@ -745,28 +745,17 @@ impl<Block: BlockType, H: BuildHasher> Substate<Block, H> {
             math::Vec3::splat(0)
         );
         let size = self.size();
-        for rz in 0..result_size {
-            if rz + position.z < size {
-                continue;
-            }
-            for ry in 0..result_size {
-                if ry + position.y < size {
-                    continue;
-                }
-                for rx in 0..result_size {
-                    if rx + position.x < size {
-                        continue;
-                    }
-                    result[math::Vec3::new(rx, ry, rz).map(|v| v as usize).dot(stride)] =
-                        Default::default();
-                }
-            }
-        }
+        assert!(result_size <= size);
         if position.map(|v| v < size).reduce(|a, b| a && b) {
-            if result_size > size {
-                Node::get_cube_pow2(self.root, position, size, stride, result)
-            } else {
-                Node::get_cube_pow2(self.root, position, result_size, stride, result);
+            Node::get_cube_pow2(self.root, position, result_size, stride, result);
+        } else {
+            for rz in 0..result_size {
+                for ry in 0..result_size {
+                    for rx in 0..result_size {
+                        result[math::Vec3::new(rx, ry, rz).map(|v| v as usize).dot(stride)] =
+                            Default::default();
+                    }
+                }
             }
         }
     }
