@@ -132,8 +132,7 @@ fn render_chunk<DR: DeviceReference>(
                     &mut blocks.0[Blocks::get_index(
                         math::Vec3::new(xi, yi, zi).map(|v| v as u32)
                             * math::Vec3::splat(CHUNK_SIZE),
-                    )..]
-                        [..CHUNK_SIZE as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize],
+                    )..],
                 );
             }
         }
@@ -151,14 +150,17 @@ fn render_chunk<DR: DeviceReference>(
                     )
                 });
                 let block = neighborhood[1][1][1];
+                let block_position = chunk_position + math::Vec3::new(x, y, z).map(|v| v as i32);
                 if block.id() != Default::default() {
-                    println!("rendering block: {:?}", registry.get_block(block.id()))
+                    println!(
+                        "rendering block: {:?} at {:?}",
+                        registry.get_block(block.id()),
+                        block_position
+                    )
                 }
-                registry.get_block(block.id()).render(
-                    neighborhood,
-                    &mut mesh,
-                    chunk_position + math::Vec3::new(x, y, z).map(|v| v as i32),
-                );
+                registry
+                    .get_block(block.id())
+                    .render(neighborhood, &mut mesh, block_position);
             }
         }
     }
@@ -330,7 +332,7 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
         };
         let neighborhood = make_neighborhood(|xi, yi, zi| {
             world_state.get_substate(
-                math::Vec3::new(xi as i32, yi as i32, zi as i32)
+                (math::Vec3::new(xi as i32, yi as i32, zi as i32) - math::Vec3::splat(1))
                     * math::Vec3::splat(CHUNK_SIZE as i32)
                     + chunk_position,
                 CHUNK_SIZE,
