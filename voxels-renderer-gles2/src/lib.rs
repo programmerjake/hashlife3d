@@ -398,6 +398,8 @@ pub enum GLES2Error {
     ImageIsTooBig,
     ImageMustHavePowerOfTwoDimensions,
     ImageSetHasTooManyImages,
+    NoSRGBSupport,
+    InvalidGLVersion(String),
 }
 
 impl From<sdl::SDLError> for GLES2Error {
@@ -418,6 +420,14 @@ impl fmt::Display for GLES2Error {
                 f.write_str("image must have power-of-two dimensions")
             }
             GLES2Error::ImageSetHasTooManyImages => f.write_str("image set has too many images"),
+            GLES2Error::NoSRGBSupport => {
+                f.write_str("the OpenGL ES implementation doesn't support sRGB")
+            }
+            GLES2Error::InvalidGLVersion(version) => write!(
+                f,
+                "the OpenGL ES implementation reported an invalid version string: {:?}",
+                version,
+            ),
         }
     }
 }
@@ -1244,6 +1254,7 @@ impl DeviceReference for GLES2DeviceReference {
 
 struct SurfaceState {
     window: sdl::window::Window,
+    color_space: ColorSpace,
 }
 
 pub struct GLES2PausedDevice {
@@ -1414,9 +1425,17 @@ impl Device for GLES2Device {
             ).as_bytes(),
         ).unwrap();
         unsafe {
-            let SurfaceState { window } = paused_device.surface_state;
-            set_gl_attributes()?;
+            let SurfaceState {
+                window,
+                color_space,
+            } = paused_device.surface_state;
+            set_gl_attributes(color_space)?;
             let gl_context = GLContextWrapper::new(&window)?;
+            let gl_version = check_color_space_support(color_space, &gl_context)?;
+            println!(
+                "OpenGL ES Version: {}.{}",
+                gl_version.major, gl_version.minor
+            );
             if sdl::api::SDL_GL_SetSwapInterval(0) != 0 {
                 eprintln!("can't set swap interval: {}", sdl::get_error());
             }
@@ -1425,6 +1444,10 @@ impl Device for GLES2Device {
             let mut max_image_size;
             {
                 let api = &gl_context.api;
+                match color_space {
+                    ColorSpace::SRGB => api.glEnable.unwrap()(api::GL_FRAMEBUFFER_SRGB_EXT),
+                    ColorSpace::Fallback => {}
+                }
                 api.glEnable.unwrap()(api::GL_BLEND);
                 api.glEnable.unwrap()(api::GL_CULL_FACE);
                 api.glEnable.unwrap()(api::GL_DEPTH_TEST);
@@ -1600,7 +1623,10 @@ impl Device for GLES2Device {
                 device_reference: GLES2DeviceReference {
                     max_image_size: max_image_size as u32,
                 },
-                surface_state: SurfaceState { window: window },
+                surface_state: SurfaceState {
+                    window: window,
+                    color_space: color_space,
+                },
                 gl_context: gl_context,
                 buffer_deallocate_channel_sender: buffer_deallocate_channel_sender,
                 buffer_deallocate_channel_receiver: buffer_deallocate_channel_receiver,
@@ -1622,6 +1648,7 @@ impl Device for GLES2Device {
         &mut self,
         loader_command_buffers: &mut Vec<GLES2LoaderCommandBuffer>,
     ) -> Result<GLES2Fence> {
+        let color_space = self.surface_state.color_space;
         let fence = GLES2Fence::new();
         for loader_command_buffer in loader_command_buffers.drain(..) {
             loader_command_buffer.submit_tracker.set_submitted();
@@ -1800,7 +1827,12 @@ impl Device for GLES2Device {
                                         api.glTexImage2D.unwrap()(
                                             api::GL_TEXTURE_2D,
                                             0,
-                                            api::GL_RGBA as api::GLint,
+                                            match color_space {
+                                                ColorSpace::SRGB => {
+                                                    api::GL_SRGB8_ALPHA8_EXT as api::GLint
+                                                }
+                                                ColorSpace::Fallback => api::GL_RGBA as api::GLint,
+                                            },
                                             (layout.base.sub_image_dimensions.x
                                                 * layout.sub_image_count_x)
                                                 as api::GLsizei,
@@ -2059,7 +2091,13 @@ impl<'a> GLES2DeviceFactory<'a> {
     }
 }
 
-unsafe fn set_gl_attributes() -> Result<()> {
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum ColorSpace {
+    SRGB,
+    Fallback,
+}
+
+unsafe fn set_gl_attributes(color_space: ColorSpace) -> Result<()> {
     macro_rules! sdl_gl_set_attribute {
         ($which:ident, $value:expr) => {
             if sdl::api::SDL_GL_SetAttribute(sdl::api::$which, $value) != 0 {
@@ -2074,7 +2112,66 @@ unsafe fn set_gl_attributes() -> Result<()> {
     );
     sdl_gl_set_attribute!(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     sdl_gl_set_attribute!(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    match color_space {
+        ColorSpace::SRGB => sdl_gl_set_attribute!(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1),
+        ColorSpace::Fallback => sdl_gl_set_attribute!(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 0),
+    }
     Ok(())
+}
+
+struct GLVersion {
+    major: u32,
+    minor: u32,
+}
+
+fn get_gl_version(gl_context: &GLContextWrapper) -> Result<GLVersion> {
+    let api = &gl_context.api;
+    let version_string =
+        unsafe { CStr::from_ptr(api.glGetString.unwrap()(api::GL_VERSION) as *const c_char) }
+            .to_string_lossy();
+    let prefix = "OpenGL ES ";
+    match version_string.starts_with(prefix) {
+        false => None,
+        true => Some(version_string.split_at(prefix.len()).1),
+    }.and_then(|version_string| version_string.split(' ').next())
+    .and_then(|version_string| {
+        let mut results = [None; 2];
+        for (index, value) in version_string.split('.').enumerate() {
+            if index < results.len() {
+                results[index] = Some(value);
+            } else {
+                return None;
+            }
+        }
+        if let [Some(major), Some(minor)] = results {
+            if let (Ok(major), Ok(minor)) = (major.parse(), minor.parse()) {
+                return Some(GLVersion {
+                    major: major,
+                    minor: minor,
+                });
+            }
+        }
+        None
+    }).ok_or_else(|| GLES2Error::InvalidGLVersion(version_string.into()))
+}
+
+unsafe fn check_color_space_support(
+    color_space: ColorSpace,
+    gl_context: &GLContextWrapper,
+) -> Result<GLVersion> {
+    let gl_version = get_gl_version(&gl_context)?;
+    match color_space {
+        ColorSpace::SRGB => if gl_version.major < 3
+            && sdl::api::SDL_FALSE == sdl::api::SDL_GL_ExtensionSupported(
+                CStr::from_bytes_with_nul(b"GL_EXT_sRGB\0")
+                    .unwrap()
+                    .as_ptr(),
+            ) {
+            return Err(GLES2Error::NoSRGBSupport);
+        },
+        ColorSpace::Fallback => {}
+    }
+    Ok(gl_version)
 }
 
 impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
@@ -2088,6 +2185,7 @@ impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
         size: (u32, u32),
         mut flags: u32,
     ) -> Result<GLES2PausedDevice> {
+        let title = title.into();
         assert_eq!(
             flags & (sdl::api::SDL_WINDOW_OPENGL | sdl::api::SDL_WINDOW_VULKAN),
             0
@@ -2096,12 +2194,35 @@ impl<'a> DeviceFactory for GLES2DeviceFactory<'a> {
         if unsafe { sdl::api::SDL_GL_LoadLibrary(null()) } != 0 {
             return Err(sdl::get_error().into());
         }
-        unsafe {
-            set_gl_attributes()?;
+        let mut window_result = Err(GLES2Error::NoSRGBSupport);
+        for &color_space in &[ColorSpace::SRGB, ColorSpace::Fallback] {
+            println!("trying OpenGL ES 2.0 with {:?}", color_space);
+            unsafe {
+                set_gl_attributes(color_space)?;
+            }
+            window_result = sdl::window::Window::new(&title as &str, position, size, flags)
+                .map_err(GLES2Error::from);
+            window_result = match window_result {
+                Ok(window) => match unsafe { GLContextWrapper::new(&window) } {
+                    Ok(gl_context) => unsafe {
+                        check_color_space_support(color_space, &gl_context).and(Ok(window))
+                    },
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            window_result = match window_result {
+                Ok(window) => {
+                    return Ok(GLES2PausedDevice {
+                        surface_state: SurfaceState {
+                            window: window,
+                            color_space: color_space,
+                        },
+                    })
+                }
+                Err(error) => Err(error),
+            };
         }
-        let window = sdl::window::Window::new(title, position, size, flags)?;
-        Ok(GLES2PausedDevice {
-            surface_state: SurfaceState { window: window },
-        })
+        Err(window_result.err().unwrap())
     }
 }

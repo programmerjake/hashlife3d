@@ -12,6 +12,7 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
+use block::BlockFace;
 use math;
 use renderer::{
     DeviceReference, IndexBufferElement, StagingGenericArray, TextureId, VertexBufferElement,
@@ -28,6 +29,9 @@ impl Mesh {
             vertices: Vec::new(),
             indices: Vec::new(),
         }
+    }
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
     }
     pub fn create_vertex(&mut self, vertex: VertexBufferElement) -> IndexBufferElement {
         let retval = self.vertices.len();
@@ -307,6 +311,65 @@ impl Mesh {
                 texture_id,
             ),
         )
+    }
+    pub fn add_cube_face<CF: FnMut(math::Vec3<usize>) -> math::Vec4<u8>>(
+        &mut self,
+        origin: math::Vec3<f32>,
+        mut colors_fn: CF,
+        texture_id: TextureId,
+        block_face: BlockFace,
+    ) {
+        let mut colors_fn = |x, y, z| colors_fn(math::Vec3::new(x, y, z));
+        match block_face {
+            BlockFace::NX => self.add_cube_face_negative_x(
+                origin,
+                colors_fn(0, 0, 0),
+                colors_fn(0, 0, 1),
+                colors_fn(0, 1, 0),
+                colors_fn(0, 1, 1),
+                texture_id,
+            ),
+            BlockFace::PX => self.add_cube_face_positive_x(
+                origin,
+                colors_fn(1, 0, 0),
+                colors_fn(1, 0, 1),
+                colors_fn(1, 1, 0),
+                colors_fn(1, 1, 1),
+                texture_id,
+            ),
+            BlockFace::NY => self.add_cube_face_negative_y(
+                origin,
+                colors_fn(0, 0, 0),
+                colors_fn(0, 0, 1),
+                colors_fn(1, 0, 0),
+                colors_fn(1, 0, 1),
+                texture_id,
+            ),
+            BlockFace::PY => self.add_cube_face_positive_y(
+                origin,
+                colors_fn(0, 1, 0),
+                colors_fn(0, 1, 1),
+                colors_fn(1, 1, 0),
+                colors_fn(1, 1, 1),
+                texture_id,
+            ),
+            BlockFace::NZ => self.add_cube_face_negative_z(
+                origin,
+                colors_fn(0, 0, 0),
+                colors_fn(0, 1, 0),
+                colors_fn(1, 0, 0),
+                colors_fn(1, 1, 0),
+                texture_id,
+            ),
+            BlockFace::PZ => self.add_cube_face_positive_z(
+                origin,
+                colors_fn(0, 0, 1),
+                colors_fn(0, 1, 1),
+                colors_fn(1, 0, 1),
+                colors_fn(1, 1, 1),
+                texture_id,
+            ),
+        }
     }
     pub fn add_cube(
         &mut self,

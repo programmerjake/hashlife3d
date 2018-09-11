@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 
-use block::{Block, LightLevel};
+use block::{Block, BlockLighting, GlobalRenderProperties, LightLevel};
 use chunk_cache::ChunkCache;
 use hashtable::DefaultBuildHasher;
-use math;
+use math::{self, Dot, Mappable, Reducible};
 use registry::Registry;
 use renderer::*;
 use resources::images::tiles;
@@ -53,10 +53,38 @@ impl GameState {
     ) {
         let mut last_time = time::Instant::now();
         // FIXME: change time_per_loop back to 1/20 second
-        let time_per_loop = time::Duration::from_secs(1) / 2;
-        let mut block_enabled: bool = false;
+        let time_per_loop = time::Duration::from_secs(1) / 20;
         let air_block_id = registry.find_block_by_name("voxels:air").unwrap();
         let stone_block_id = registry.find_block_by_name("voxels:stone").unwrap();
+        let stone_block = Block::new(
+            stone_block_id,
+            BlockLighting::new(LightLevel::MAX, LightLevel::MAX, LightLevel::MAX),
+        );
+        let air_block = Block::new(
+            air_block_id,
+            BlockLighting::new(LightLevel::MAX, LightLevel::MAX, LightLevel::MAX),
+        );
+        let size = 20;
+        for x in -size..=size {
+            for y in -size..=size {
+                for z in -size..=size {
+                    let position = math::Vec3::new(x, y, z);
+                    world_state.set(
+                        &mut world,
+                        position,
+                        if position.dot(position) >= size * size {
+                            stone_block
+                        } else {
+                            air_block
+                        },
+                    );
+                }
+            }
+            println!("x={}", x);
+            world.gc();
+        }
+        let mut angle = 0;
+        let angle_step_count = 60;
         loop {
             while let Ok(event) = event_receiver.try_recv() {
                 println!("event: {:?}", event);
@@ -72,23 +100,38 @@ impl GameState {
                 elapsed_time = current_time - last_time;
                 last_time = current_time;
             }
-            println!("step duration: {:?}", elapsed_time);
+            let _ = elapsed_time;
+            //println!("step duration: {:?}", elapsed_time);
             world_state.step(&mut world, 1);
-            world_state.set(
-                &mut world,
-                math::Vec3::new(1, 1, 1),
-                Block::new(
-                    if block_enabled {
-                        stone_block_id
-                    } else {
-                        air_block_id
-                    },
-                    LightLevel::MAX,
-                    LightLevel::MAX,
-                    LightLevel::MAX,
-                ),
-            );
-            block_enabled = !block_enabled;
+            angle += 1;
+            if angle >= angle_step_count {
+                angle = 0;
+            }
+            let angle = angle as f32 * (360.0f32.to_radians() / angle_step_count as f32);
+            let solid_transform =
+                math::Mat4::<f32>::rotation(angle, math::Vec3::new(1.0, 0.0, 0.0));
+            let size = 5;
+            for x in -size..=size {
+                for y in -size..=size {
+                    for z in -size..=size {
+                        let position = math::Vec3::new(x, y, z);
+                        world_state.set(
+                            &mut world,
+                            position,
+                            if position.dot(position) >= size * size
+                                && (solid_transform * math::Vec4::new(
+                                    position.x, position.y, position.z, 1,
+                                ).map(|v| v as f32)).reduce(|a, b| a * b)
+                                    > 0.0
+                            {
+                                stone_block
+                            } else {
+                                air_block
+                            },
+                        );
+                    }
+                }
+            }
             world.gc();
             match game_state_sender.send(world_state.clone()) {
                 Ok(_) => {}
@@ -147,6 +190,15 @@ pub struct RenderState<'a, D: Device> {
     game_state: &'a mut GameState,
     chunk_cache: ChunkCache<D::Reference>,
     start_instant: time::Instant,
+    last_fps_report_instant: Option<time::Instant>,
+    frames_since_last_fps_report: u32,
+    last_frame_instant: Option<time::Instant>,
+    max_frame_duration: Option<time::Duration>,
+    min_frame_duration: Option<time::Duration>,
+}
+
+fn duration_to_f64(v: time::Duration) -> f64 {
+    v.as_secs() as f64 + 1e-9 * v.subsec_nanos() as f64
 }
 
 impl<'a, D: Device> RenderState<'a, D> {
@@ -171,6 +223,7 @@ impl<'a, D: Device> RenderState<'a, D> {
         let chunk_cache = ChunkCache::new(
             device.get_device_ref().clone(),
             game_state.get_world_state(),
+            GlobalRenderProperties::default(),
             registry,
             tiles_image_set,
         );
@@ -179,7 +232,20 @@ impl<'a, D: Device> RenderState<'a, D> {
             game_state: game_state,
             chunk_cache: chunk_cache,
             start_instant: time::Instant::now(),
+            last_fps_report_instant: None,
+            frames_since_last_fps_report: 0,
+            last_frame_instant: None,
+            max_frame_duration: None,
+            min_frame_duration: None,
         })
+    }
+    pub fn print_stats(&self) {
+        if let Some(min_frame_duration) = self.min_frame_duration {
+            println!("min frame duration: {:?}", min_frame_duration);
+        }
+        if let Some(max_frame_duration) = self.max_frame_duration {
+            println!("max frame duration: {:?}", max_frame_duration);
+        }
     }
     pub fn into_device(self) -> D {
         self.device
@@ -188,37 +254,71 @@ impl<'a, D: Device> RenderState<'a, D> {
         self.game_state.send_event(event)
     }
     pub fn render_frame(&mut self) -> Result<(), D::Error> {
+        let current_instant = time::Instant::now();
+        match self.last_frame_instant {
+            None => {}
+            Some(last_frame_instant) => {
+                let frame_duration = current_instant.duration_since(last_frame_instant);
+                match self.min_frame_duration {
+                    Some(min_frame_duration) if min_frame_duration < frame_duration => {}
+                    _ => self.min_frame_duration = Some(frame_duration),
+                }
+                match self.max_frame_duration {
+                    Some(max_frame_duration) if max_frame_duration > frame_duration => {}
+                    _ => self.max_frame_duration = Some(frame_duration),
+                }
+            }
+        }
+        self.last_frame_instant = Some(current_instant);
+        match self.last_fps_report_instant.take() {
+            None => {
+                self.frames_since_last_fps_report = 0;
+                self.last_fps_report_instant = Some(current_instant);
+            }
+            Some(last_fps_report_instant) => {
+                self.frames_since_last_fps_report += 1;
+                let elapsed = current_instant.duration_since(last_fps_report_instant);
+                if elapsed >= time::Duration::from_secs(5) {
+                    self.last_fps_report_instant = Some(current_instant);
+                    let elapsed_per_frame = elapsed / self.frames_since_last_fps_report;
+                    self.frames_since_last_fps_report = 0;
+                    let fps = 1.0 / duration_to_f64(elapsed_per_frame);
+                    println!("FPS: {} elapsed per frame: {:?}", fps, elapsed_per_frame);
+                } else {
+                    self.last_fps_report_instant = Some(last_fps_report_instant);
+                }
+            }
+        }
         self.chunk_cache
             .set_world_state(self.game_state.get_world_state());
-        let elapsed_time = self.start_instant.elapsed();
-        let elapsed_time = elapsed_time.subsec_nanos() as f32 / 1e9 + elapsed_time.as_secs() as f32;
+        let elapsed_time = duration_to_f64(current_instant.duration_since(self.start_instant));
         let view_point = math::Vec3::<f32>::new(0.5, 0.5, 0.5);
         let mut view_transform = math::Mat4::<f32>::identity();
-        if true {
+        if false {
             view_transform = view_transform.rotate(
-                (elapsed_time * 30.0).to_radians(),
+                (((elapsed_time * 30.0) % 360.0) as f32).to_radians(),
                 math::Vec3::new(1.0, 0.0, 0.0),
             );
         }
         if true {
             view_transform = view_transform.rotate(
-                (elapsed_time * 60.0).to_radians(),
+                (((elapsed_time * 60.0) % 360.0) as f32).to_radians(),
                 math::Vec3::new(0.0, 1.0, 0.0),
             );
         }
         view_transform = view_transform.translate(-view_point);
+        let mut loader_command_buffers = self.chunk_cache.get_loader_command_buffers();
         let render_command_buffers = self
             .chunk_cache
-            .get_render_command_buffers(math::Vec3::new(0.0, 0.0, 0.0), 64.0)?;
-        let loader_command_buffers = self.chunk_cache.get_loader_command_buffers();
+            .get_render_command_buffers(math::Vec3::new(0.0, 0.0, 0.0), 128.0)?;
         let near = 0.1;
-        let far = 10.0;
+        let far = 100.0;
         let final_transform =
             math::Mat4::<f32>::perspective_projection(-near, near, -near, near, near, far)
                 * view_transform;
         self.device.render_frame(
             math::Vec4::new(0.0, 0.0, 0.0, 1.0),
-            loader_command_buffers,
+            &mut loader_command_buffers,
             &[RenderCommandBufferGroup {
                 render_command_buffers: &render_command_buffers,
                 final_transform: final_transform,

@@ -13,26 +13,35 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 
-use block::{Block, BlockDescriptor};
+use block::{
+    AdjacentBlockFaceVisibilities, Block, BlockDescriptor, BlockLightProperties, BlockProperties,
+    GlobalRenderProperties,
+};
 use geometry::Mesh;
 use math;
+use registry::Registry;
 
 #[derive(Debug)]
 pub struct Air(());
 
 impl BlockDescriptor for Air {
-    fn get() -> &'static BlockDescriptor {
-        const BLOCK: Air = Air(());
+    fn get() -> &'static BlockProperties {
+        const DESCRIPTOR: Air = Air(());
+        const BLOCK: BlockProperties = BlockProperties {
+            descriptor: &DESCRIPTOR,
+            id_string: "voxels:air",
+            light_properties: BlockLightProperties::AIR,
+            adjacent_block_face_visibilities: AdjacentBlockFaceVisibilities::ALL_VISIBLE,
+        };
         &BLOCK
-    }
-    fn id_string(&self) -> &'static str {
-        "voxels:air"
     }
     fn render(
         &self,
-        _neighborhood: [[[Block; 3]; 3]; 3],
+        _neighborhood: &[[[Block; 3]; 3]; 3],
         _mesh: &mut Mesh,
         _position: math::Vec3<i32>,
+        _global_render_properties: GlobalRenderProperties,
+        _registry: &Registry,
     ) {
     }
 }

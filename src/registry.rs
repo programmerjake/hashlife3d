@@ -12,20 +12,20 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-use block::{BlockDescriptor, BlockId, UninitializedBlock};
+use block::{BlockDescriptor, BlockId, BlockProperties, UninitializedBlock};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 
 struct RegistryData {
     blocks_map: HashMap<&'static str, BlockId>,
-    blocks_array: Vec<&'static BlockDescriptor>,
+    blocks_array: Vec<&'static BlockProperties>,
 }
 
 #[derive(Clone)]
 pub struct Registry(Arc<RegistryData>);
 
 impl Registry {
-    pub fn get_block(&self, id: BlockId) -> &'static BlockDescriptor {
+    pub fn get_block(&self, id: BlockId) -> &'static BlockProperties {
         self.0.blocks_array[id.value() as usize]
     }
     pub fn find_block_by_name(&self, name: &str) -> Option<BlockId> {
@@ -52,9 +52,9 @@ impl RegistryBuilder {
     pub fn finish_startup(self) -> Registry {
         Registry(Arc::new(self.data))
     }
-    pub fn register_block(&mut self, block: &'static BlockDescriptor) -> BlockId {
+    pub fn register_block(&mut self, block: &'static BlockProperties) -> BlockId {
         use self::Entry::*;
-        let block_id = match self.data.blocks_map.entry(block.id_string()) {
+        let block_id = match self.data.blocks_map.entry(block.id_string) {
             Occupied(_) => panic!("block already registered: {:?}", block),
             Vacant(entry) => {
                 let block_id = BlockId::new(self.data.blocks_array.len() as u32);
@@ -63,7 +63,7 @@ impl RegistryBuilder {
                 block_id
             }
         };
-        block.on_register(block_id, self);
+        block.descriptor.on_register(block_id, self);
         block_id
     }
 }

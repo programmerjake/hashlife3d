@@ -37,3 +37,8 @@ voxels-math = { path = "voxels-math" }
 voxels-image = { path = "voxels-image" }
 voxels-renderer = { path = "voxels-renderer" }
 voxels-resources = { path = "voxels-resources" }
+enum-map = "0.4"
+
+[profile.release]
+debug = true
+lto = "thin"

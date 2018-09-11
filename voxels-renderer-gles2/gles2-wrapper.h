@@ -14,4 +14,5 @@
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 #define GL_GLES_PROTOTYPES 0
 #include "GLES2/gl2.h"
+#include "GLES2/gl2ext.h"
 #undef GL_GLES_PROTOTYPES

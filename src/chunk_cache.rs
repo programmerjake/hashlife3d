@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 
-use block::Block;
+use block::{Block, GlobalRenderProperties};
 use geometry::Mesh;
 use hashtable::DefaultBuildHasher;
 use math::{self, Dot, Mappable};
@@ -29,19 +29,24 @@ use std::sync::*;
 use std::thread;
 use world3d::{State, Substate};
 
-struct Chunk<DR: DeviceReference> {
-    position: math::Vec3<i32>,
+struct ChunkBuffers<DR: DeviceReference> {
     index_buffer: DR::DeviceIndexBuffer,
     vertex_buffer: DR::DeviceVertexBuffer,
 }
 
+struct Chunk<DR: DeviceReference> {
+    position: math::Vec3<i32>,
+    buffers: Option<ChunkBuffers<DR>>,
+}
+
 struct LoaderCommandBufferQueueEntry<DR: DeviceReference> {
-    command_buffer: DR::LoaderCommandBuffer,
+    command_buffer: Option<DR::LoaderCommandBuffer>,
     chunk: Chunk<DR>,
 }
 
 impl<DR: DeviceReference> LoaderCommandBufferQueueEntry<DR> {
-    fn on_receive(self, chunk_cache: &mut ChunkCache<DR>) -> DR::LoaderCommandBuffer {
+    fn on_receive(self, chunk_cache: &mut ChunkCache<DR>) -> Option<DR::LoaderCommandBuffer> {
+        println!("received {:?}", self.chunk.position);
         chunk_cache.chunks.insert(self.chunk.position, self.chunk);
         self.command_buffer
     }
@@ -55,6 +60,7 @@ struct ViewState {
 
 enum GenerateThreadMessage {
     SetState(State<Block, DefaultBuildHasher>),
+    SetGlobalRenderProperties(GlobalRenderProperties),
     SetView(ViewState),
 }
 
@@ -63,6 +69,7 @@ struct GenerateThreadArgs<DR: DeviceReference> {
     renderer_errors_sender: mpsc::Sender<DR::Error>,
     message_receiver: mpsc::Receiver<GenerateThreadMessage>,
     world_state: State<Block, DefaultBuildHasher>,
+    global_render_properties: GlobalRenderProperties,
     device: DR,
     registry: Registry,
 }
@@ -102,11 +109,14 @@ impl Blocks {
 
 struct GenerateThreadChunk {
     neighborhood: [[[Substate<Block, DefaultBuildHasher>; 3]; 3]; 3],
+    global_render_properties: GlobalRenderProperties,
 }
 
+#[inline(always)]
 fn make_neighborhood<T, F: FnMut(usize, usize, usize) -> T>(
     mut f: F,
 ) -> [[[T; NEIGHBORHOOD_SIZE]; NEIGHBORHOOD_SIZE]; NEIGHBORHOOD_SIZE] {
+    #[inline(always)]
     fn make_array<T, F: FnMut(usize) -> T>(mut f: F) -> [T; NEIGHBORHOOD_SIZE] {
         [f(0), f(1), f(2)]
     }
@@ -115,13 +125,13 @@ fn make_neighborhood<T, F: FnMut(usize, usize, usize) -> T>(
 
 fn render_chunk<DR: DeviceReference>(
     neighborhood: [[[Substate<Block, DefaultBuildHasher>; 3]; 3]; 3],
+    global_render_properties: GlobalRenderProperties,
     device: &DR,
     chunk_position: math::Vec3<i32>,
     blocks: &mut Blocks,
     loader_command_buffers_sender: &mpsc::Sender<LoaderCommandBufferQueueEntry<DR>>,
     registry: &Registry,
 ) -> Result<GenerateThreadChunk, DR::Error> {
-    println!("rendering chunk: {:?}", chunk_position);
     for xi in 0..NEIGHBORHOOD_SIZE {
         for yi in 0..NEIGHBORHOOD_SIZE {
             for zi in 0..NEIGHBORHOOD_SIZE {
@@ -151,33 +161,43 @@ fn render_chunk<DR: DeviceReference>(
                 });
                 let block = neighborhood[1][1][1];
                 let block_position = chunk_position + math::Vec3::new(x, y, z).map(|v| v as i32);
-                if block.id() != Default::default() {
-                    println!(
-                        "rendering block: {:?} at {:?}",
-                        registry.get_block(block.id()),
-                        block_position
-                    )
-                }
-                registry
-                    .get_block(block.id())
-                    .render(neighborhood, &mut mesh, block_position);
+                registry.get_block(block.id()).descriptor.render(
+                    &neighborhood,
+                    &mut mesh,
+                    block_position,
+                    global_render_properties,
+                    registry,
+                );
             }
         }
     }
-    let (staging_vertex_buffer, staging_index_buffer) = mesh.create_staging_buffers(device)?;
-    let device_vertex_buffer = device.create_device_vertex_buffer_like(&staging_vertex_buffer)?;
-    let device_index_buffer = device.create_device_index_buffer_like(&staging_index_buffer)?;
-    let mut loader_command_buffer = device.create_loader_command_buffer_builder()?;
-    let device_vertex_buffer = loader_command_buffer
-        .initialize_vertex_buffer(staging_vertex_buffer.slice_ref(..), device_vertex_buffer)?;
-    let device_index_buffer = loader_command_buffer
-        .initialize_index_buffer(staging_index_buffer.slice_ref(..), device_index_buffer)?;
-    let loader_command_buffer = loader_command_buffer.finish()?;
-    let rendered_chunk = Chunk {
-        position: chunk_position,
-        vertex_buffer: device_vertex_buffer,
-        index_buffer: device_index_buffer,
-    };
+    let rendered_chunk;
+    let loader_command_buffer;
+    if mesh.triangle_count() != 0 {
+        let (staging_vertex_buffer, staging_index_buffer) = mesh.create_staging_buffers(device)?;
+        let device_vertex_buffer =
+            device.create_device_vertex_buffer_like(&staging_vertex_buffer)?;
+        let device_index_buffer = device.create_device_index_buffer_like(&staging_index_buffer)?;
+        let mut loader_command_buffer_builder = device.create_loader_command_buffer_builder()?;
+        let device_vertex_buffer = loader_command_buffer_builder
+            .initialize_vertex_buffer(staging_vertex_buffer.slice_ref(..), device_vertex_buffer)?;
+        let device_index_buffer = loader_command_buffer_builder
+            .initialize_index_buffer(staging_index_buffer.slice_ref(..), device_index_buffer)?;
+        loader_command_buffer = Some(loader_command_buffer_builder.finish()?);
+        rendered_chunk = Chunk {
+            position: chunk_position,
+            buffers: Some(ChunkBuffers {
+                vertex_buffer: device_vertex_buffer,
+                index_buffer: device_index_buffer,
+            }),
+        };
+    } else {
+        rendered_chunk = Chunk {
+            position: chunk_position,
+            buffers: None,
+        };
+        loader_command_buffer = None;
+    }
     loader_command_buffers_sender
         .send(LoaderCommandBufferQueueEntry {
             command_buffer: loader_command_buffer,
@@ -185,6 +205,7 @@ fn render_chunk<DR: DeviceReference>(
         }).unwrap();
     Ok(GenerateThreadChunk {
         neighborhood: neighborhood,
+        global_render_properties: global_render_properties,
     })
 }
 
@@ -216,6 +237,7 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
         renderer_errors_sender,
         message_receiver,
         mut world_state,
+        mut global_render_properties,
         device,
         registry,
     } = args;
@@ -227,10 +249,17 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
     fn receive_message_cluster(
         message_receiver: &mpsc::Receiver<GenerateThreadMessage>,
         mut block: bool,
-    ) -> Result<(Option<State<Block, DefaultBuildHasher>>, Option<ViewState>), mpsc::RecvError>
-    {
+    ) -> Result<
+        (
+            Option<State<Block, DefaultBuildHasher>>,
+            Option<ViewState>,
+            Option<GlobalRenderProperties>,
+        ),
+        mpsc::RecvError,
+    > {
         let mut returned_world_state = None;
         let mut returned_view_state = None;
+        let mut returned_global_render_properties = None;
         loop {
             let recv_result;
             if block {
@@ -239,7 +268,11 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
             } else {
                 recv_result = match message_receiver.try_recv() {
                     Err(mpsc::TryRecvError::Empty) => {
-                        return Ok((returned_world_state, returned_view_state))
+                        return Ok((
+                            returned_world_state,
+                            returned_view_state,
+                            returned_global_render_properties,
+                        ))
                     }
                     Err(mpsc::TryRecvError::Disconnected) => return Err(mpsc::RecvError),
                     Ok(result) => result,
@@ -249,6 +282,9 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
                 GenerateThreadMessage::SetView(view) => returned_view_state = Some(view),
                 GenerateThreadMessage::SetState(world_state) => {
                     returned_world_state = Some(world_state)
+                }
+                GenerateThreadMessage::SetGlobalRenderProperties(global_render_properties) => {
+                    returned_global_render_properties = Some(global_render_properties)
                 }
             }
         }
@@ -282,7 +318,7 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
     let mut blocks = Blocks::new();
     loop {
         match receive_message_cluster(&message_receiver, work_list.peek().is_none()) {
-            Ok((new_world_state, new_view_point)) => {
+            Ok((new_world_state, new_view_point, new_global_render_properties)) => {
                 let mut regenerate_work_list = false;
                 if let Some(new_world_state) = new_world_state {
                     world_state = new_world_state;
@@ -292,8 +328,13 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
                     view_state = new_view_point;
                     regenerate_work_list = true;
                 }
+                if let Some(new_global_render_properties) = new_global_render_properties {
+                    global_render_properties = new_global_render_properties;
+                    regenerate_work_list = true;
+                }
                 if regenerate_work_list {
                     let mut work_list_vec = work_list.into_vec();
+                    work_list_vec.clear();
                     for_all_chunks_in_view(view_state, |chunk_position| -> Result<(), ()> {
                         let chunk_center = chunk_position.map(|v| v as f32)
                             + math::Vec3::splat(CHUNK_SIZE as f32 / 2.0);
@@ -339,10 +380,16 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
             )
         });
         match chunks.entry(chunk_position) {
-            Entry::Occupied(ref entry) if entry.get().neighborhood == neighborhood => continue,
+            Entry::Occupied(ref entry)
+                if entry.get().neighborhood == neighborhood
+                    && entry.get().global_render_properties == global_render_properties =>
+            {
+                continue;
+            }
             Entry::Vacant(entry) => {
                 entry.insert(match render_chunk(
                     neighborhood,
+                    global_render_properties,
                     &device,
                     chunk_position,
                     &mut blocks,
@@ -360,6 +407,7 @@ fn generate_thread_fn<DR: DeviceReference>(args: GenerateThreadArgs<DR>) {
             Entry::Occupied(mut entry) => {
                 entry.insert(match render_chunk(
                     neighborhood,
+                    global_render_properties,
                     &device,
                     chunk_position,
                     &mut blocks,
@@ -382,6 +430,7 @@ pub struct ChunkCache<DR: DeviceReference> {
     generate_thread: Option<thread::JoinHandle<()>>,
     chunks: HashMap<math::Vec3<i32>, Chunk<DR>>,
     world_state: State<Block, DefaultBuildHasher>,
+    global_render_properties: GlobalRenderProperties,
     loader_command_buffers_receiver: mpsc::Receiver<LoaderCommandBufferQueueEntry<DR>>,
     renderer_errors_receiver: mpsc::Receiver<DR::Error>,
     message_sender: Option<mpsc::Sender<GenerateThreadMessage>>,
@@ -400,6 +449,7 @@ impl<DR: DeviceReference> ChunkCache<DR> {
     pub fn new(
         device: DR,
         world_state: State<Block, DefaultBuildHasher>,
+        global_render_properties: GlobalRenderProperties,
         registry: Registry,
         tiles_image_set: Arc<DR::DeviceImageSet>,
     ) -> Self {
@@ -411,6 +461,7 @@ impl<DR: DeviceReference> ChunkCache<DR> {
             renderer_errors_sender: renderer_errors_sender,
             message_receiver: message_receiver,
             world_state: world_state.clone(),
+            global_render_properties: global_render_properties,
             device: device.clone(),
             registry: registry,
         };
@@ -420,6 +471,7 @@ impl<DR: DeviceReference> ChunkCache<DR> {
             generate_thread: Some(generate_thread),
             chunks: HashMap::new(),
             world_state: world_state,
+            global_render_properties: global_render_properties,
             loader_command_buffers_receiver: loader_command_buffers_receiver,
             renderer_errors_receiver: renderer_errors_receiver,
             message_sender: Some(message_sender),
@@ -437,12 +489,28 @@ impl<DR: DeviceReference> ChunkCache<DR> {
             self.world_state = world_state;
         }
     }
-    pub fn get_loader_command_buffers(&mut self) -> &mut Vec<DR::LoaderCommandBuffer> {
-        while let Ok(command_buffer) = self.loader_command_buffers_receiver.try_recv() {
-            let command_buffer = command_buffer.on_receive(self);
-            self.returned_loader_command_buffers.push(command_buffer);
+    pub fn set_global_render_properties(
+        &mut self,
+        global_render_properties: GlobalRenderProperties,
+    ) {
+        if global_render_properties != self.global_render_properties {
+            self.message_sender
+                .as_ref()
+                .unwrap()
+                .send(GenerateThreadMessage::SetGlobalRenderProperties(
+                    global_render_properties,
+                )).unwrap();
+            self.global_render_properties = global_render_properties;
         }
-        &mut self.returned_loader_command_buffers
+    }
+    pub fn get_loader_command_buffers(&mut self) -> Vec<DR::LoaderCommandBuffer> {
+        let mut retval = Vec::new();
+        while let Ok(command_buffer) = self.loader_command_buffers_receiver.try_recv() {
+            if let Some(command_buffer) = command_buffer.on_receive(self) {
+                retval.push(command_buffer);
+            }
+        }
+        retval
     }
     pub fn get_render_command_buffers(
         &mut self,
@@ -464,15 +532,20 @@ impl<DR: DeviceReference> ChunkCache<DR> {
             .unwrap();
         let mut retval = self.device.create_render_command_buffer_builder()?;
         retval.set_image_set(&*self.tiles_image_set);
+        let mut triangle_count: u64 = 0;
         for_all_chunks_in_view(view_state, |chunk_position| {
             if let Some(chunk) = self.chunks.get(&chunk_position) {
-                retval.draw(
-                    chunk.vertex_buffer.slice_ref(..),
-                    chunk.index_buffer.slice_ref(..),
-                );
+                if let Some(chunk) = &chunk.buffers {
+                    triangle_count += chunk.index_buffer.len() as u64 / 3;
+                    retval.draw(
+                        chunk.vertex_buffer.slice_ref(..),
+                        chunk.index_buffer.slice_ref(..),
+                    );
+                }
             }
             Ok(())
         })?;
+        println!("{} triangles", triangle_count);
         Ok(vec![retval.finish()?])
     }
 }
