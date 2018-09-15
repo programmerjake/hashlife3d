@@ -15,6 +15,7 @@
 #![cfg_attr(not(test), no_main)]
 #[macro_use]
 extern crate enum_map;
+extern crate quantiles;
 extern crate voxels_image as image;
 extern crate voxels_math as math;
 extern crate voxels_renderer as renderer;

@@ -17,6 +17,7 @@ use block::{Block, BlockLighting, GlobalRenderProperties, LightLevel};
 use chunk_cache::ChunkCache;
 use hashtable::DefaultBuildHasher;
 use math::{self, Dot, Mappable, Reducible};
+use quantiles::ckms::CKMS;
 use registry::Registry;
 use renderer::*;
 use resources::images::tiles;
@@ -119,7 +120,7 @@ impl GameState {
             let angle = angle as f32 * (360.0f32.to_radians() / angle_step_count as f32);
             let solid_transform =
                 math::Mat4::<f32>::rotation(angle, math::Vec3::new(1.0, 0.0, 0.0));
-            let size = 5;
+            let size = 8;
             let chunk_size = (size as u32).next_power_of_two();
             for xc in -1..1 {
                 for yc in -1..1 {
@@ -232,12 +233,20 @@ pub struct RenderState<'a, D: Device> {
     last_fps_report_instant: Option<time::Instant>,
     frames_since_last_fps_report: u32,
     last_frame_instant: Option<time::Instant>,
+    frame_time_stats: CKMS<f64>,
     max_frame_duration: Option<time::Duration>,
     min_frame_duration: Option<time::Duration>,
 }
 
 fn duration_to_f64(v: time::Duration) -> f64 {
     v.as_secs() as f64 + 1e-9 * v.subsec_nanos() as f64
+}
+
+fn f64_to_duration(v: f64) -> time::Duration {
+    let secs = v.floor();
+    let nanos = ((v - secs) * 1e9).round() as u32;
+    let secs = v as u64;
+    time::Duration::new(secs, nanos)
 }
 
 impl<'a, D: Device> RenderState<'a, D> {
@@ -274,6 +283,7 @@ impl<'a, D: Device> RenderState<'a, D> {
             last_fps_report_instant: None,
             frames_since_last_fps_report: 0,
             last_frame_instant: None,
+            frame_time_stats: CKMS::new(1e-4),
             max_frame_duration: None,
             min_frame_duration: None,
         })
@@ -284,6 +294,15 @@ impl<'a, D: Device> RenderState<'a, D> {
         }
         if let Some(max_frame_duration) = self.max_frame_duration {
             println!("max frame duration: {:?}", max_frame_duration);
+        }
+        for &percentile in &[90, 95, 99] {
+            if let Some((_, value)) = self.frame_time_stats.query(percentile as f64 / 100.0) {
+                println!(
+                    "{}% frame duration: {:?}",
+                    percentile,
+                    f64_to_duration(value)
+                );
+            }
         }
     }
     pub fn into_device(self) -> D {
@@ -306,6 +325,8 @@ impl<'a, D: Device> RenderState<'a, D> {
                     Some(max_frame_duration) if max_frame_duration > frame_duration => {}
                     _ => self.max_frame_duration = Some(frame_duration),
                 }
+                self.frame_time_stats
+                    .insert(duration_to_f64(frame_duration));
             }
         }
         self.last_frame_instant = Some(current_instant);

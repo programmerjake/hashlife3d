@@ -38,6 +38,7 @@ voxels-image = { path = "voxels-image" }
 voxels-renderer = { path = "voxels-renderer" }
 voxels-resources = { path = "voxels-resources" }
 enum-map = "0.4"
+quantiles = "0.7"
 
 [profile.release]
 debug = true

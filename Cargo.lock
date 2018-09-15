@@ -233,6 +233,7 @@ name = "hashlife3d"
 version = "0.1.0"
 dependencies = [
  "enum-map 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quantiles 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "voxels-image 0.1.0",
  "voxels-math 0.1.0",
  "voxels-renderer 0.1.0",
@@ -347,6 +348,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "unicode-xid 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "quantiles"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "quasi"
@@ -762,6 +768,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum peeking_take_while 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
 "checksum pkg-config 0.3.13 (registry+https://github.com/rust-lang/crates.io-index)" = "104630aa1c83213cbc76db0703630fcb0421dac3585063be4ce9a8a2feeaa745"
 "checksum proc-macro2 0.4.18 (registry+https://github.com/rust-lang/crates.io-index)" = "afa4d377067cc02eb5e0b491d3f7cfbe145ad4da778535bfb13c444413dd35b9"
+"checksum quantiles 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)" = "c10fa813fb26fb6c321a6f3085b5ade4cb4730d08d0b9e70a3759136940957f2"
 "checksum quasi 0.32.0 (registry+https://github.com/rust-lang/crates.io-index)" = "18c45c4854d6d1cf5d531db97c75880feb91c958b0720f4ec1057135fec358b3"
 "checksum quasi_codegen 0.32.0 (registry+https://github.com/rust-lang/crates.io-index)" = "51b9e25fa23c044c1803f43ca59c98dac608976dd04ce799411edd58ece776d4"
 "checksum quote 0.6.8 (registry+https://github.com/rust-lang/crates.io-index)" = "dd636425967c33af890042c483632d33fa7a18f19ad1d7ea72e8998c6ef8dea5"
