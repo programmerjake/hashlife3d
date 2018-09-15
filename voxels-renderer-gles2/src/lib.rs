@@ -1300,6 +1300,7 @@ impl Drop for GLContextWrapper {
         unsafe {
             sdl::api::SDL_GL_DeleteContext(self.context);
         }
+        println!("OpenGL ES Context destroyed");
     }
 }
 
@@ -1847,8 +1848,9 @@ impl Device for GLES2Device {
                                     }
                                     for y_sub_image_index in 0..layout.sub_image_count_y {
                                         for x_sub_image_index in 0..layout.sub_image_count_x {
-                                            let staging_image_index = (device_image_index
-                                                * layout.sub_image_count_y as usize
+                                            let staging_image_index = (device_image_index * layout
+                                                .sub_image_count_y
+                                                as usize
                                                 + y_sub_image_index as usize)
                                                 * layout.sub_image_count_x as usize
                                                 + x_sub_image_index as usize;

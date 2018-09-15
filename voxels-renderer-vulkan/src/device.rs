@@ -106,6 +106,7 @@ macro_rules! make_device_wrapper {
                     self.vkDeviceWaitIdle.unwrap()(self.device);
                     self.vkDestroyDevice.unwrap()(self.device, null());
                 }
+                println!("Vulkan Device destroyed");
             }
         }
     };
