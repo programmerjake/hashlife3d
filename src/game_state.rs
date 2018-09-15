@@ -64,24 +64,33 @@ impl GameState {
             air_block_id,
             BlockLighting::new(LightLevel::MAX, LightLevel::MAX, LightLevel::MAX),
         );
-        let size = 20;
-        for x in -size..=size {
-            for y in -size..=size {
-                for z in -size..=size {
-                    let position = math::Vec3::new(x, y, z);
-                    world_state.set(
-                        &mut world,
-                        position,
-                        if position.dot(position) >= size * size {
-                            stone_block
-                        } else {
-                            air_block
-                        },
-                    );
+        {
+            let size = 20;
+            let chunk_size = (size as u32).next_power_of_two();
+            for xc in -1..1 {
+                for yc in -1..1 {
+                    for zc in -1..1 {
+                        let chunk_start =
+                            math::Vec3::new(xc, yc, zc) * math::Vec3::splat(chunk_size as i32);
+                        world_state.set_cube_pow2(
+                            &mut world,
+                            chunk_start,
+                            chunk_size,
+                            |position: math::Vec3<u32>, original: Block| {
+                                let position = position.map(|v| v as i32) + chunk_start;
+                                if position.map(|v| v.abs() > size).reduce(|a, b| a || b) {
+                                    return original;
+                                }
+                                if position.dot(position) >= size * size {
+                                    stone_block
+                                } else {
+                                    air_block
+                                }
+                            },
+                        );
+                    }
                 }
             }
-            println!("x={}", x);
-            world.gc();
         }
         let mut angle = 0;
         let angle_step_count = 60;
@@ -111,6 +120,36 @@ impl GameState {
             let solid_transform =
                 math::Mat4::<f32>::rotation(angle, math::Vec3::new(1.0, 0.0, 0.0));
             let size = 5;
+            let chunk_size = (size as u32).next_power_of_two();
+            for xc in -1..1 {
+                for yc in -1..1 {
+                    for zc in -1..1 {
+                        let chunk_start =
+                            math::Vec3::new(xc, yc, zc) * math::Vec3::splat(chunk_size as i32);
+                        world_state.set_cube_pow2(
+                            &mut world,
+                            chunk_start,
+                            chunk_size,
+                            |position: math::Vec3<u32>, original: Block| {
+                                let position = position.map(|v| v as i32) + chunk_start;
+                                if position.map(|v| v.abs() > size).reduce(|a, b| a || b) {
+                                    return original;
+                                }
+                                if position.dot(position) >= size * size
+                                    && (solid_transform * math::Vec4::new(
+                                        position.x, position.y, position.z, 1,
+                                    ).map(|v| v as f32)).reduce(|a, b| a * b)
+                                        > 0.0
+                                {
+                                    stone_block
+                                } else {
+                                    air_block
+                                }
+                            },
+                        );
+                    }
+                }
+            }
             for x in -size..=size {
                 for y in -size..=size {
                     for z in -size..=size {

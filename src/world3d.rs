@@ -504,7 +504,7 @@ impl<Block: BlockType> Node<Block> {
     fn get_cube_pow2(
         root: NonNull<Node<Block>>,
         position: math::Vec3<u32>,
-        result_size: u32,
+        cube_size: u32,
         stride: math::Vec3<usize>,
         result: &mut [Block],
     ) {
@@ -512,12 +512,12 @@ impl<Block: BlockType> Node<Block> {
         let size = get_size_from_level!(root.key.level());
         assert!(position.x < size && position.y < size && position.z < size);
         assert!(
-            position.x + result_size <= size
-                && position.y + result_size <= size
-                && position.z + result_size <= size
+            position.x + cube_size <= size
+                && position.y + cube_size <= size
+                && position.z + cube_size <= size
         );
         match &root.key {
-            NodeKey::Leaf(key) => if result_size == 1 {
+            NodeKey::Leaf(key) => if cube_size == 1 {
                 result[0] = key[position.x as usize][position.y as usize][position.z as usize]
             } else {
                 assert_eq!(position, math::Vec3::splat(0));
@@ -529,7 +529,7 @@ impl<Block: BlockType> Node<Block> {
                     }
                 }
             },
-            NodeKey::Nonleaf(key) => if result_size == size {
+            NodeKey::Nonleaf(key) => if cube_size == size {
                 assert_eq!(position, math::Vec3::splat(0));
                 for zi in 0..2 {
                     for yi in 0..2 {
@@ -548,12 +548,12 @@ impl<Block: BlockType> Node<Block> {
                     }
                 }
             } else {
-                assert!(result_size <= size / 2);
+                assert!(cube_size <= size / 2);
                 let index = position.map(|v| (v / (size / 2)) as usize);
                 Self::get_cube_pow2(
                     key.children[index.x][index.y][index.z],
                     position % math::Vec3::splat(size / 2),
-                    result_size,
+                    cube_size,
                     stride,
                     result,
                 );
@@ -615,6 +615,84 @@ impl<Block: BlockType> Node<Block> {
                 );
                 world.get(NodeKey::Nonleaf(new_key)).into()
             }
+        }
+    }
+    fn set_cube_pow2_without_expanding<
+        Step: StepFn<Block>,
+        H: BuildHasher,
+        F: FnMut(math::Vec3<u32>, Block) -> Block,
+    >(
+        root: NonNull<Node<Block>>,
+        position: math::Vec3<u32>,
+        cube_size: u32,
+        cube_offset: math::Vec3<u32>,
+        world: &mut World<Block, Step, H>,
+        f: &mut F,
+    ) -> NonNull<Node<Block>> {
+        let key = unsafe { root.as_ref().key };
+        let size = get_size_from_level!(key.level());
+        assert!(position.x < size && position.y < size && position.z < size);
+        assert!(
+            position.x + cube_size <= size
+                && position.y + cube_size <= size
+                && position.z + cube_size <= size
+        );
+        match key {
+            NodeKey::Leaf(mut key) => if cube_size == 1 {
+                key[position.x as usize][position.y as usize][position.z as usize] = f(
+                    cube_offset,
+                    key[position.x as usize][position.y as usize][position.z as usize],
+                );
+                world.get(NodeKey::Leaf(key)).into()
+            } else {
+                assert_eq!(position, math::Vec3::splat(0));
+                for z in 0..2 {
+                    for y in 0..2 {
+                        for x in 0..2 {
+                            key[x as usize][y as usize][z as usize] = f(
+                                cube_offset + math::Vec3::new(x, y, z),
+                                key[x as usize][y as usize][z as usize],
+                            );
+                        }
+                    }
+                }
+                world.get(NodeKey::Leaf(key)).into()
+            },
+            NodeKey::Nonleaf(mut key) => if cube_size == size {
+                assert_eq!(position, math::Vec3::splat(0));
+                for zi in 0..2 {
+                    for yi in 0..2 {
+                        for xi in 0..2 {
+                            let offset = math::Vec3::new(xi, yi, zi).map(|v| (v * (size / 2)));
+                            let child = &mut key.children[xi as usize][yi as usize][zi as usize];
+                            *child = Self::set_cube_pow2_without_expanding(
+                                *child,
+                                math::Vec3::splat(0),
+                                size / 2,
+                                cube_offset + offset,
+                                world,
+                                f,
+                            );
+                        }
+                    }
+                }
+                world.get(NodeKey::Nonleaf(key)).into()
+            } else {
+                assert!(cube_size <= size / 2);
+                let index = position.map(|v| (v / (size / 2)) as usize);
+                {
+                    let child = &mut key.children[index.x][index.y][index.z];
+                    *child = Self::set_cube_pow2_without_expanding(
+                        *child,
+                        position % math::Vec3::splat(size / 2),
+                        cube_size,
+                        cube_offset,
+                        world,
+                        f,
+                    );
+                }
+                world.get(NodeKey::Nonleaf(key)).into()
+            },
         }
     }
 }
@@ -724,6 +802,7 @@ impl<Block: BlockType, H: BuildHasher> Substate<Block, H> {
         let level = key.level();
         get_size_from_level!(level)
     }
+    #[allow(dead_code)]
     pub fn get(&self, position: math::Vec3<u32>) -> Block {
         let size = self.size();
         if position.x >= size || position.y >= size || position.z >= size {
@@ -735,23 +814,23 @@ impl<Block: BlockType, H: BuildHasher> Substate<Block, H> {
     pub fn get_cube_pow2(
         &self,
         position: math::Vec3<u32>,
-        result_size: u32,
+        cube_size: u32,
         stride: math::Vec3<usize>,
         result: &mut [Block],
     ) {
-        assert!(result_size.is_power_of_two());
+        assert!(cube_size.is_power_of_two());
         assert_eq!(
-            position & math::Vec3::splat(result_size - 1),
+            position & math::Vec3::splat(cube_size - 1),
             math::Vec3::splat(0)
         );
         let size = self.size();
-        assert!(result_size <= size);
+        assert!(cube_size <= size);
         if position.map(|v| v < size).reduce(|a, b| a && b) {
-            Node::get_cube_pow2(self.root, position, result_size, stride, result);
+            Node::get_cube_pow2(self.root, position, cube_size, stride, result);
         } else {
-            for rz in 0..result_size {
-                for ry in 0..result_size {
-                    for rx in 0..result_size {
+            for rz in 0..cube_size {
+                for ry in 0..cube_size {
+                    for rx in 0..cube_size {
                         result[math::Vec3::new(rx, ry, rz).map(|v| v as usize).dot(stride)] =
                             Default::default();
                     }
@@ -824,10 +903,6 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
             empty_state: empty_state,
         }
     }
-    pub fn get(&self, position: math::Vec3<i32>) -> Block {
-        self.state
-            .get(position.map(|v| (v as u32).wrapping_add(Self::OFFSET)))
-    }
     pub fn get_substate(&self, position: math::Vec3<i32>, size: u32) -> Substate<Block, H> {
         assert!(size >= 2);
         assert!(size.is_power_of_two());
@@ -851,11 +926,11 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         position: math::Vec3<i32>,
         block: Block,
     ) -> Self {
+        let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
         assert_eq!(
-            position.map(|v| (v as u32).wrapping_add(Self::OFFSET) < Self::MAX_LEVEL_SIZE),
+            position.map(|v| v < Self::MAX_LEVEL_SIZE),
             math::Vec3::splat(true)
         );
-        let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
         let root = Node::set_block_without_expanding(self.state.root, position, block, world);
         State::new_from_world(world, root)
     }
@@ -867,6 +942,37 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
     ) {
         assert!(self.state.shared_world_state == world.shared_world_state);
         *self = self.set_helper(world, position, block);
+    }
+    fn set_cube_pow2_helper<Step: StepFn<Block>, F: FnMut(math::Vec3<u32>, Block) -> Block>(
+        &self,
+        world: &mut World<Block, Step, H>,
+        position: math::Vec3<i32>,
+        cube_size: u32,
+        mut f: F,
+    ) -> Self {
+        assert!(cube_size.is_power_of_two());
+        assert!(cube_size <= Self::MAX_LEVEL_SIZE);
+        let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
+        assert_eq!(position.map(|v| v % cube_size), math::Vec3::splat(0));
+        let root = Node::set_cube_pow2_without_expanding(
+            self.state.root,
+            position,
+            cube_size,
+            math::Vec3::splat(0),
+            world,
+            &mut f,
+        );
+        State::new_from_world(world, root)
+    }
+    pub fn set_cube_pow2<Step: StepFn<Block>, F: FnMut(math::Vec3<u32>, Block) -> Block>(
+        &mut self,
+        world: &mut World<Block, Step, H>,
+        position: math::Vec3<i32>,
+        cube_size: u32,
+        f: F,
+    ) {
+        assert!(self.state.shared_world_state == world.shared_world_state);
+        *self = self.set_cube_pow2_helper(world, position, cube_size, f);
     }
     fn step_helper<Step: StepFn<Block>>(
         &self,
@@ -1065,17 +1171,19 @@ mod tests {
         offset: math::Vec3<i32>,
     ) -> State<Block, DefaultBuildHasher> {
         let mut state = State::create_empty(world);
-        for x in 0..TEST_SIZE {
-            for y in 0..TEST_SIZE {
-                for z in 0..TEST_SIZE {
-                    state.set(
-                        world,
-                        math::Vec3::new(x, y, z).map(|v| v as i32) + offset,
-                        encode_position(math::Vec3::new(x, y, z)),
-                    );
-                }
+        let set_position = math::Vec3::new(1, 2, 3);
+        state.set_cube_pow2(world, offset, TEST_SIZE, |position, block| {
+            assert_eq!(block, Default::default());
+            if position == set_position {
+                return !0 as Block;
             }
-        }
+            encode_position(position)
+        });
+        state.set(
+            world,
+            set_position.map(|v| v as i32) + offset,
+            encode_position(set_position),
+        );
         state
     }
 
@@ -1085,7 +1193,7 @@ mod tests {
             |neighborhood: &[[[Block; 3]; 3]; 3]| neighborhood[1][1][1],
             DefaultBuildHasher::new(),
         );
-        let offset = math::Vec3::splat(-(TEST_SIZE as i32) / 2);
+        let offset = -math::Vec3::splat(TEST_SIZE as i32);
         let state = create_test_state(&mut world, offset);
         let verify_subslice = |position: math::Vec3<u32>, size: u32| {
             verify_subslice(
