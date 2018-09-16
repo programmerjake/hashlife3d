@@ -415,6 +415,9 @@ impl<T: Eq + Hash, H: BuildHasher> HashTable<T, H> {
             node: None,
         }
     }
+    pub fn len(&self) -> usize {
+        self.size
+    }
     fn node_iter(&self) -> NodeIter<T> {
         NodeIter {
             table: &self.table,

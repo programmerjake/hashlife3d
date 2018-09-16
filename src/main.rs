@@ -16,6 +16,10 @@
 #[macro_use]
 extern crate enum_map;
 extern crate quantiles;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_test;
 extern crate voxels_image as image;
 extern crate voxels_math as math;
 extern crate voxels_renderer as renderer;

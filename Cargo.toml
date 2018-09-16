@@ -39,6 +39,9 @@ voxels-renderer = { path = "voxels-renderer" }
 voxels-resources = { path = "voxels-resources" }
 enum-map = "0.4"
 quantiles = "0.7"
+serde = "1.0"
+serde_derive = "1.0"
+serde_test = "1.0"
 
 [profile.release]
 debug = true

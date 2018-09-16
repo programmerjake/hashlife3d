@@ -14,13 +14,17 @@
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
 use hashtable::*;
 use math::{self, Dot, Mappable, Reducible};
+use serde::de::Error;
+use serde::{Deserialize, Deserializer};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::{Hash, Hasher};
+use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex};
+use std::u32;
 
 pub trait BlockType: Copy + Default + Eq + PartialEq + Hash + fmt::Debug {}
 
@@ -768,7 +772,7 @@ impl<Block: BlockType, H: BuildHasher> Clone for Substate<Block, H> {
 impl<Block: BlockType, H: BuildHasher> Substate<Block, H> {
     fn create_empty<Step: StepFn<Block>>(world: &mut World<Block, Step, H>) -> Self {
         let mut root: NonNull<Node<Block>> = world.get(Default::default()).into();
-        while unsafe { root.as_ref() }.key.level() < State::<Block, H>::MAX_LEVEL {
+        while unsafe { root.as_ref() }.key.level() < MAX_LEVEL {
             root = Node::expand_root(root, world);
         }
         Self::create_independent_reference(world.shared_world_state.clone(), root)
@@ -868,19 +872,17 @@ pub struct State<Block: BlockType, H: BuildHasher> {
     empty_state: Substate<Block, H>,
 }
 
+const MAX_LEVEL: u32 = 20;
+const MAX_LEVEL_SIZE: u32 = get_size_from_level!(MAX_LEVEL);
+
 impl<Block: BlockType, H: BuildHasher> State<Block, H> {
-    const MAX_LEVEL: u32 = 20;
-    const MAX_LEVEL_SIZE: u32 = get_size_from_level!(Self::MAX_LEVEL);
-    const OFFSET: u32 = Self::MAX_LEVEL_SIZE / 2;
+    const OFFSET: u32 = MAX_LEVEL_SIZE / 2;
     fn new(
         shared_world_state: Arc<SharedWorldState<Block, H>>,
         root: NonNull<Node<Block>>,
         empty_state: Substate<Block, H>,
     ) -> Self {
-        assert_eq!(
-            unsafe { root.as_ref() }.key.level(),
-            State::<Block, H>::MAX_LEVEL
-        );
+        assert_eq!(unsafe { root.as_ref() }.key.level(), MAX_LEVEL);
         Self {
             state: Substate::create_independent_reference(shared_world_state, root),
             empty_state: empty_state,
@@ -890,7 +892,7 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         world: &mut World<Block, Step, H>,
         mut root: NonNull<Node<Block>>,
     ) -> Self {
-        while unsafe { root.as_ref() }.key.level() < State::<Block, H>::MAX_LEVEL {
+        while unsafe { root.as_ref() }.key.level() < MAX_LEVEL {
             root = Node::expand_root(root, world);
         }
         let empty_state = Substate::create_empty(world);
@@ -903,16 +905,41 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
             empty_state: empty_state,
         }
     }
+    #[allow(dead_code)]
+    pub fn from<Step: StepFn<Block>>(
+        state: &SerializedState<Block>,
+        world: &mut World<Block, Step, H>,
+    ) -> Self {
+        let mut nodes: Vec<NonNull<Node<Block>>> = Vec::with_capacity(state.0.len());
+        for i in 0..state.0.len() {
+            let key = match &state.0[i] {
+                &SerializedNode::Leaf(key) => NodeKey::Leaf(key),
+                SerializedNode::Nonleaf(key) => unsafe {
+                    let mut retval_key = NodeKeyNonleaf {
+                        children: [[[NonNull::dangling(); 2]; 2]; 2],
+                        children_level: nodes[key[0][0][0].0 as usize].as_ref().key.level() as u8,
+                    };
+                    for (child, key) in retval_key.children.iter_mut().zip(key.iter()) {
+                        for (child, key) in child.iter_mut().zip(key.iter()) {
+                            for (child, key) in child.iter_mut().zip(key.iter()) {
+                                *child = nodes[key.0 as usize];
+                            }
+                        }
+                    }
+                    NodeKey::Nonleaf(retval_key)
+                },
+            };
+            nodes.push(world.get(key).into());
+        }
+        Self::new_from_world(world, *nodes.last().unwrap())
+    }
     pub fn get_substate(&self, position: math::Vec3<i32>, size: u32) -> Substate<Block, H> {
         assert!(size >= 2);
         assert!(size.is_power_of_two());
-        assert!(size <= Self::MAX_LEVEL_SIZE);
+        assert!(size <= MAX_LEVEL_SIZE);
         let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
         assert_eq!(position.map(|v| v % size), math::Vec3::splat(0));
-        if position
-            .map(|v| v >= Self::MAX_LEVEL_SIZE)
-            .reduce(|a, b| a || b)
-        {
+        if position.map(|v| v >= MAX_LEVEL_SIZE).reduce(|a, b| a || b) {
             self.empty_state
                 .clone()
                 .get_substate(math::Vec3::splat(0), size)
@@ -928,7 +955,7 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
     ) -> Self {
         let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
         assert_eq!(
-            position.map(|v| v < Self::MAX_LEVEL_SIZE),
+            position.map(|v| v < MAX_LEVEL_SIZE),
             math::Vec3::splat(true)
         );
         let root = Node::set_block_without_expanding(self.state.root, position, block, world);
@@ -951,7 +978,7 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         mut f: F,
     ) -> Self {
         assert!(cube_size.is_power_of_two());
-        assert!(cube_size <= Self::MAX_LEVEL_SIZE);
+        assert!(cube_size <= MAX_LEVEL_SIZE);
         let position = position.map(|v| (v as u32).wrapping_add(Self::OFFSET));
         assert_eq!(position.map(|v| v % cube_size), math::Vec3::splat(0));
         let root = Node::set_cube_pow2_without_expanding(
@@ -993,8 +1020,8 @@ impl<Block: BlockType, H: BuildHasher> State<Block, H> {
         }
         root = Node::expand_root(root, world);
         root = Node::compute_next(root, log2_generation_count, world);
-        if unsafe { root.as_ref() }.key.level() > State::<Block, H>::MAX_LEVEL {
-            root = Node::truncate_root_to(State::<Block, H>::MAX_LEVEL, root, world);
+        if unsafe { root.as_ref() }.key.level() > MAX_LEVEL {
+            root = Node::truncate_root_to(MAX_LEVEL, root, world);
         }
         State::new_from_world(world, root)
     }
@@ -1112,10 +1139,19 @@ impl<Block: BlockType, Step: StepFn<Block>, H: BuildHasher> World<Block, Step, H
                 }
             }
         }
-        nodes.retain(|node| match node.gc_state {
-            GcState::Reachable => true,
-            GcState::Unreachable => false,
+        let mut initial_node_count = 0usize;
+        let mut final_node_count = 0usize;
+        nodes.retain(|node| {
+            initial_node_count += 1;
+            match node.gc_state {
+                GcState::Reachable => {
+                    final_node_count += 1;
+                    true
+                }
+                GcState::Unreachable => false,
+            }
         });
+        println!("GC: {} -> {}", initial_node_count, final_node_count);
     }
 }
 
@@ -1127,9 +1163,143 @@ unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Send for Stat
 
 unsafe impl<Block: BlockType + Send + Sync, H: BuildHasher + Send> Sync for State<Block, H> {}
 
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct SerializedNodeIndex(pub u32);
+
+impl SerializedNodeIndex {
+    pub const MAX: SerializedNodeIndex = SerializedNodeIndex(u32::MAX);
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+pub enum SerializedNode<Block: BlockType> {
+    Leaf([[[Block; 2]; 2]; 2]),
+    Nonleaf([[[SerializedNodeIndex; 2]; 2]; 2]),
+}
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize)]
+#[serde(transparent)]
+pub struct SerializedState<Block: BlockType>(Vec<SerializedNode<Block>>);
+
+impl<'de, Block: BlockType + Deserialize<'de>> Deserialize<'de> for SerializedState<Block> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let nodes: Vec<SerializedNode<Block>> = Deserialize::deserialize(deserializer)?;
+        if nodes.len() as u64 > SerializedNodeIndex::MAX.0 as u64 {
+            return Err(Error::custom("too many nodes"));
+        }
+        if nodes.is_empty() {
+            return Err(Error::custom("no root node"));
+        }
+        let mut levels = Vec::<u8>::with_capacity(nodes.len());
+        for i in 0..nodes.len() {
+            let level = match &nodes[i] {
+                SerializedNode::Leaf(_) => 0,
+                SerializedNode::Nonleaf(key) => {
+                    let mut level = None;
+                    for key in key {
+                        for key in key {
+                            for key in key {
+                                if key.0 as u64 >= i as u64 {
+                                    return Err(Error::custom("node index out of range"));
+                                }
+                                let computed_level = levels[key.0 as usize] + 1;
+                                if computed_level as u32 > MAX_LEVEL {
+                                    return Err(Error::custom("node nested too deeply"));
+                                }
+                                if level == None {
+                                    level = Some(computed_level);
+                                } else if level != Some(computed_level) {
+                                    return Err(Error::custom("node children at different levels"));
+                                }
+                            }
+                        }
+                    }
+                    level.unwrap()
+                }
+            };
+            levels.push(level);
+        }
+        assert_eq!(levels.len(), nodes.len());
+        if *levels.last().unwrap() != MAX_LEVEL as u8 {
+            return Err(Error::custom("root node not nested deeply enough"));
+        }
+        mem::drop(levels);
+        let mut used = Vec::new();
+        used.resize(nodes.len(), false);
+        *used.last_mut().unwrap() = true;
+        for i in (0..nodes.len()).rev() {
+            if !used[i] {
+                return Err(Error::custom("node is unused"));
+            }
+            if let SerializedNode::Nonleaf(key) = &nodes[i] {
+                for key in key {
+                    for key in key {
+                        for key in key {
+                            used[key.0 as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(SerializedState(nodes))
+    }
+}
+
+impl<Block: BlockType> SerializedState<Block> {
+    fn from_node(root: NonNull<Node<Block>>) -> Self {
+        let mut nodes = Vec::new();
+        let mut nodes_map = HashMap::new();
+        fn serialize_node<Block: BlockType>(
+            node: NonNull<Node<Block>>,
+            nodes_map: &mut HashMap<NonNull<Node<Block>>, SerializedNodeIndex>,
+            nodes: &mut Vec<SerializedNode<Block>>,
+        ) -> SerializedNodeIndex {
+            if let Some(&value) = nodes_map.get(&node) {
+                value
+            } else {
+                let key = match unsafe { &node.as_ref().key } {
+                    &NodeKey::Leaf(key) => SerializedNode::Leaf(key),
+                    NodeKey::Nonleaf(key) => {
+                        let mut new_key = [[[SerializedNodeIndex(0); 2]; 2]; 2];
+                        for (new_key, key) in new_key.iter_mut().zip(key.children.iter()) {
+                            for (new_key, key) in new_key.iter_mut().zip(key.iter()) {
+                                for (new_key, &key) in new_key.iter_mut().zip(key.iter()) {
+                                    *new_key = serialize_node(key, nodes_map, nodes);
+                                }
+                            }
+                        }
+                        SerializedNode::Nonleaf(new_key)
+                    }
+                };
+                let retval = nodes.len();
+                assert!(retval as u64 <= SerializedNodeIndex::MAX.0 as u64);
+                let retval = SerializedNodeIndex(retval as u32);
+                use std::collections::hash_map::Entry::Vacant;
+                if let Vacant(entry) = nodes_map.entry(node) {
+                    entry.insert(retval);
+                } else {
+                    unreachable!()
+                }
+                nodes.push(key);
+                retval
+            }
+        }
+        serialize_node(root, &mut nodes_map, &mut nodes);
+        SerializedState(nodes)
+    }
+}
+
+impl<'a, Block: BlockType, H: BuildHasher> From<&'a State<Block, H>> for SerializedState<Block> {
+    fn from(state: &'a State<Block, H>) -> SerializedState<Block> {
+        Self::from_node(state.state.root)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_test::{assert_tokens, Token};
     type Block = u32;
 
     const TEST_SIZE: u32 = 1 << 3;
@@ -1277,5 +1447,101 @@ mod tests {
             math::Vec3::new(TEST_SIZE / 2, TEST_SIZE / 2, TEST_SIZE / 2),
             TEST_SIZE / 2,
         );
+    }
+
+    #[test]
+    fn test_serde() {
+        let mut world = World::new(
+            |neighborhood: &[[[Block; 3]; 3]; 3]| neighborhood[1][1][1],
+            DefaultBuildHasher::new(),
+        );
+        let mut state = State::create_empty(&mut world);
+        state.set(&mut world, math::Vec3::new(1, 2, 3), 1 as Block);
+        let serialized_state = SerializedState::from(&state);
+        assert_eq!(state, State::from(&serialized_state, &mut world));
+        let mut tokens = Vec::new();
+        tokens.push(Token::Seq { len: Some(41) });
+        {
+            let mut push_node = |node: SerializedNode<Block>| match node {
+                SerializedNode::Leaf(node) => tokens.extend_from_slice(&[
+                    Token::NewtypeVariant {
+                        name: "SerializedNode",
+                        variant: "Leaf",
+                    },
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[0][0][0]),
+                    Token::U32(node[0][0][1]),
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[0][1][0]),
+                    Token::U32(node[0][1][1]),
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[1][0][0]),
+                    Token::U32(node[1][0][1]),
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[1][1][0]),
+                    Token::U32(node[1][1][1]),
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                ]),
+                SerializedNode::Nonleaf(node) => tokens.extend_from_slice(&[
+                    Token::NewtypeVariant {
+                        name: "SerializedNode",
+                        variant: "Nonleaf",
+                    },
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[0][0][0].0),
+                    Token::U32(node[0][0][1].0),
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[0][1][0].0),
+                    Token::U32(node[0][1][1].0),
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[1][0][0].0),
+                    Token::U32(node[1][0][1].0),
+                    Token::TupleEnd,
+                    Token::Tuple { len: 2 },
+                    Token::U32(node[1][1][0].0),
+                    Token::U32(node[1][1][1].0),
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                    Token::TupleEnd,
+                ]),
+            };
+            push_node(SerializedNode::Leaf([[[0; 2]; 2]; 2]));
+            let sni = |v| SerializedNodeIndex(v);
+            for i in 0..19 {
+                push_node(SerializedNode::Nonleaf([[[sni(i); 2]; 2]; 2]));
+            }
+            push_node(SerializedNode::Leaf([[[0, 0], [0, 0]], [[0, 1], [0, 0]]]));
+            push_node(SerializedNode::Nonleaf([
+                [[sni(0), sni(0)], [sni(0), sni(20)]],
+                [[sni(0), sni(0)], [sni(0), sni(0)]],
+            ]));
+            for i in 1..19 {
+                push_node(SerializedNode::Nonleaf([
+                    [[sni(20 + i), sni(i)], [sni(i), sni(i)]],
+                    [[sni(i), sni(i)], [sni(i), sni(i)]],
+                ]));
+            }
+            push_node(SerializedNode::Nonleaf([
+                [[sni(19), sni(19)], [sni(19), sni(19)]],
+                [[sni(19), sni(19)], [sni(19), sni(39)]],
+            ]));
+        }
+        tokens.push(Token::SeqEnd);
+        assert_tokens(&serialized_state, &tokens);
     }
 }
