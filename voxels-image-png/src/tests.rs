@@ -28,13 +28,13 @@ struct HashedImage {
 impl<'a> From<&'a Image> for HashedImage {
     fn from(image: &'a Image) -> Self {
         let mut hasher = CrcHasher::default();
-        for pixel in image.get_pixels() {
+        for pixel in image.get_pixels().as_ref().as_ref() {
             let pixel: [u8; 4] = pixel.into();
             hasher.write(&pixel);
         }
         Self {
-            width: image.width(),
-            height: image.height(),
+            width: image.dimensions().x,
+            height: image.dimensions().y,
             crc: hasher.finish() as u32,
         }
     }
@@ -53,12 +53,14 @@ fn test_load_png(bytes: &[u8]) -> Result<Image, ImageLoadError> {
     for byte_count in 0..bytes.len() {
         assert!(
             get_image_loader()
-                .load(&mut io::Cursor::new(&bytes[..byte_count]))
-                .is_err()
+                .load(
+                    &mut io::Cursor::new(&bytes[..byte_count]),
+                    DefaultPixelBufferFactory
+                ).is_err()
         );
     }
     get_image_loader()
-        .load(&mut io::Cursor::new(bytes))
+        .load(&mut io::Cursor::new(bytes), DefaultPixelBufferFactory)
         .map_err(|err| ImageLoadError(Some(Rc::new(err))))
 }
 

@@ -50,7 +50,8 @@ fn main() -> Result<(), String> {
         .clang_arg(target.clone())
         .prepend_enum_name(false)
         .constified_enum(".*")
-        .unstable_rust(true);
+        .unstable_rust(true)
+        .generate_comments(false);
 
     for path in &include_paths {
         bindings = bindings.clang_arg(format!("-I{}", path));
