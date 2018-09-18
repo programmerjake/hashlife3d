@@ -1066,6 +1066,12 @@ pub fn submit_loader_command_buffers(
     Ok(fence)
 }
 
+unsafe fn debug_device_wait_idle(device: &DeviceWrapper) {
+    if true {
+        device.vkDeviceWaitIdle.unwrap()(device.device);
+    }
+}
+
 pub unsafe fn render_frame(
     vulkan_device: &mut VulkanDevice,
     clear_color: math::Vec4<f32>,
@@ -1360,6 +1366,7 @@ pub unsafe fn render_frame(
             render_completed_semaphore,
         ) {
             (Some(image_index), Some(image_acquired_fence), Some(render_completed_semaphore)) => {
+                debug_device_wait_idle(device);
                 match device.vkQueuePresentKHR.unwrap()(
                     vulkan_device.present_queue,
                     &api::VkPresentInfoKHR {
