@@ -135,7 +135,7 @@ impl Drop for SwapchainWrapper {
 
 struct SwapchainState {
     swapchain: SwapchainWrapper,
-    dimensions: (u32, u32),
+    dimensions: math::Vec2<u32>,
     framebuffers: Vec<FramebufferWrapper>,
 }
 
@@ -147,6 +147,7 @@ pub struct VulkanDevice {
     swapchain: Option<Arc<SwapchainState>>,
     in_progress_operations: VecDeque<VulkanFence>,
     in_progress_present_semaphores: VecDeque<SemaphoreWrapper>,
+    last_dimensions: math::Vec2<u32>,
 }
 
 mod shader_module {
@@ -935,7 +936,7 @@ impl VulkanDevice {
     fn create_swapchain_with_dimensions(
         &self,
         previous_swapchain: Option<Arc<SwapchainState>>,
-        dimensions: (u32, u32),
+        dimensions: math::Vec2<u32>,
     ) -> Result<SwapchainState> {
         let device = self.device_reference.device.clone();
         let mut swapchain = null_or_zero();
@@ -960,8 +961,8 @@ impl VulkanDevice {
                         .surface_format
                         .colorSpace,
                     imageExtent: api::VkExtent2D {
-                        width: dimensions.0,
-                        height: dimensions.1,
+                        width: dimensions.x,
+                        height: dimensions.y,
                     },
                     imageArrayLayers: 1,
                     imageUsage: api::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -1035,8 +1036,8 @@ impl VulkanDevice {
                 ImageWrapper::new_depth(
                     device.clone(),
                     self.surface_state.as_ref().unwrap().depth_format,
-                    dimensions.0,
-                    dimensions.1,
+                    dimensions.x,
+                    dimensions.y,
                 )?.allocate_and_bind_memory(
                     &*self.device_reference.device_memory_pools,
                     None,
@@ -1138,8 +1139,8 @@ impl VulkanDevice {
                             .render_pass,
                         attachmentCount: image_views.len() as u32,
                         pAttachments: image_view_handles.as_ptr(),
-                        width: dimensions.0,
-                        height: dimensions.1,
+                        width: dimensions.x,
+                        height: dimensions.y,
                         layers: 1,
                     },
                     null(),
@@ -1160,27 +1161,6 @@ impl VulkanDevice {
             framebuffers: framebuffers,
             dimensions: dimensions,
         })
-    }
-    fn create_swapchain(
-        &self,
-        previous_swapchain: Option<Arc<SwapchainState>>,
-    ) -> Result<Option<SwapchainState>> {
-        let mut dimensions = (0, 0);
-        unsafe {
-            sdl::api::SDL_Vulkan_GetDrawableSize(
-                self.get_window().get(),
-                &mut dimensions.0,
-                &mut dimensions.1,
-            );
-        }
-        let dimensions = match dimensions {
-            (0, _) | (_, 0) => return Ok(None),
-            dimensions => (dimensions.0 as u32, dimensions.1 as u32),
-        };
-        Ok(Some(self.create_swapchain_with_dimensions(
-            previous_swapchain,
-            dimensions,
-        )?))
     }
     fn free_finished_objects(&mut self) -> Result<()> {
         loop {
@@ -1344,14 +1324,22 @@ impl Device for VulkanDevice {
             swapchain: None,
             in_progress_operations: VecDeque::new(),
             in_progress_present_semaphores: VecDeque::new(),
+            last_dimensions: math::Vec2::new(640, 480),
         };
         retval.device_reference.graphics_pipeline =
             Some(Arc::new(retval.create_graphics_pipeline()?));
-        retval.swapchain = retval.create_swapchain(None)?.map(|v| Arc::new(v));
+        if let Some(dimensions) = unsafe { update_last_dimensions(&mut retval)? } {
+            retval.swapchain = Some(Arc::new(
+                retval.create_swapchain_with_dimensions(None, dimensions)?,
+            ));
+        }
         return Ok(retval);
     }
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.as_ref().unwrap().window
+    }
+    fn get_dimensions(&self) -> math::Vec2<u32> {
+        self.last_dimensions
     }
     fn get_device_ref(&self) -> &VulkanDeviceReference {
         &self.device_reference

@@ -12,14 +12,12 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-use super::api;
+use super::{api, get_error, SDLError};
 use std::ffi::*;
 use std::os::raw::*;
 use std::ptr::null_mut;
 
 pub struct Window(*mut api::SDL_Window);
-
-unsafe impl Sync for Window {}
 
 impl Window {
     pub fn new<T: Into<String>>(
@@ -27,7 +25,7 @@ impl Window {
         position: Option<(i32, i32)>,
         size: (u32, u32),
         flags: u32,
-    ) -> Result<Self, super::SDLError> {
+    ) -> Result<Self, SDLError> {
         let title = title.into();
         let title = CString::new(title).unwrap();
         let position = match position {
@@ -47,7 +45,7 @@ impl Window {
                 flags,
             );
             if window == null_mut() {
-                Err(super::get_error())
+                Err(get_error())
             } else {
                 Ok(Window(window))
             }

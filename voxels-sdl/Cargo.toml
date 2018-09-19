@@ -10,9 +10,6 @@ crate-type = ["rlib"]
 bindgen = "0.29.1"
 pkg-config = "0.3.12"
 
-[dependencies]
-libc = "0.2"
-
 [features]
 default = []
 weak_main = []

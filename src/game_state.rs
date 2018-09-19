@@ -94,7 +94,7 @@ impl GameState {
             }
         }
         let mut angle = 0;
-        let angle_step_count = 60;
+        let angle_step_count = 20;
         loop {
             while let Ok(event) = event_receiver.try_recv() {
                 println!("event: {:?}", event);
@@ -120,7 +120,7 @@ impl GameState {
             let angle = angle as f32 * (360.0f32.to_radians() / angle_step_count as f32);
             let solid_transform =
                 math::Mat4::<f32>::rotation(angle, math::Vec3::new(1.0, 0.0, 0.0));
-            let size = 8;
+            let size = 4;
             let chunk_size = (size as u32).next_power_of_two();
             for xc in -1..1 {
                 for yc in -1..1 {
@@ -362,7 +362,7 @@ impl<'a, D: Device> RenderState<'a, D> {
         }
         if true {
             view_transform = view_transform.rotate(
-                (((elapsed_time * 60.0) % 360.0) as f32).to_radians(),
+                (((elapsed_time * 10.0) % 360.0) as f32).to_radians(),
                 math::Vec3::new(0.0, 1.0, 0.0),
             );
         }
@@ -371,11 +371,18 @@ impl<'a, D: Device> RenderState<'a, D> {
         let render_command_buffers = self
             .chunk_cache
             .get_render_command_buffers(math::Vec3::new(0.0, 0.0, 0.0), 128.0)?;
+        let dimensions = self.device.get_dimensions().map(|v| v as f32);
+        let dimensions = dimensions / math::Vec2::splat(dimensions.x.min(dimensions.y));
         let near = 0.1;
         let far = 100.0;
-        let final_transform =
-            math::Mat4::<f32>::perspective_projection(-near, near, -near, near, near, far)
-                * view_transform;
+        let final_transform = math::Mat4::<f32>::perspective_projection(
+            -near * dimensions.x,
+            near * dimensions.x,
+            -near * dimensions.y,
+            near * dimensions.y,
+            near,
+            far,
+        ) * view_transform;
         self.device.render_frame(
             math::Vec4::new(0.0, 0.0, 0.0, 1.0),
             &mut loader_command_buffers,

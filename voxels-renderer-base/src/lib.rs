@@ -16,9 +16,12 @@ extern crate num_traits;
 extern crate voxels_image as image;
 extern crate voxels_math as math;
 extern crate voxels_sdl as sdl;
+use math::Mappable;
 use std::error;
+use std::fmt;
 use std::marker::PhantomData;
 use std::ops;
+use std::u8;
 
 /// for N textures, ranges from 1 to N, with 0 reserved for not using a texture
 pub type TextureId = u16;
@@ -47,6 +50,30 @@ impl VertexBufferElement {
             texture_coord: texture_coord.into(),
             texture_id: texture_id,
         }
+    }
+}
+
+impl fmt::Debug for VertexBufferElement {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let position = math::Vec3::new(self.position[0], self.position[1], self.position[2]);
+        let color = math::Vec4::new(self.color[0], self.color[1], self.color[2], self.color[3]);
+        let texture_coord = math::Vec2::new(self.texture_coord[0], self.texture_coord[1]);
+        struct TextureIdWrapper(TextureId);
+        impl fmt::Debug for TextureIdWrapper {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                if self.0 == NO_TEXTURE {
+                    f.write_str("NO_TEXTURE")
+                } else {
+                    self.0.fmt(f)
+                }
+            }
+        }
+        f.debug_struct("VertexBufferElement")
+            .field("position", &position)
+            .field("color", &color.map(|v| v as f32 / u8::MAX as f32))
+            .field("texture_coord", &texture_coord)
+            .field("texture_id", &TextureIdWrapper(self.texture_id))
+            .finish()
     }
 }
 
@@ -584,6 +611,7 @@ pub trait Device: Sized {
     fn pause(self) -> Self::PausedDevice;
     fn resume(paused_device: Self::PausedDevice) -> Result<Self, Self::Error>;
     fn get_window(&self) -> &sdl::window::Window;
+    fn get_dimensions(&self) -> math::Vec2<u32>;
     fn get_device_ref(&self) -> &Self::Reference;
     fn submit_loader_command_buffers(
         &mut self,

@@ -19,7 +19,7 @@ use registry;
 mod block_definition {
     use enum_map::EnumMap;
     use geometry::Mesh;
-    use math::{self, Mappable};
+    use math::{self, Dot, Mappable};
     use registry;
     use registry::Registry;
     use std::fmt;
@@ -428,34 +428,19 @@ mod block_definition {
                     mesh.add_cube_face(
                         position.map(|v| v as f32),
                         |vertex_position| {
-                            lighting.get_face_vertex_color(
+                            let retval = lighting.get_face_vertex_color(
                                 vertex_position.map(|v| v as f32),
                                 block_face,
                                 math::Vec4::splat(1.0),
-                            )
+                                math::Vec3::<i32>::from(block_face).map(|v| v as f32),
+                            );
+                            retval
                         },
                         texture,
                         block_face,
                     );
                 }
             }
-            mesh.add_cube(
-                position.map(|v| v as f32),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                math::Vec4::splat(0xFF),
-                textures[BlockFace::NX],
-                textures[BlockFace::PX],
-                textures[BlockFace::NY],
-                textures[BlockFace::PY],
-                textures[BlockFace::NZ],
-                textures[BlockFace::PZ],
-            )
         }
     }
 
@@ -779,24 +764,36 @@ mod block_definition {
                 ),
             }
         }
-        fn get_vertex_color_helper(factor: f32, color: math::Vec4<f32>) -> math::Vec4<u8> {
-            (color.map(|v| v.max(0.0).min(1.0)) * math::Vec4::splat(factor * u8::MAX as f32))
-                .map(|v| v.round() as u8)
+        fn get_vertex_color_helper(
+            factor: f32,
+            color: math::Vec4<f32>,
+            normal: math::Vec3<f32>,
+        ) -> math::Vec4<u8> {
+            let factor = factor * (0.84 + normal.dot(math::Vec3::new(0.05f32, 0.15, 0.02)));
+            let mut factor = math::Vec4::splat(factor * u8::MAX as f32);
+            factor.w = u8::MAX as f32;
+            (color.map(|v| v.max(0.0).min(1.0)) * factor).map(|v| v.round() as u8)
         }
         pub fn get_face_vertex_color(
             &self,
             position: math::Vec3<f32>,
             block_face: BlockFace,
             color: math::Vec4<f32>,
+            normal: math::Vec3<f32>,
         ) -> math::Vec4<u8> {
-            Self::get_vertex_color_helper(self.get_face_vertex_factor(position, block_face), color)
+            Self::get_vertex_color_helper(
+                self.get_face_vertex_factor(position, block_face),
+                color,
+                normal,
+            )
         }
         pub fn get_center_vertex_color(
             &self,
             position: math::Vec3<f32>,
             color: math::Vec4<f32>,
+            normal: math::Vec3<f32>,
         ) -> math::Vec4<u8> {
-            Self::get_vertex_color_helper(self.get_center_vertex_factor(position), color)
+            Self::get_vertex_color_helper(self.get_center_vertex_factor(position), color, normal)
         }
     }
 

@@ -683,7 +683,7 @@ enum RenderCommand {
 
 #[derive(Copy, Clone)]
 struct VulkanRenderCommandBufferGeneratedStateKey {
-    dimensions: (u32, u32),
+    dimensions: math::Vec2<u32>,
     final_transform: math::Mat4<f32>,
 }
 
@@ -767,8 +767,8 @@ impl VulkanRenderCommandBufferState {
             &api::VkViewport {
                 x: 0.0,
                 y: 0.0,
-                width: key.dimensions.0 as f32,
-                height: key.dimensions.1 as f32,
+                width: key.dimensions.x as f32,
+                height: key.dimensions.y as f32,
                 minDepth: 0.0,
                 maxDepth: 1.0,
             },
@@ -780,8 +780,8 @@ impl VulkanRenderCommandBufferState {
             &api::VkRect2D {
                 offset: api::VkOffset2D { x: 0, y: 0 },
                 extent: api::VkExtent2D {
-                    width: key.dimensions.0,
-                    height: key.dimensions.1,
+                    width: key.dimensions.x,
+                    height: key.dimensions.y,
                 },
             },
         );
@@ -1067,18 +1067,14 @@ pub fn submit_loader_command_buffers(
 }
 
 unsafe fn debug_device_wait_idle(device: &DeviceWrapper) {
-    if true {
+    if false {
         device.vkDeviceWaitIdle.unwrap()(device.device);
     }
 }
 
-pub unsafe fn render_frame(
+pub unsafe fn update_last_dimensions(
     vulkan_device: &mut VulkanDevice,
-    clear_color: math::Vec4<f32>,
-    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
-    render_command_buffer_groups: &[RenderCommandBufferGroup<VulkanRenderCommandBuffer>],
-) -> Result<VulkanFence> {
-    vulkan_device.free_finished_objects()?;
+) -> Result<Option<math::Vec2<u32>>> {
     let mut sdl_dimensions = (0, 0);
     sdl::api::SDL_Vulkan_GetDrawableSize(
         vulkan_device.get_window().get(),
@@ -1089,15 +1085,6 @@ pub unsafe fn render_frame(
         (0, _) | (_, 0) => None,
         sdl_dimensions => Some((sdl_dimensions.0 as u32, sdl_dimensions.1 as u32)),
     };
-    let swapchain = match vulkan_device.swapchain.clone() {
-        Some(swapchain) => swapchain,
-        None => return submit_loader_command_buffers(vulkan_device, loader_command_buffers),
-    };
-    let graphics_pipeline = vulkan_device
-        .device_reference
-        .graphics_pipeline
-        .as_ref()
-        .unwrap();
     let device = &vulkan_device.device_reference.device;
     // query dimensions from Vulkan to make vulkan layers happy
     let mut physical_device_surface_capabilities = mem::zeroed();
@@ -1131,6 +1118,32 @@ pub unsafe fn render_frame(
             _ => Some(vulkan_dimensions),
         };
     }
+    if let Some(dimensions) = sdl_dimensions {
+        vulkan_device.last_dimensions = math::Vec2::new(dimensions.0, dimensions.1);
+        Ok(Some(vulkan_device.last_dimensions))
+    } else {
+        Ok(None)
+    }
+}
+
+pub unsafe fn render_frame(
+    vulkan_device: &mut VulkanDevice,
+    clear_color: math::Vec4<f32>,
+    loader_command_buffers: &mut Vec<VulkanLoaderCommandBuffer>,
+    render_command_buffer_groups: &[RenderCommandBufferGroup<VulkanRenderCommandBuffer>],
+) -> Result<VulkanFence> {
+    vulkan_device.free_finished_objects()?;
+    let dimensions = update_last_dimensions(vulkan_device)?;
+    let swapchain = match vulkan_device.swapchain.clone() {
+        Some(swapchain) => swapchain,
+        None => return submit_loader_command_buffers(vulkan_device, loader_command_buffers),
+    };
+    let graphics_pipeline = vulkan_device
+        .device_reference
+        .graphics_pipeline
+        .as_ref()
+        .unwrap();
+    let device = &vulkan_device.device_reference.device;
     let image_acquired_semaphore = SemaphoreWrapper::new(device.clone())?;
     let image_acquired_fence = FenceWrapper::new(device.clone(), FenceState::Unsignaled)?;
     let mut image_index = 0;
@@ -1155,7 +1168,7 @@ pub unsafe fn render_frame(
     ) {
         api::VK_SUCCESS => Ok(AcquireImageResults {
             image_index: Some(image_index as usize),
-            need_new_swapchain: Some(swapchain.dimensions) != sdl_dimensions,
+            need_new_swapchain: Some(swapchain.dimensions) != dimensions,
             image_acquired_semaphore: Some(image_acquired_semaphore),
             image_acquired_fence: Some(image_acquired_fence),
         }),
@@ -1174,12 +1187,12 @@ pub unsafe fn render_frame(
         result => Err(VulkanError::VulkanError(result)),
     }?;
     if need_new_swapchain {
-        vulkan_device.swapchain = match sdl_dimensions {
-            Some(sdl_dimensions) => {
+        vulkan_device.swapchain = match dimensions {
+            Some(dimensions) => {
                 let last_swapchain = vulkan_device.swapchain.take();
                 Some(Arc::new(vulkan_device.create_swapchain_with_dimensions(
                     last_swapchain,
-                    sdl_dimensions,
+                    dimensions,
                 )?))
             }
             None => None,
@@ -1244,8 +1257,8 @@ pub unsafe fn render_frame(
                     renderArea: api::VkRect2D {
                         offset: api::VkOffset2D { x: 0, y: 0 },
                         extent: api::VkExtent2D {
-                            width: swapchain.dimensions.0,
-                            height: swapchain.dimensions.1,
+                            width: swapchain.dimensions.x,
+                            height: swapchain.dimensions.y,
                         },
                     },
                     clearValueCount: clear_values.len() as u32,

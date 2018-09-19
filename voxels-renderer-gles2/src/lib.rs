@@ -1336,7 +1336,7 @@ pub struct GLES2Device {
     image_deallocate_channel_receiver: mpsc::Receiver<api::GLuint>,
     shader_attribute_locations: ShaderAttributeLocations,
     shader_uniform_locations: ShaderUniformLocations,
-    last_surface_dimensions: Option<(u32, u32)>,
+    last_surface_dimensions: math::Vec2<u32>,
 }
 
 impl GLES2Device {
@@ -1443,6 +1443,7 @@ impl Device for GLES2Device {
             let shader_attribute_locations;
             let shader_uniform_locations;
             let mut max_image_size;
+            let surface_dimensions;
             {
                 let api = &gl_context.api;
                 match color_space {
@@ -1615,6 +1616,20 @@ impl Device for GLES2Device {
                 max_image_size = 0;
                 api.glGetIntegerv.unwrap()(api::GL_MAX_TEXTURE_SIZE, &mut max_image_size);
                 assert!(max_image_size > 0 && (max_image_size as u32).is_power_of_two());
+                let mut sdl_dimensions = (0, 0);
+                sdl::api::SDL_GL_GetDrawableSize(
+                    window.get(),
+                    &mut sdl_dimensions.0,
+                    &mut sdl_dimensions.1,
+                );
+                surface_dimensions =
+                    math::Vec2::new(sdl_dimensions.0 as u32, sdl_dimensions.1 as u32);
+                api.glViewport.unwrap()(
+                    0,
+                    0,
+                    surface_dimensions.x as api::GLsizei,
+                    surface_dimensions.y as api::GLsizei,
+                );
             }
             let (buffer_deallocate_channel_sender, buffer_deallocate_channel_receiver) =
                 mpsc::channel();
@@ -1635,7 +1650,7 @@ impl Device for GLES2Device {
                 image_deallocate_channel_receiver: image_deallocate_channel_receiver,
                 shader_attribute_locations: shader_attribute_locations,
                 shader_uniform_locations: shader_uniform_locations,
-                last_surface_dimensions: None,
+                last_surface_dimensions: surface_dimensions,
             })
         }
     }
@@ -1644,6 +1659,9 @@ impl Device for GLES2Device {
     }
     fn get_window(&self) -> &sdl::window::Window {
         &self.surface_state.window
+    }
+    fn get_dimensions(&self) -> math::Vec2<u32> {
+        self.last_surface_dimensions
     }
     fn submit_loader_command_buffers(
         &mut self,
@@ -1909,15 +1927,15 @@ impl Device for GLES2Device {
                 &mut sdl_dimensions.0,
                 &mut sdl_dimensions.1,
             );
-            let sdl_dimensions = (sdl_dimensions.0 as u32, sdl_dimensions.1 as u32);
-            if Some(sdl_dimensions) != self.last_surface_dimensions {
-                self.last_surface_dimensions = Some(sdl_dimensions);
+            let sdl_dimensions = math::Vec2::new(sdl_dimensions.0 as u32, sdl_dimensions.1 as u32);
+            if sdl_dimensions != self.last_surface_dimensions {
+                self.last_surface_dimensions = sdl_dimensions;
                 let api = &self.gl_context.api;
                 api.glViewport.unwrap()(
                     0,
                     0,
-                    sdl_dimensions.0 as api::GLsizei,
-                    sdl_dimensions.1 as api::GLsizei,
+                    sdl_dimensions.x as api::GLsizei,
+                    sdl_dimensions.y as api::GLsizei,
                 );
             }
             let fence = self.submit_loader_command_buffers(loader_command_buffers)?;
