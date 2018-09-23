@@ -19,6 +19,7 @@ authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
 [workspace]
 members = [
+    "voxels-base",
     "voxels-image",
     "voxels-image-base",
     "voxels-image-png",
@@ -33,6 +34,7 @@ members = [
 
 [dependencies]
 voxels-sdl = { path = "voxels-sdl", features = ["no_main"] }
+voxels-base = { path = "voxels-base" }
 voxels-math = { path = "voxels-math" }
 voxels-image = { path = "voxels-image" }
 voxels-renderer = { path = "voxels-renderer" }

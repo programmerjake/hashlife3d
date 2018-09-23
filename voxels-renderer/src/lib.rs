@@ -17,7 +17,7 @@ extern crate voxels_renderer_gles2 as gles2;
 extern crate voxels_renderer_vulkan as vulkan;
 extern crate voxels_sdl as sdl;
 
-use std::error;
+use std::io;
 
 pub use renderer::*;
 
@@ -25,19 +25,14 @@ pub trait MainLoop {
     fn startup<DF: DeviceFactory>(
         &self,
         device_factory: DF,
-    ) -> Result<DF::PausedDevice, Box<error::Error>> {
-        device_factory
-            .create("", None, (640, 480), 0)
-            .map_err(|v| Box::new(v).into())
+    ) -> Result<DF::PausedDevice, DF::Error> {
+        device_factory.create("", None, (640, 480), 0)
     }
     fn main_loop<PD: PausedDevice>(self, paused_device: PD, event_source: &sdl::event::EventSource);
 }
 
 pub enum BackendRunResult<ML: MainLoop> {
-    StartupFailed {
-        error: Box<error::Error>,
-        main_loop: ML,
-    },
+    StartupFailed { error: io::Error, main_loop: ML },
     RanMainLoop,
 }
 
@@ -82,7 +77,7 @@ pub fn for_each_backend<BV: BackendVisitor>(backend_visitor: &mut BV) -> Backend
                             BackendRunResult::RanMainLoop
                         }
                         Err(error) => BackendRunResult::StartupFailed {
-                            error: error,
+                            error: error.to_io_error(),
                             main_loop: main_loop,
                         },
                     }

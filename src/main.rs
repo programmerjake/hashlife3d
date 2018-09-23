@@ -36,7 +36,6 @@ mod world3d;
 use registry::RegistryBuilder;
 use renderer::*;
 use sdl::event::Event;
-use std::error;
 #[allow(unused_imports)]
 use std::os::raw::{c_char, c_int};
 
@@ -101,12 +100,10 @@ pub fn rust_main(event_source: sdl::event::EventSource) {
         fn startup<DF: renderer::DeviceFactory>(
             &self,
             device_factory: DF,
-        ) -> Result<DF::PausedDevice, Box<error::Error>> {
+        ) -> Result<DF::PausedDevice, DF::Error> {
             let flags = sdl::api::SDL_WINDOW_RESIZABLE;
             //let flags = sdl::api::SDL_WINDOW_FULLSCREEN_DESKTOP;
-            device_factory
-                .create("Hashlife3d", None, (640, 480), flags)
-                .map_err(|v| Box::new(v).into())
+            device_factory.create("Hashlife3d", None, (640, 480), flags)
         }
         fn main_loop<PD: renderer::PausedDevice>(
             self,

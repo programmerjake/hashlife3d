@@ -255,7 +255,8 @@ impl<'a, D: Device> RenderState<'a, D> {
         game_state: &'a mut GameState,
         registry: Registry,
     ) -> Result<Self, D::Error> {
-        let staging_tiles_image_set = tiles::create_tiles_image_set(device.get_device_ref())?;
+        let staging_tiles_image_set =
+            tiles::TilesImageSet::new().create_staging_image_set(device.get_device_ref())?;
         let device_tiles_image_set =
             device.create_device_image_set_like(&staging_tiles_image_set)?;
         let mut loader_command_buffer = device.create_loader_command_buffer_builder()?;

@@ -12,20 +12,23 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-use super::{api, NoMatchingMemoryType};
+use super::{api, Error, NoMatchingMemoryType};
 use sdl;
-use std::error::Error;
+use std::error;
 use std::fmt;
+use std::io;
 use std::result;
 
 pub enum VulkanError {
     VulkanError(api::VkResult),
     SDLError(sdl::SDLError),
+    WrappedError(io::Error),
     NoMatchingPhysicalDevice,
     NoMatchingMemoryType,
     ImageIsTooBig,
     ImageMustHavePowerOfTwoDimensions,
     ImageSetHasTooManyImages,
+    ImageSetIsEmpty,
 }
 
 impl From<sdl::SDLError> for VulkanError {
@@ -37,6 +40,24 @@ impl From<sdl::SDLError> for VulkanError {
 impl From<NoMatchingMemoryType> for VulkanError {
     fn from(_: NoMatchingMemoryType) -> Self {
         VulkanError::NoMatchingMemoryType
+    }
+}
+
+impl From<io::Error> for VulkanError {
+    fn from(v: io::Error) -> Self {
+        VulkanError::WrappedError(v)
+    }
+}
+
+impl Error for VulkanError {
+    fn to_io_error(self) -> io::Error {
+        if let VulkanError::WrappedError(v) = self {
+            v
+        } else if let VulkanError::SDLError(v) = self {
+            io::Error::new(io::ErrorKind::Other, v)
+        } else {
+            io::Error::new(io::ErrorKind::Other, self)
+        }
     }
 }
 
@@ -80,6 +101,7 @@ impl fmt::Display for VulkanError {
                 f.write_str(name)
             }
             VulkanError::SDLError(error) => (error as &fmt::Display).fmt(f),
+            VulkanError::WrappedError(error) => (error as &fmt::Display).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("no matching physical device"),
             VulkanError::NoMatchingMemoryType => f.write_str("no matching memory type"),
             VulkanError::ImageIsTooBig => f.write_str("image is too big"),
@@ -87,6 +109,7 @@ impl fmt::Display for VulkanError {
                 f.write_str("image must have power-of-two dimensions")
             }
             VulkanError::ImageSetHasTooManyImages => f.write_str("image set has too many images"),
+            VulkanError::ImageSetIsEmpty => f.write_str("image set is empty"),
         }
     }
 }
@@ -96,6 +119,7 @@ impl fmt::Debug for VulkanError {
         match self {
             VulkanError::SDLError(error) => (error as &fmt::Debug).fmt(f),
             VulkanError::VulkanError(_) => (self as &fmt::Display).fmt(f),
+            VulkanError::WrappedError(error) => (error as &fmt::Debug).fmt(f),
             VulkanError::NoMatchingPhysicalDevice => f.write_str("NoMatchingPhysicalDevice"),
             VulkanError::NoMatchingMemoryType => f.write_str("NoMatchingMemoryType"),
             VulkanError::ImageIsTooBig => f.write_str("ImageIsTooBig"),
@@ -103,10 +127,11 @@ impl fmt::Debug for VulkanError {
                 f.write_str("ImageMustHavePowerOfTwoDimensions")
             }
             VulkanError::ImageSetHasTooManyImages => f.write_str("ImageSetHasTooManyImages"),
+            VulkanError::ImageSetIsEmpty => f.write_str("ImageSetIsEmpty"),
         }
     }
 }
 
-impl Error for VulkanError {}
+impl error::Error for VulkanError {}
 
 pub type Result<T> = result::Result<T, VulkanError>;

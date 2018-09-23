@@ -237,6 +237,7 @@ dependencies = [
  "serde 1.0.79 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.79 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_test 1.0.79 (registry+https://github.com/rust-lang/crates.io-index)",
+ "voxels-base 0.1.0",
  "voxels-image 0.1.0",
  "voxels-math 0.1.0",
  "voxels-renderer 0.1.0",
@@ -642,6 +643,15 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "voxels-base"
+version = "0.1.0"
+dependencies = [
+ "voxels-image 0.1.0",
+ "voxels-math 0.1.0",
+ "voxels-renderer 0.1.0",
+]
+
+[[package]]
 name = "voxels-image"
 version = "0.1.0"
 dependencies = [
@@ -717,7 +727,10 @@ dependencies = [
 name = "voxels-resources"
 version = "0.1.0"
 dependencies = [
+ "serde 1.0.79 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.79 (registry+https://github.com/rust-lang/crates.io-index)",
  "voxels-image 0.1.0",
+ "voxels-math 0.1.0",
  "voxels-renderer 0.1.0",
 ]
 

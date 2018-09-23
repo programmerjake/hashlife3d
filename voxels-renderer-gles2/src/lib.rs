@@ -21,6 +21,7 @@ use renderer::*;
 use std::error;
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::io;
 use std::marker::PhantomData;
 use std::mem;
 use std::os::raw::*;
@@ -394,6 +395,7 @@ impl Api {
 #[derive(Debug)]
 pub enum GLES2Error {
     SDLError(sdl::SDLError),
+    WrappedError(io::Error),
     NoShaderCompilerSupport,
     ImageIsTooBig,
     ImageMustHavePowerOfTwoDimensions,
@@ -408,10 +410,29 @@ impl From<sdl::SDLError> for GLES2Error {
     }
 }
 
+impl From<io::Error> for GLES2Error {
+    fn from(v: io::Error) -> Self {
+        GLES2Error::WrappedError(v)
+    }
+}
+
+impl Error for GLES2Error {
+    fn to_io_error(self) -> io::Error {
+        if let GLES2Error::WrappedError(v) = self {
+            v
+        } else if let GLES2Error::SDLError(v) = self {
+            io::Error::new(io::ErrorKind::Other, v)
+        } else {
+            io::Error::new(io::ErrorKind::Other, self)
+        }
+    }
+}
+
 impl fmt::Display for GLES2Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             GLES2Error::SDLError(error) => (error as &fmt::Display).fmt(f),
+            GLES2Error::WrappedError(error) => (error as &fmt::Display).fmt(f),
             GLES2Error::NoShaderCompilerSupport => {
                 f.write_str("the OpenGL ES implementation doesn't support compiling shaders")
             }

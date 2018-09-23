@@ -1,5 +1,5 @@
 [package]
-name = "voxels-resources"
+name = "voxels-base"
 version = "0.1.0"
 authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 
@@ -7,8 +7,6 @@ authors = ["Jacob Lifshay <programmerjake@gmail.com>"]
 crate-type = ["rlib"]
 
 [dependencies]
-voxels-renderer = { path = "../voxels-renderer" }
 voxels-image = { path = "../voxels-image" }
+voxels-renderer = { path = "../voxels-renderer" }
 voxels-math = { path = "../voxels-math" }
-serde = "1.0"
-serde_derive = "1.0"

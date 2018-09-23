@@ -338,6 +338,9 @@ pub unsafe fn create_staging_image_set(
     dimensions: math::Vec2<u32>,
     total_layer_count: usize,
 ) -> Result<VulkanStagingImageSet> {
+    if total_layer_count == 0 {
+        return Err(VulkanError::ImageSetIsEmpty);
+    }
     if total_layer_count
         > get_image_set_max_total_layer_count(image_set_image_format_properties, dimensions)?
     {
@@ -457,6 +460,9 @@ pub unsafe fn create_device_image_set(
     total_layer_count: usize,
     samplers_descriptor_set_layout: Arc<DescriptorSetLayoutWrapper>,
 ) -> Result<VulkanDeviceImageSet<InactiveCommandBufferSubmitTracker>> {
+    if total_layer_count == 0 {
+        return Err(VulkanError::ImageSetIsEmpty);
+    }
     if total_layer_count
         > get_image_set_max_total_layer_count(image_set_image_format_properties, dimensions)?
     {

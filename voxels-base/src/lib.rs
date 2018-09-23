@@ -12,11 +12,3 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Hashlife3d.  If not, see <https://www.gnu.org/licenses/>
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate voxels_image as image;
-extern crate voxels_math as math;
-extern crate voxels_renderer as renderer;
-
-pub mod images;
